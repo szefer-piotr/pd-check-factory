@@ -1,0 +1,8 @@
+# Upgrade pip first: pip install -U pip
+pydantic
+jsonschema
+python-dotenv
+fastapi
+uvicorn
+azure-identity
+azure-storage-blob
