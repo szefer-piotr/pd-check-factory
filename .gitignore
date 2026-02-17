@@ -27,3 +27,13 @@ Thumbs.db
 # Local infra / secrets
 *.pem
 secrets/
+
+# Azure Functions
+.azure/
+local.settings.json
+
+# Python
+*.pyc
+*.pyo
+*.pyd
+.Python
