@@ -8,6 +8,7 @@ param regionShort string = 'weu'
 var resourceGroupName = 'rg-${prefix}-${environment}-${regionShort}'
 var storageAccountName = 'st${prefix}${environment}${regionShort}${uniqueSuffix}'
 var keyVaultName = 'kv-${prefix}-${environment}-${regionShort}'
+var logAnalyticsName = 'log-${prefix}-${environment}-${regionShort}'
 var appInsightsName = 'ai-${prefix}-${environment}-${regionShort}'
 var appServiceName = 'app-${prefix}-${environment}-${regionShort}'
 var functionAppName = 'func-${prefix}-${environment}-${regionShort}'
@@ -44,13 +45,24 @@ module keyVault 'keyvault.bicep' = {
   }
 }
 
-// Application Insights
+// Log Analytics workspace
+module logAnalytics 'log-analytics.bicep' = {
+  name: 'logAnalytics'
+  params: {
+    workspaceName: logAnalyticsName
+    location: location
+    tags: tags
+  }
+}
+
+// Application Insights (workspace-based)
 module appInsights 'app-insights.bicep' = {
   name: 'appInsights'
   params: {
     appInsightsName: appInsightsName
     location: location
     tags: tags
+    workspaceResourceId: logAnalytics.outputs.workspaceId
   }
 }
 
@@ -72,7 +84,6 @@ module functions 'functions.bicep' = {
     functionAppName: functionAppName
     storageAccountName: storageAccountName
     storageAccountId: storage.outputs.storageAccountId
-    storageAccountKey: storage.outputs.storageAccountKey
     keyVaultName: keyVaultName
     keyVaultId: keyVault.outputs.keyVaultId
     appInsightsName: appInsightsName
@@ -92,12 +103,67 @@ module webapp 'webapp.bicep' = {
   params: {
     appServiceName: appServiceName
     storageAccountName: storageAccountName
-    storageAccountKey: storage.outputs.storageAccountKey
     keyVaultName: keyVaultName
     appInsightsName: appInsightsName
     appInsightsInstrumentationKey: appInsights.outputs.instrumentationKey
     location: location
     tags: tags
+  }
+}
+
+// RBAC: reference existing storage and key vault to assign roles to app identities
+resource dataStorage 'Microsoft.Storage/storageAccounts@2023-01-01' existing = {
+  name: storageAccountName
+}
+
+resource kv 'Microsoft.KeyVault/vaults@2023-07-01' existing = {
+  name: keyVaultName
+}
+
+var storageBlobDataContributorRole = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
+var keyVaultSecretsUserRole = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
+
+// Function App: Storage Blob Data Contributor on data storage
+resource funcStorageRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: dataStorage
+  name: guid(dataStorage.id, functions.outputs.functionAppPrincipalId, storageBlobDataContributorRole)
+  properties: {
+    roleDefinitionId: storageBlobDataContributorRole
+    principalId: functions.outputs.functionAppPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// Function App: Key Vault Secrets User
+resource funcKvRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: kv
+  name: guid(kv.id, functions.outputs.functionAppPrincipalId, keyVaultSecretsUserRole)
+  properties: {
+    roleDefinitionId: keyVaultSecretsUserRole
+    principalId: functions.outputs.functionAppPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// Web App: Storage Blob Data Contributor on data storage
+resource webStorageRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: dataStorage
+  name: guid(dataStorage.id, webapp.outputs.webAppPrincipalId, storageBlobDataContributorRole)
+  properties: {
+    roleDefinitionId: storageBlobDataContributorRole
+    principalId: webapp.outputs.webAppPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// Web App: Key Vault Secrets User
+resource webKvRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: kv
+  name: guid(kv.id, webapp.outputs.webAppPrincipalId, keyVaultSecretsUserRole)
+  properties: {
+    roleDefinitionId: keyVaultSecretsUserRole
+    principalId: webapp.outputs.webAppPrincipalId
+    principalType: 'ServicePrincipal'
   }
 }
 

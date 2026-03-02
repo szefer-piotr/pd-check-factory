@@ -38,20 +38,31 @@ class Config:
         
         # Only override if not already set from environment
         if not self.storage_account_key:
-            self.storage_account_key = client.get_secret("storage-account-key").value
+            try:
+                self.storage_account_key = client.get_secret("storage-account-key").value
+            except Exception:
+                pass  # Use Managed Identity for storage when key is not in Key Vault
         if not self.doc_intelligence_key:
             self.doc_intelligence_key = client.get_secret("doc-intelligence-key").value
         if not self.openai_key:
             self.openai_key = client.get_secret("openai-key").value
     
-    def get_storage_connection_string(self) -> str:
-        """Get Azure Storage connection string"""
+    def get_storage_connection_string(self) -> Optional[str]:
+        """Return Azure Storage connection string if account key is set; otherwise None (use Managed Identity)."""
+        if not self.storage_account_name or not self.storage_account_key:
+            return None
         return (
             f"DefaultEndpointsProtocol=https;"
             f"AccountName={self.storage_account_name};"
             f"AccountKey={self.storage_account_key};"
             f"EndpointSuffix=core.windows.net"
         )
+
+    def get_storage_account_url(self) -> str:
+        """Return the blob endpoint URL for the storage account (used with DefaultAzureCredential)."""
+        if not self.storage_account_name:
+            return ""
+        return f"https://{self.storage_account_name}.blob.core.windows.net"
 
 
 # Global config instance

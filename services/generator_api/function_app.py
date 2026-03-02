@@ -7,7 +7,7 @@ import logging
 import sys
 from pathlib import Path
 from datetime import datetime
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 
 import azure.functions as func
 from openai import AzureOpenAI
@@ -29,6 +29,35 @@ openai_client = AzureOpenAI(
     api_version="2024-02-15-preview",
     azure_endpoint=config.openai_endpoint
 )
+
+
+@app.route(route="hello", methods=["GET"], auth_level=func.AuthLevel.ANONYMOUS)
+def hello(req: func.HttpRequest) -> func.HttpResponse:
+    """
+    Hello-world endpoint for Phase 1 verification: writes a blob to outputs/ and logs.
+    Verify in Azure Portal: Storage -> outputs container; App Insights -> Logs.
+    """
+    logger = logging.getLogger(__name__)
+    try:
+        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        blob_name = f"hello_{ts}.txt"
+        content = f"Hello from PD Check Factory at {datetime.utcnow().isoformat()}Z"
+        blob_wrapper.client.get_blob_client(container="outputs", blob=blob_name).upload_blob(
+            content, overwrite=True
+        )
+        logger.info("Hello world from PD Check Factory")
+        return func.HttpResponse(
+            json.dumps({"message": "Hello world", "blob": f"outputs/{blob_name}"}),
+            status_code=200,
+            mimetype="application/json",
+        )
+    except Exception as e:
+        logger.exception("Hello endpoint failed")
+        return func.HttpResponse(
+            json.dumps({"error": str(e)}),
+            status_code=500,
+            mimetype="application/json",
+        )
 
 
 def load_prompt_template(template_name: str) -> str:

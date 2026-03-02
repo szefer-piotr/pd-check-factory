@@ -1,7 +1,6 @@
 @description('App Service for hosting Streamlit review UI')
 param appServiceName string
 param storageAccountName string
-param storageAccountKey string
 param keyVaultName string
 param appInsightsName string
 param appInsightsInstrumentationKey string
@@ -28,6 +27,9 @@ resource webApp 'Microsoft.Web/sites@2023-01-01' = {
   name: appServiceName
   location: location
   kind: 'app,linux'
+  identity: {
+    type: 'SystemAssigned'
+  }
   properties: {
     serverFarmId: hostingPlan.id
     siteConfig: {
@@ -36,10 +38,6 @@ resource webApp 'Microsoft.Web/sites@2023-01-01' = {
         {
           name: 'STORAGE_ACCOUNT_NAME'
           value: storageAccountName
-        }
-        {
-          name: 'STORAGE_ACCOUNT_KEY'
-          value: storageAccountKey
         }
         {
           name: 'KEY_VAULT_NAME'
@@ -66,3 +64,4 @@ resource webApp 'Microsoft.Web/sites@2023-01-01' = {
 output appServiceId string = webApp.id
 output appServiceName string = webApp.name
 output appServiceHostName string = webApp.properties.defaultHostName
+output webAppPrincipalId string = webApp.identity.principalId

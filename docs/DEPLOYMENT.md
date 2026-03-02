@@ -134,18 +134,13 @@ az webapp config set \
   --linux-fx-version "DOCKER|<image-url>"
 ```
 
-## Step 5: Configure Permissions
+## Step 5: Configure Permissions (Managed Identity)
 
-### 5.1 Function App Permissions
+The Bicep templates assign **Storage Blob Data Contributor** and **Key Vault Secrets User** to the Function App and Web App managed identities. No storage account key is stored in app settings; the apps use their system-assigned identity to access storage and Key Vault. See [ACCESS_MODEL.md](ACCESS_MODEL.md) for details.
 
-Ensure Function App has:
-- Storage Blob Data Contributor role on storage account
-- Key Vault Secrets User role (if using Key Vault)
-
-### 5.2 App Service Permissions
-
-Ensure App Service has:
-- Storage Blob Data Reader role on storage account
+If you add resources or roles manually, ensure:
+- Function App and Web App have **Storage Blob Data Contributor** on the data storage account.
+- Function App and Web App have **Key Vault Secrets User** on the Key Vault.
 
 ## Step 6: Test End-to-End
 
@@ -182,6 +177,33 @@ curl -X POST \
 ### 6.4 Access Review UI
 
 Navigate to: `https://app-pdchk-dev-weu.azurewebsites.net`
+
+### 6.5 Phase 1 verification: hello-world endpoint
+
+To confirm storage and logging work with Managed Identity:
+
+1. Deploy the generator function (which includes the `hello` endpoint):
+   ```bash
+   cd services/generator_api
+   func azure functionapp publish func-pdchk-dev-weu --python
+   ```
+
+2. Call the hello endpoint (no auth required; use ANONYMOUS):
+   ```bash
+   curl "https://func-pdchk-dev-weu.azurewebsites.net/api/hello"
+   ```
+   You should get `{"message":"Hello world","blob":"outputs/hello_<timestamp>.txt"}`.
+
+3. **Verify storage**: In Azure Portal → Storage account → Containers → **outputs**. You should see a blob `hello_<timestamp>.txt`.
+
+4. **Verify logs**: In Azure Portal → Application Insights → Logs (or Log Analytics workspace). Run a query such as:
+   ```kusto
+   traces
+   | where message contains "Hello world from PD Check Factory"
+   | order by timestamp desc
+   ```
+
+When both the blob and the log entry appear, Phase 1 is complete.
 
 ## Troubleshooting
 

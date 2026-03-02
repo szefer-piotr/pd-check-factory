@@ -4,16 +4,23 @@ Shared Azure Blob Storage client utilities
 import json
 from datetime import datetime
 from typing import Optional, List
-from azure.storage.blob import BlobServiceClient, BlobClient, ContainerClient
+from azure.storage.blob import BlobServiceClient
+from azure.identity import DefaultAzureCredential
 from shared.python.config import config
 
 
 class BlobClientWrapper:
-    """Wrapper for Azure Blob Storage operations"""
-    
+    """Wrapper for Azure Blob Storage operations. Uses connection string when key is set, otherwise Managed Identity."""
+
     def __init__(self):
         connection_string = config.get_storage_connection_string()
-        self.client = BlobServiceClient.from_connection_string(connection_string)
+        if connection_string:
+            self.client = BlobServiceClient.from_connection_string(connection_string)
+        else:
+            account_url = config.get_storage_account_url()
+            if not account_url:
+                raise ValueError("STORAGE_ACCOUNT_NAME must be set")
+            self.client = BlobServiceClient(account_url=account_url, credential=DefaultAzureCredential())
     
     def upload_json(self, container_name: str, blob_name: str, data: dict) -> None:
         """Upload a JSON object to blob storage"""

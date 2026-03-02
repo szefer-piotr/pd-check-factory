@@ -14,6 +14,7 @@ resource storageAccount 'Microsoft.Storage/storageAccounts@2023-01-01' = {
     supportsHttpsTrafficOnly: true
     minimumTlsVersion: 'TLS1_2'
     allowBlobPublicAccess: false
+    isHnsEnabled: true
   }
   tags: tags
 }
@@ -59,6 +60,15 @@ resource catalogsContainer 'Microsoft.Storage/storageAccounts/blobServices/conta
 // Container: audit logs
 resource auditContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = {
   name: 'audit'
+  parent: blobService
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
+// Container: pipeline outputs (generated catalogs, exports, etc.)
+resource outputsContainer 'Microsoft.Storage/storageAccounts/blobServices/containers@2023-01-01' = {
+  name: 'outputs'
   parent: blobService
   properties: {
     publicAccess: 'None'

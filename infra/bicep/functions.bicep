@@ -2,7 +2,6 @@
 param functionAppName string
 param storageAccountName string
 param storageAccountId string
-param storageAccountKey string
 param keyVaultName string
 param keyVaultId string
 param appInsightsName string
@@ -48,6 +47,9 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
   name: functionAppName
   location: location
   kind: 'functionapp'
+  identity: {
+    type: 'SystemAssigned'
+  }
   properties: {
     serverFarmId: hostingPlan.id
     siteConfig: {
@@ -79,10 +81,6 @@ resource functionApp 'Microsoft.Web/sites@2023-01-01' = {
         {
           name: 'STORAGE_ACCOUNT_NAME'
           value: storageAccountName
-        }
-        {
-          name: 'STORAGE_ACCOUNT_KEY'
-          value: storageAccountKey
         }
         {
           name: 'DOC_INTELLIGENCE_ENDPOINT'
@@ -137,3 +135,4 @@ resource eventGridSubscription 'Microsoft.EventGrid/systemTopics@2022-06-15' = {
 output functionAppId string = functionApp.id
 output functionAppName string = functionApp.name
 output functionAppHostName string = functionApp.properties.defaultHostName
+output functionAppPrincipalId string = functionApp.identity.principalId
