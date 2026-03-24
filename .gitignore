@@ -37,3 +37,6 @@ local.settings.json
 *.pyo
 *.pyd
 .Python
+
+# DI Layout / extraction artifacts
+output/

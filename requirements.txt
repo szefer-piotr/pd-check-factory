@@ -5,4 +5,5 @@ python-dotenv
 fastapi
 uvicorn
 azure-identity
+azure-ai-documentintelligence
 azure-storage-blob
