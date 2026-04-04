@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pd-check-factory/schemas/pd_logic_output.schema.json",
+  "title": "PD Logic Draft Output",
+  "type": "object",
+  "required": ["schema_version", "study_id", "generated_at", "logic_drafts"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "study_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "logic_drafts": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/pd_logic_draft"
+      }
+    }
+  },
+  "$defs": {
+    "pd_logic_draft": {
+      "type": "object",
+      "required": [
+        "candidate_id",
+        "required_source_data_domain_hints",
+        "computable_trigger_expression_draft",
+        "timing_evaluation_method",
+        "window_evaluation_method",
+        "exception_handling_logic",
+        "assumptions",
+        "data_quality_risks",
+        "confidence",
+        "ambiguity_flag",
+        "reviewer_notes"
+      ],
+      "properties": {
+        "candidate_id": {
+          "type": "string",
+          "pattern": "^cand:[0-9]{5}$"
+        },
+        "required_source_data_domain_hints": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "computable_trigger_expression_draft": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timing_evaluation_method": {
+          "type": "string",
+          "minLength": 1
+        },
+        "window_evaluation_method": {
+          "type": "string",
+          "minLength": 1
+        },
+        "exception_handling_logic": {
+          "type": "string"
+        },
+        "assumptions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "data_quality_risks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "ambiguity_flag": {
+          "type": "boolean"
+        },
+        "reviewer_notes": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
+

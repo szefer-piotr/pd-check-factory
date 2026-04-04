@@ -1,0 +1,95 @@
+{
+  "heading_include_keywords": [
+    "schedule of events",
+    "visit schedule",
+    "visit",
+    "timing",
+    "window",
+    "trial assessments",
+    "assessments performed",
+    "sampling assessments schedule",
+    "doses and treatment regimens",
+    "withdrawal criteria",
+    "treatment compliance",
+    "inclusion criteria",
+    "exclusion criteria",
+    "protocol amendments",
+    "deviation",
+    "study procedures",
+    "procedure"
+  ],
+  "heading_deprioritize_keywords": [
+    "background",
+    "rationale",
+    "ethics",
+    "references",
+    "insurance",
+    "signature",
+    "contact details",
+    "table of contents",
+    "reporting and publication"
+  ],
+  "content_timing_keywords": [
+    "within",
+    "day",
+    "days",
+    "week",
+    "weeks",
+    "visit window",
+    "window",
+    "pre-dose",
+    "post-dose",
+    "timing",
+    "at day",
+    "at week"
+  ],
+  "content_mandatory_keywords": [
+    "must",
+    "required",
+    "shall",
+    "not allowed",
+    "discontinue",
+    "interrupt",
+    "should be",
+    "need to"
+  ],
+  "procedural_table_hint_keywords": [
+    "assessment",
+    "procedure",
+    "visit",
+    "schedule",
+    "timing",
+    "window",
+    "dose"
+  ],
+  "high_signal_section_ids": [
+    "sec:0030",
+    "sec:0031",
+    "sec:0032",
+    "sec:0036",
+    "sec:0044",
+    "sec:0045",
+    "sec:0047",
+    "sec:0052",
+    "sec:0065",
+    "sec:0066",
+    "sec:0067",
+    "sec:0076"
+  ],
+  "score_weights": {
+    "heading_include": 3,
+    "table_or_composite_chunk": 2,
+    "timing_content": 2,
+    "mandatory_content": 2,
+    "heading_deprioritize": -3
+  },
+  "thresholds": {
+    "high_priority_min": 5,
+    "medium_priority_min": 2
+  },
+  "curation": {
+    "include_medium_if_adjacent_page_to_high": true,
+    "include_medium_if_same_heading_path_as_high": true
+  }
+}
+

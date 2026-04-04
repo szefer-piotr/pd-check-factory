@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pd-check-factory/schemas/pd_candidate_output.schema.json",
+  "title": "PD Candidate Output",
+  "type": "object",
+  "required": ["schema_version", "study_id", "generated_at", "candidates"],
+  "properties": {
+    "schema_version": {
+      "type": "string",
+      "const": "1.0.0"
+    },
+    "study_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "candidates": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/pd_candidate"
+      }
+    }
+  },
+  "$defs": {
+    "timing_anchor": {
+      "type": "object",
+      "required": ["anchor_type", "anchor_description"],
+      "properties": {
+        "anchor_type": {
+          "type": "string",
+          "enum": [
+            "visit",
+            "dose",
+            "randomization",
+            "screening",
+            "baseline",
+            "procedure",
+            "unspecified"
+          ]
+        },
+        "anchor_description": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": false
+    },
+    "allowed_window": {
+      "type": "object",
+      "required": ["window_text", "window_type"],
+      "properties": {
+        "window_text": {
+          "type": "string",
+          "minLength": 1
+        },
+        "window_type": {
+          "type": "string",
+          "enum": ["exact", "plus_minus", "range", "before_after", "unspecified"]
+        },
+        "lower_bound": {
+          "type": ["number", "null"]
+        },
+        "upper_bound": {
+          "type": ["number", "null"]
+        },
+        "unit": {
+          "type": ["string", "null"],
+          "enum": ["minutes", "hours", "days", "weeks", null]
+        }
+      },
+      "additionalProperties": false
+    },
+    "source_evidence": {
+      "type": "object",
+      "required": ["chunk_id", "quote", "source_references"],
+      "properties": {
+        "chunk_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "quote": {
+          "type": "string",
+          "minLength": 1
+        },
+        "source_references": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "pd_candidate": {
+      "type": "object",
+      "required": [
+        "candidate_id",
+        "deviation_title",
+        "deviation_category",
+        "protocol_rule_description",
+        "candidate_trigger_condition",
+        "timing_anchor",
+        "allowed_window",
+        "exceptions_notes",
+        "source_evidence",
+        "confidence",
+        "ambiguity_flag",
+        "reviewer_notes"
+      ],
+      "properties": {
+        "candidate_id": {
+          "type": "string",
+          "pattern": "^cand:[0-9]{5}$"
+        },
+        "deviation_title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "deviation_category": {
+          "type": "string",
+          "enum": [
+            "visit_window",
+            "procedure_missed",
+            "assessment_timing",
+            "dose_timing",
+            "eligibility_operational",
+            "treatment_compliance",
+            "other"
+          ]
+        },
+        "protocol_rule_description": {
+          "type": "string",
+          "minLength": 1
+        },
+        "candidate_trigger_condition": {
+          "type": "string",
+          "minLength": 1
+        },
+        "timing_anchor": {
+          "$ref": "#/$defs/timing_anchor"
+        },
+        "allowed_window": {
+          "$ref": "#/$defs/allowed_window"
+        },
+        "exceptions_notes": {
+          "type": "string"
+        },
+        "source_evidence": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/source_evidence"
+          }
+        },
+        "confidence": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "ambiguity_flag": {
+          "type": "boolean"
+        },
+        "reviewer_notes": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
+
