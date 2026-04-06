@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pdcheck-factory"
+version = "0.2.0"
+description = "PD Check Factory — Azure MVP (Blob, Document Intelligence, Azure OpenAI)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "pydantic",
+  "jsonschema",
+  "python-dotenv",
+  "typer",
+  "openai",
+  "openpyxl",
+  "azure-identity",
+  "azure-ai-documentintelligence",
+  "azure-storage-blob",
+]
+
+[project.optional-dependencies]
+api = ["fastapi", "uvicorn"]
+
+[project.scripts]
+pdcheck = "pdcheck_factory.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pdcheck_factory*"]

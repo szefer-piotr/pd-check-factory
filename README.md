@@ -1,146 +1,112 @@
 # PD Check Factory
 
-A system for automatically generating Protocol Deviation (PD) Check Catalogs from clinical trial documents using Azure AI services.
+Single **Python** application to extract text and tables from clinical trial **protocol** and **annotated CRF (aCRF)** PDFs with **Azure AI Document Intelligence**, run two **Azure OpenAI** passes (protocol rules → draft protocol deviations grounded in the aCRF), validate JSON with existing schemas, export a **DM review Excel** workbook, and emit a **pseudo-logic bundle**.
 
-## Architecture
+There is no Azure Functions, Event Grid, or separate review UI in this MVP—only Blob storage, DI, and OpenAI.
 
-The system processes PDF documents through the following pipeline:
+## Prerequisites
 
-1. **Document Upload** → PDFs uploaded to Azure Blob Storage (`raw/` container)
-2. **Document Intelligence** → Azure Function extracts text, tables, and structure
-3. **Catalog Generation** → Azure OpenAI generates PD Check Catalog from extracted content
-4. **Review & Approval** → Streamlit UI for DM review and approval
+- Python **3.11+**
+- Azure Storage Account (one container is enough)
+- Azure AI Document Intelligence resource
+- Azure OpenAI deployment (chat model supporting JSON mode / `response_format`)
 
-## Components
+## Install
 
-### Infrastructure (`infra/bicep/`)
-- Bicep templates for Azure resources
-- Storage Account with blob containers
-- Azure Functions (Event Grid + HTTP triggers)
-- Document Intelligence and Azure OpenAI
-- App Service for Streamlit
-
-### Services
-
-#### `services/ingest_func/`
-- Event Grid triggered Azure Function
-- Processes PDF uploads with Document Intelligence
-- Saves extracted JSON to `extracted/` container
-
-#### `services/generator_api/`
-- HTTP triggered Azure Function
-- Generates PD Check Catalogs using Azure OpenAI
-- Validates catalogs against JSON schema
-
-#### `services/reviewer_ui/`
-- Streamlit web application
-- Review, approve, reject, and edit checks
-- Export approved catalogs
-
-### Shared (`shared/python/`)
-- Pydantic models for schemas
-- Blob Storage client wrapper
-- Configuration loader
-
-### Schemas (`schemas/`)
-- JSON schemas for validation
-- Extracted document schema
-- PD Check Catalog schema
-- Study configuration schema
-
-## Setup
-
-### Prerequisites
-- Azure subscription
-- Azure CLI installed
-- Python 3.11+
-- Azure Functions Core Tools (for local testing)
-
-### Deployment
-
-1. **Deploy Infrastructure**
-   ```bash
-   cd infra/bicep
-   az deployment group create \
-     --resource-group rg-pdchk-dev-weu \
-     --template-file main.bicep \
-     --parameters environment=dev
-   ```
-
-2. **Configure Environment Variables**
-   - Set app settings in Function Apps
-   - Configure Key Vault secrets
-   - Set Streamlit environment variables
-
-3. **Deploy Functions**
-   ```bash
-   cd services/ingest_func
-   func azure functionapp publish func-pdchk-dev-weu
-   
-   cd ../generator_api
-   func azure functionapp publish func-pdchk-dev-weu
-   ```
-
-4. **Deploy Streamlit App**
-   ```bash
-   cd services/reviewer_ui
-   # Build and push Docker image, then deploy to App Service
-   ```
-
-## Usage
-
-### 1. Upload Documents
-Upload PDF files to blob storage:
-- `raw/protocol/` - Protocol documents
-- `raw/crf/` - CRF specifications
-- `raw/specs/` - DM specifications
-
-### 2. Automatic Processing
-- Event Grid triggers Document Intelligence extraction
-- Extracted JSON saved to `extracted/` container
-
-### 3. Generate Catalog
-Call the generator API:
 ```bash
-curl -X POST https://func-pdchk-dev-weu.azurewebsites.net/api/generate_catalog \
-  -H "Content-Type: application/json" \
-  -d '{"study_id": "DEMO-001"}'
+cd /path/to/pd-check-factory
+python -m venv .venv
+source .venv/bin/activate   # or .venv\Scripts\activate on Windows
+pip install -U pip
+pip install -e ".[api]"    # or: pip install -r requirements.txt && pip install -e .
 ```
 
-### 4. Review & Approve
-- Access Streamlit UI at App Service URL
-- Review checks, approve/reject/edit
-- Export approved catalog
+The console script **`pdcheck`** is provided by the editable install (see `[project.scripts]` in `pyproject.toml`). Alternatively:
 
-## Development
+```bash
+python -m pdcheck_factory --help
+```
 
-### Local Testing
+## Configuration
 
-1. **Functions** (requires Azure Storage Emulator or real storage):
+Copy `.env.example` to `.env` and fill in endpoints and keys. The CLI loads `.env` via `python-dotenv`.
+
+## Blob layout (prefixes in your container)
+
+| Purpose | Path |
+|--------|------|
+| Raw PDF uploads | `raw/<study_id>/protocol.pdf`, `raw/<study_id>/acrf.pdf` |
+| DI outputs | `extractions/<study_id>/protocol/layout/...`, `extractions/<study_id>/acrf/layout/...` |
+| Rules KB (LLM 1) | `pipeline/<study_id>/protocol_rules_kb.json` |
+| PD JSON | `pipeline/<study_id>/pd/candidates.json`, `logic_drafts.json`, `pd_draft_specs.json` |
+| DM workbook | `review/<study_id>/dm_review_roundtrip.xlsx` |
+| Pseudo bundle | `artifacts/<study_id>/pseudo_logic_bundle.json` |
+
+Local cache mirrors the same structure under `output/<study_id>/`.
+
+## Pipeline Commands
+
+1. **Upload** `protocol.pdf` and `acrf.pdf` to the raw paths above (AzCopy, Portal, or SDK).
+
+2. **Extract** (DI Layout, markdown + JSON):
+
    ```bash
-   cd services/ingest_func
-   func start
+   pdcheck extract --study-id MY-STUDY
    ```
 
-2. **Streamlit**:
+   Optional: `--protocol-blob`, `--acrf-blob`, `--skip-acrf` (for protocol-only tests).
+
+3. **Rules** (LLM pass 1 — protocol → `protocol_rules_kb.json`):
+
    ```bash
-   cd services/reviewer_ui
-   streamlit run app.py
+   pdcheck rules --study-id MY-STUDY
    ```
 
-### Project Structure
+4. **Draft PD** (LLM pass 2 — rules + aCRF → candidates + logic):
+
+   ```bash
+   pdcheck draft-pd --study-id MY-STUDY
+   ```
+
+5. **Merge** (validate against `schemas/pd_draft_spec.schema.json`):
+
+   ```bash
+   pdcheck merge --study-id MY-STUDY
+   ```
+
+6. **DM Excel** — export, edit, apply:
+
+   ```bash
+   pdcheck export-review --study-id MY-STUDY
+   pdcheck apply-review --study-id MY-STUDY --workbook ./path/to/edited.xlsx
+   ```
+
+   Workbook columns include `dm_decision` (`approve` / `reject` / `revise`), `dm_comments`, and optional `proposed_text` (updates `candidate_trigger_condition` when set).
+
+7. **Pseudo bundle** (narrative steps + domains):
+
+   ```bash
+   pdcheck emit-pseudo --study-id MY-STUDY
+   ```
+
+**End-to-end** through merge (no XLSX):
+
+```bash
+pdcheck run-all --study-id MY-STUDY
 ```
-pd-check-factory/
-├── infra/bicep/          # Infrastructure as code
-├── schemas/              # JSON schemas
-├── services/
-│   ├── ingest_func/      # Document processing function
-│   ├── generator_api/    # Catalog generation function
-│   └── reviewer_ui/      # Streamlit review app
-├── shared/python/        # Shared utilities
-└── prompts/             # OpenAI prompt templates
-```
+
+Use `--no-upload` on any command to only write under `output/` without Blob uploads.
+
+## JSON schemas
+
+- `schemas/protocol_rules_kb.schema.json` — LLM pass 1 output
+- `schemas/pd_candidate_output.schema.json`, `schemas/pd_logic_output.schema.json` — LLM pass 2
+- `schemas/pd_draft_spec.schema.json` — merged workbook for review
+
+## Legacy scripts
+
+`scripts/analyze_protocol.py` still works and now calls the shared library; it writes under `output/<study_id>/extractions/protocol/layout/` and uploads to `extractions/<study_id>/protocol/layout/`. Older `normalize_layout_output.py` / `triage_protocol_chunks.py` flows target different folder layouts and are optional for this MVP.
 
 ## License
 
-Internal use only - Bioscope
+See repository owner for license terms.

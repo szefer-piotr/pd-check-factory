@@ -4,6 +4,9 @@ jsonschema
 python-dotenv
 fastapi
 uvicorn
+typer
+openai
+openpyxl
 azure-identity
 azure-ai-documentintelligence
 azure-storage-blob
