@@ -20,12 +20,12 @@ dependencies = [
   "azure-storage-blob",
 ]
 
-[project.optional-dependencies]
-api = ["fastapi", "uvicorn"]
-
 [project.scripts]
 pdcheck = "pdcheck_factory.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["pdcheck_factory*"]
+
+[tool.setuptools.package-data]
+pdcheck_factory = ["prompts/*.md"]

@@ -2,8 +2,6 @@
 pydantic
 jsonschema
 python-dotenv
-fastapi
-uvicorn
 typer
 openai
 openpyxl

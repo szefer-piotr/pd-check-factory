@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from pdcheck_factory import blob_io
 from pdcheck_factory.json_util import load_schema, validate
+from pdcheck_factory.prompt_loader import load_prompt
 
 
 class _StrictModel(BaseModel):
@@ -143,6 +144,8 @@ def chat_json(
 ) -> Dict[str, Any]:
     client = _azure_client()
     deployment = deployment_name()
+    repair_parse_tmpl = load_prompt("repair_parse_user")
+    repair_schema_tmpl = load_prompt("repair_schema_user")
 
     messages: List[Dict[str, str]] = [
         {"role": "system", "content": system},
@@ -167,10 +170,7 @@ def chat_json(
             messages.append(
                 {
                     "role": "user",
-                    "content": (
-                        "Return only an object that matches the required schema exactly. "
-                        f"Previous issue: {refusal}"
-                    ),
+                    "content": repair_parse_tmpl.replace("__REFUSAL__", refusal),
                 }
             )
             continue
@@ -184,14 +184,11 @@ def chat_json(
             raise ValueError("Schema validation failed: " + "; ".join(v_errs[:15]))
 
         messages.append({"role": "assistant", "content": choice})
+        errors_block = "\n".join(v_errs[:25])
         messages.append(
             {
                 "role": "user",
-                "content": (
-                    "Fix the JSON to satisfy the schema. Validation errors:\n"
-                    + "\n".join(v_errs[:25])
-                    + "\nReturn only the corrected JSON object."
-                ),
+                "content": repair_schema_tmpl.replace("__ERRORS__", errors_block),
             }
         )
 
@@ -202,21 +199,10 @@ def extract_protocol_rules_kb(*, study_id: str, protocol_markdown: str) -> Dict[
     schema = load_schema("protocol_rules_kb.schema.json")
     now = datetime.now(timezone.utc).isoformat()
 
-    system = (
-        "You extract operational study rules from a clinical trial protocol. "
-        "Output must be a single JSON object matching the caller constraints. "
-        "Focus on requirements every enrolled subject must satisfy during the trial "
-        "(visits/windows, assessments, dosing compliance, prohibited meds, eligibility operations, "
-        "withdrawal rules, etc.). Each rule must be actionable and self-contained."
-    )
+    system = load_prompt("protocol_rules_kb_system")
     user = (
-        f'study_id: "{study_id}"\n'
-        f'generated_at (use exactly this ISO timestamp): "{now}"\n'
-        f'schema_version must be exactly "1.0.0".\n'
-        "rules[].rule_id must be unique strings like rule:001, rule:002, ...\n"
-        "Return JSON keys: schema_version, study_id, generated_at, optional summary, rules (array).\n\n"
-        "Protocol markdown follows.\n---\n"
-        f"{protocol_markdown[:190000]}"
+        load_prompt("protocol_rules_kb_user").format(study_id=study_id, now=now)
+        + protocol_markdown[:190000]
     )
 
     def _v(d: Dict[str, Any]) -> List[str]:
@@ -243,24 +229,11 @@ def draft_pd_candidates(
     now = datetime.now(timezone.utc).isoformat()
     rule_count = len(rules_kb.get("rules", []))
 
-    system = (
-        "You are a clinical data management expert. Given structured protocol rules and an annotated CRF "
-        "(aCRF) describing forms/fields, propose protocol deviation CANDIDATES: ways a participant could "
-        "fail to meet each rule using data capture implied by the aCRF. "
-        "Coverage is mandatory: generate at least one candidate for every protocol rule provided. "
-        "Every candidate_id must match pattern cand:##### with five digits (cand:00001, cand:00002, ...). "
-        "Use deviation categories only from the schema enum. "
-        "For source_evidence, use chunk_id 'protocol' and quote short verbatim protocol text when possible, "
-        "otherwise paraphrase clearly; source_references can be empty or short hints."
-    )
+    system = load_prompt("pd_candidates_system")
     user = (
-        f'study_id: "{study_id}"\n'
-        f'generated_at: "{now}"\n'
-        "schema_version must be exactly \"1.0.0\".\n"
-        f"The protocol has {rule_count} extracted rules.\n"
-        f"Return at least {rule_count} candidates (minimum one candidate per rule).\n"
-        "Return a JSON object with keys schema_version, study_id, generated_at, candidates.\n\n"
-        "Protocol rules KB (JSON):\n"
+        load_prompt("pd_candidates_user").format(
+            study_id=study_id, now=now, rule_count=rule_count
+        )
         + json.dumps(rules_kb, ensure_ascii=False)[:120000]
         + "\n\naCRF markdown (may be truncated):\n---\n"
         + acrf_markdown[:120000]
@@ -316,15 +289,8 @@ def draft_pd_logic(
             }
         )
 
-    system = (
-        "You draft operational detection logic for protocol deviation candidates. "
-        "For each candidate_id from the input list, output one logic_drafts entry with the SAME candidate_id. "
-        "required_source_data_domain_hints must name concrete domains (e.g. visit dates, dosing, labs, "
-        "procedures) informed by the aCRF. "
-        "computable_trigger_expression_draft should be plain-language or pseudo-SQL describing HOW to detect "
-        "the deviation from collected data - not executable code. "
-        "timings and windows: timing_evaluation_method and window_evaluation_method must be non-empty strings."
-    )
+    system = load_prompt("pd_logic_system")
+
     def _v_for_ids(expected_ids: set[str], d: Dict[str, Any]) -> List[str]:
         d.setdefault("generated_at", now)
         d.setdefault("study_id", study_id)
@@ -346,13 +312,12 @@ def draft_pd_logic(
         ids = {c["candidate_id"] for c in chunk if "candidate_id" in c}
         id_list = ", ".join(sorted(ids))
         user = (
-            f'study_id: "{study_id}"\n'
-            f'generated_at: "{now}"\n'
-            "schema_version must be exactly \"1.0.0\".\n"
-            "Return JSON with keys schema_version, study_id, generated_at, logic_drafts.\n"
-            f"Create exactly one logic_drafts entry for each of these candidate_ids ({len(ids)} total): {id_list}\n"
-            "Do not include any extra candidate_ids.\n\n"
-            "Candidates summary:\n"
+            load_prompt("pd_logic_user").format(
+                study_id=study_id,
+                now=now,
+                candidate_count=len(ids),
+                id_list=id_list,
+            )
             + json.dumps(chunk, ensure_ascii=False)[:80000]
             + "\n\nProtocol rules KB:\n"
             + json.dumps(rules_kb, ensure_ascii=False)[:60000]

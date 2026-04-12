@@ -18,7 +18,7 @@ cd /path/to/pd-check-factory
 python -m venv .venv
 source .venv/bin/activate   # or .venv\Scripts\activate on Windows
 pip install -U pip
-pip install -e ".[api]"    # or: pip install -r requirements.txt && pip install -e .
+pip install -e .           # or: pip install -r requirements.txt && pip install -e .
 ```
 
 The console script **`pdcheck`** is provided by the editable install (see `[project.scripts]` in `pyproject.toml`). Alternatively:
@@ -103,9 +103,9 @@ Use `--no-upload` on any command to only write under `output/` without Blob uplo
 - `schemas/pd_candidate_output.schema.json`, `schemas/pd_logic_output.schema.json` — LLM pass 2
 - `schemas/pd_draft_spec.schema.json` — merged workbook for review
 
-## Legacy scripts
+## LLM prompts
 
-`scripts/analyze_protocol.py` still works and now calls the shared library; it writes under `output/<study_id>/extractions/protocol/layout/` and uploads to `extractions/<study_id>/protocol/layout/`. Older `normalize_layout_output.py` / `triage_protocol_chunks.py` flows target different folder layouts and are optional for this MVP.
+System and user instructions for Azure OpenAI are Markdown files under [`pdcheck_factory/prompts/`](pdcheck_factory/prompts/). They are loaded at runtime via [`pdcheck_factory/prompt_loader.py`](pdcheck_factory/prompt_loader.py). Edit those files to change wording; input size limits (protocol/aCRF truncation) remain enforced in [`pdcheck_factory/llm.py`](pdcheck_factory/llm.py).
 
 ## License
 
