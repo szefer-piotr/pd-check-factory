@@ -19,6 +19,19 @@ def pipeline_rules_kb_blob(study_id: str) -> str:
     return f"pipeline/{study_id}/protocol_rules_kb.json"
 
 
+def protocol_sections_blob_prefix(study_id: str) -> str:
+    return f"pipeline/{study_id}/protocol_sections"
+
+
+def protocol_sections_manifest_blob(study_id: str) -> str:
+    return f"{protocol_sections_blob_prefix(study_id)}/sections_manifest.json"
+
+
+def protocol_section_step1_blob(study_id: str, section_id: str) -> str:
+    safe = section_id.replace(":", "_")
+    return f"{protocol_sections_blob_prefix(study_id)}/step1/{safe}.json"
+
+
 def pipeline_pd_dir_blob(study_id: str) -> str:
     return f"pipeline/{study_id}/pd"
 
@@ -53,6 +66,22 @@ def local_extraction_layout(study_id: str, doc_role: str, output_dir: Path) -> P
 
 def local_pipeline_rules_kb(study_id: str, output_dir: Path) -> Path:
     return local_study_root(study_id, output_dir) / "pipeline" / "protocol_rules_kb.json"
+
+
+def local_protocol_sections_dir(study_id: str, output_dir: Path) -> Path:
+    return local_study_root(study_id, output_dir) / "pipeline" / "protocol_sections"
+
+
+def local_protocol_sections_manifest(study_id: str, output_dir: Path) -> Path:
+    return local_protocol_sections_dir(study_id, output_dir) / "sections_manifest.json"
+
+
+def local_protocol_sections_raw_dir(study_id: str, output_dir: Path) -> Path:
+    return local_protocol_sections_dir(study_id, output_dir) / "raw"
+
+
+def local_protocol_sections_step1_dir(study_id: str, output_dir: Path) -> Path:
+    return local_protocol_sections_dir(study_id, output_dir) / "step1"
 
 
 def local_pipeline_pd_dir(study_id: str, output_dir: Path) -> Path:

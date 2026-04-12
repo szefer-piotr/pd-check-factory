@@ -4,19 +4,34 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import typer
 from dotenv import load_dotenv
 
 from pdcheck_factory import blob_io, di_layout, paths
 from pdcheck_factory import llm as llm_mod
-from pdcheck_factory.json_util import read_json, write_json
-from pdcheck_factory.merge import merge_and_validate_files
-from pdcheck_factory.pseudo_bundle import emit_pseudo_bundle
-from pdcheck_factory.xlsx_review import apply_dm_workbook, export_dm_workbook
-
+from pdcheck_factory.json_util import write_json
+from pdcheck_factory.protocol_markdown import (
+    build_sections_manifest,
+    format_section_for_prompt,
+    get_section_by_id,
+    load_manifest,
+    select_section_ids,
+    write_manifest,
+    write_numbered_fragment,
+)
 app = typer.Typer(no_args_is_help=True, help="PD Check Factory — Azure MVP monolith.")
+
+protocol_app = typer.Typer(help="Segment protocol Markdown and run Step 1 extraction per section.")
+sections_app = typer.Typer(help="List, preview, or extract sections.")
+protocol_app.add_typer(sections_app, name="sections")
+
+_STALE_LEGACY = (
+    "This command targets the removed v1 pipeline (candidates.json + logic_drafts.json). "
+    "Step 1 uses `pdcheck protocol segment` and `pdcheck protocol sections extract`. "
+    "A future Phase 2 adapter will bridge Step 1 JSON to pd_draft_specs."
+)
 
 
 def _load_env() -> None:
@@ -385,11 +400,7 @@ def extract(
     )
 
 
-def run_rules(
-    *, study_id: str, output_dir: Path, upload: bool
-) -> None:
-    """LLM pass 1: protocol markdown → protocol_rules_kb.json."""
-    _load_env()
+def _read_protocol_source_md(study_id: str, output_dir: Path) -> Path:
     proto_md = (
         paths.local_extraction_layout(study_id, "protocol", output_dir)
         / "rendered"
@@ -399,18 +410,151 @@ def run_rules(
         raise typer.BadParameter(
             f"Missing {proto_md}. Run `extract --study-id {study_id}` first."
         )
-    protocol_markdown = proto_md.read_text(encoding="utf-8")
-    kb = llm_mod.extract_protocol_rules_kb(
-        study_id=study_id, protocol_markdown=protocol_markdown
+    return proto_md
+
+
+def _optional_acrf_markdown(study_id: str, output_dir: Path) -> Optional[str]:
+    acrf_md = (
+        paths.local_extraction_layout(study_id, "acrf", output_dir)
+        / "rendered"
+        / "source.md"
     )
-    out = paths.local_pipeline_rules_kb(study_id, output_dir)
-    write_json(out, kb)
-    print(f"Wrote {out}")
+    if not acrf_md.is_file():
+        return None
+    return acrf_md.read_text(encoding="utf-8")
+
+
+def run_protocol_segment(
+    *,
+    study_id: str,
+    output_dir: Path,
+    upload: bool,
+    strip_page_markers: bool = True,
+    rollup_max_section_level: Optional[int] = None,
+) -> Path:
+    """Parse protocol source.md → sections_manifest.json (+ raw numbered fragments)."""
+    _load_env()
+    proto_md = _read_protocol_source_md(study_id, output_dir)
+    protocol_markdown = proto_md.read_text(encoding="utf-8")
+    manifest = build_sections_manifest(
+        protocol_markdown,
+        study_id=study_id,
+        strip_page_markers=strip_page_markers,
+        rollup_max_section_level=rollup_max_section_level,
+    )
+    out = paths.local_protocol_sections_manifest(study_id, output_dir)
+    write_manifest(out, manifest)
+    print(
+        f"Wrote {out} ({len(manifest.get('sections', []))} sections); "
+        f"manifest_schema_version={manifest.get('manifest_schema_version')!r}, "
+        f"di_page_markers_stripped={manifest.get('di_page_markers_stripped')}, "
+        f"rollup_max_section_level={manifest.get('rollup_max_section_level')}"
+    )
+    raw_dir = paths.local_protocol_sections_raw_dir(study_id, output_dir)
+    for sec in manifest.get("sections", []):
+        write_numbered_fragment(raw_dir, sec)
     _upload_if_enabled(
         out,
-        paths.pipeline_rules_kb_blob(study_id),
+        paths.protocol_sections_manifest_blob(study_id),
         upload=upload,
         content_type="application/json",
+    )
+    return out
+
+
+def run_protocol_sections_extract(
+    *,
+    study_id: str,
+    output_dir: Path,
+    upload: bool,
+    all_sections: bool,
+    section_id: List[str],
+    match_regex: Optional[str],
+    skip_section_id: List[str],
+    skip_regex: Optional[str],
+    include_acrf: bool,
+) -> None:
+    """Run Step 1 LLM per selected section; write pipeline/.../protocol_sections/step1/*.json."""
+    _load_env()
+    man_path = paths.local_protocol_sections_manifest(study_id, output_dir)
+    if not man_path.exists():
+        raise typer.BadParameter(
+            f"Missing {man_path}. Run `pdcheck protocol segment --study-id {study_id}` first."
+        )
+    manifest = load_manifest(man_path)
+    try:
+        ids = select_section_ids(
+            manifest,
+            all_sections=all_sections,
+            section_ids=section_id,
+            match_regex=match_regex,
+            skip_section_ids=skip_section_id,
+            skip_regex=skip_regex,
+        )
+    except ValueError as ex:
+        raise typer.BadParameter(str(ex)) from ex
+
+    acrf: Optional[str] = None
+    if include_acrf:
+        acrf = _optional_acrf_markdown(study_id, output_dir)
+        if acrf:
+            print("Including aCRF context in prompts (truncated by LLM layer).")
+        else:
+            print("No aCRF source.md found; protocol-only prompts.")
+
+    step1_dir = paths.local_protocol_sections_step1_dir(study_id, output_dir)
+    step1_dir.mkdir(parents=True, exist_ok=True)
+
+    for cid in ids:
+        sec = get_section_by_id(manifest, cid)
+        assert sec is not None
+        if not sec.get("sentences"):
+            print(f"Skip (no sentences): {cid}")
+            continue
+        print(f"Step 1 extract: {cid} …")
+        out_obj = llm_mod.extract_protocol_section_step1(
+            study_id=study_id,
+            section=sec,
+            acrf_markdown=acrf,
+        )
+        safe = cid.replace(":", "_")
+        out_path = step1_dir / f"{safe}.json"
+        write_json(out_path, out_obj)
+        print(f"  Wrote {out_path}")
+        _upload_if_enabled(
+            out_path,
+            paths.protocol_section_step1_blob(study_id, cid),
+            upload=upload,
+            content_type="application/json",
+        )
+
+
+def run_rules(
+    *,
+    study_id: str,
+    output_dir: Path,
+    upload: bool,
+    strip_page_markers: bool = True,
+    rollup_max_section_level: Optional[int] = None,
+) -> None:
+    """Alias: segment protocol + Step 1 extract for all sections."""
+    run_protocol_segment(
+        study_id=study_id,
+        output_dir=output_dir,
+        upload=upload,
+        strip_page_markers=strip_page_markers,
+        rollup_max_section_level=rollup_max_section_level,
+    )
+    run_protocol_sections_extract(
+        study_id=study_id,
+        output_dir=output_dir,
+        upload=upload,
+        all_sections=True,
+        section_id=[],
+        match_regex=None,
+        skip_section_id=[],
+        skip_regex=None,
+        include_acrf=True,
     )
 
 
@@ -419,60 +563,189 @@ def cmd_rules(
     study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
     output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
     upload: bool = typer.Option(True, "--upload/--no-upload"),
+    keep_di_page_markers: bool = typer.Option(
+        False,
+        "--keep-di-page-markers",
+        help="Keep DI PageHeader/PageFooter/PageNumber/PageBreak HTML comments in markdown.",
+    ),
+    rollup_to_level: Optional[int] = typer.Option(
+        None,
+        "--rollup-to-level",
+        min=1,
+        max=6,
+        help="Max ATX depth for manifest sections (1=# only … 6=######). Deeper headings roll into parent body.",
+    ),
 ) -> None:
-    """LLM pass 1: protocol markdown → protocol_rules_kb.json."""
-    run_rules(study_id=study_id, output_dir=output_dir, upload=upload)
+    """Segment protocol and run Step 1 extraction on every section (shortcut)."""
+    run_rules(
+        study_id=study_id,
+        output_dir=output_dir,
+        upload=upload,
+        strip_page_markers=not keep_di_page_markers,
+        rollup_max_section_level=rollup_to_level,
+    )
+
+
+@protocol_app.command("segment")
+def cmd_protocol_segment(
+    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
+    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
+    upload: bool = typer.Option(True, "--upload/--no-upload"),
+    keep_di_page_markers: bool = typer.Option(
+        False,
+        "--keep-di-page-markers",
+        help="Keep DI PageHeader/PageFooter/PageNumber/PageBreak HTML comments in markdown.",
+    ),
+    rollup_to_level: Optional[int] = typer.Option(
+        None,
+        "--rollup-to-level",
+        min=1,
+        max=6,
+        help="Max ATX depth for manifest sections (1=# only … 6=######). Deeper headings roll into parent body.",
+    ),
+) -> None:
+    """Build sections_manifest.json from protocol source.md."""
+    _load_env()
+    run_protocol_segment(
+        study_id=study_id,
+        output_dir=output_dir,
+        upload=upload,
+        strip_page_markers=not keep_di_page_markers,
+        rollup_max_section_level=rollup_to_level,
+    )
+
+
+@sections_app.command("list")
+def cmd_protocol_sections_list(
+    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
+    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
+) -> None:
+    """List section_id, heading level, and path for each section."""
+    man_path = paths.local_protocol_sections_manifest(study_id, output_dir)
+    if not man_path.exists():
+        raise typer.BadParameter(
+            f"Missing {man_path}. Run `pdcheck protocol segment` first."
+        )
+    manifest = load_manifest(man_path)
+    for sec in manifest.get("sections", []):
+        path_str = " > ".join(sec.get("section_path", []))
+        n = len(sec.get("sentences", []))
+        print(
+            f"{sec.get('section_id')}\tlvl={sec.get('heading_level')}\tsentences={n}\t{path_str}"
+        )
+
+
+@sections_app.command("preview")
+def cmd_protocol_sections_preview(
+    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
+    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
+    section_id: Optional[List[str]] = typer.Option(
+        None,
+        "--section-id",
+        help="Repeat to select multiple sections.",
+    ),
+    match_regex: Optional[str] = typer.Option(
+        None,
+        "--match-regex",
+        help="Select sections whose joined path matches this regex.",
+    ),
+) -> None:
+    """Print numbered sentences as sent to the Step 1 model."""
+    man_path = paths.local_protocol_sections_manifest(study_id, output_dir)
+    if not man_path.exists():
+        raise typer.BadParameter(
+            f"Missing {man_path}. Run `pdcheck protocol segment` first."
+        )
+    manifest = load_manifest(man_path)
+    sid_list = section_id or []
+    if not sid_list and not match_regex:
+        raise typer.BadParameter("Pass --section-id and/or --match-regex.")
+    try:
+        ids = select_section_ids(
+            manifest,
+            all_sections=False,
+            section_ids=sid_list,
+            match_regex=match_regex,
+            skip_section_ids=[],
+            skip_regex=None,
+        )
+    except ValueError as ex:
+        raise typer.BadParameter(str(ex)) from ex
+    for cid in ids:
+        sec = get_section_by_id(manifest, cid)
+        assert sec is not None
+        print("=" * 72)
+        print(format_section_for_prompt(sec))
+        print()
+
+
+@sections_app.command("extract")
+def cmd_protocol_sections_extract(
+    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
+    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
+    upload: bool = typer.Option(True, "--upload/--no-upload"),
+    all_sections: bool = typer.Option(
+        False,
+        "--all",
+        help="Process every section (respect skips).",
+    ),
+    section_id: Optional[List[str]] = typer.Option(
+        None,
+        "--section-id",
+        help="Repeat to select multiple sections.",
+    ),
+    match_regex: Optional[str] = typer.Option(
+        None,
+        "--match-regex",
+        help="Select sections whose joined path matches this regex.",
+    ),
+    skip_section_id: Optional[List[str]] = typer.Option(
+        None,
+        "--skip-section-id",
+        help="Repeat to skip section ids.",
+    ),
+    skip_regex: Optional[str] = typer.Option(
+        None,
+        "--skip-regex",
+        help="Skip sections whose joined path matches this regex.",
+    ),
+    no_acrf: bool = typer.Option(
+        False,
+        "--no-acrf",
+        help="Do not append aCRF context to prompts.",
+    ),
+) -> None:
+    """Run Step 1 LLM extraction for selected sections."""
+    _load_env()
+    sid_list = section_id or []
+    sk_list = skip_section_id or []
+    if not all_sections and not sid_list and not match_regex:
+        raise typer.BadParameter(
+            "Select sections with --all, --section-id, and/or --match-regex."
+        )
+    run_protocol_sections_extract(
+        study_id=study_id,
+        output_dir=output_dir,
+        upload=upload,
+        all_sections=all_sections,
+        section_id=sid_list,
+        match_regex=match_regex,
+        skip_section_id=sk_list,
+        skip_regex=skip_regex,
+        include_acrf=not no_acrf,
+    )
+
+
+app.add_typer(protocol_app, name="protocol")
 
 
 def run_draft_pd(*, study_id: str, output_dir: Path, upload: bool) -> None:
-    """LLM pass 2: rules KB + aCRF → candidates.json and logic_drafts.json."""
-    _load_env()
-    kb_path = paths.local_pipeline_rules_kb(study_id, output_dir)
-    if not kb_path.exists():
-        raise typer.BadParameter(f"Missing {kb_path}. Run `rules` first.")
-    rules_kb = read_json(kb_path)
-
-    acrf_md = (
-        paths.local_extraction_layout(study_id, "acrf", output_dir)
-        / "rendered"
-        / "source.md"
+    raise typer.BadParameter(
+        "draft-pd was removed. Use: "
+        f"`pdcheck protocol segment --study-id ...` then "
+        f"`pdcheck protocol sections extract --study-id ... --all` "
+        "(or `pdcheck rules` for both)."
     )
-    if not acrf_md.exists():
-        raise typer.BadParameter(
-            f"Missing {acrf_md}. Run `extract` without --skip-acrf first."
-        )
-    acrf_markdown = acrf_md.read_text(encoding="utf-8")
-
-    print("Running LLM: PD candidates...")
-    candidates = llm_mod.draft_pd_candidates(
-        study_id=study_id, rules_kb=rules_kb, acrf_markdown=acrf_markdown
-    )
-    pd_dir = paths.local_pipeline_pd_dir(study_id, output_dir)
-    cand_path = pd_dir / "candidates.json"
-    logic_path = pd_dir / "logic_drafts.json"
-    write_json(cand_path, candidates)
-    _upload_if_enabled(
-        cand_path,
-        paths.candidates_blob(study_id),
-        upload=upload,
-        content_type="application/json",
-    )
-
-    print("Running LLM: PD logic drafts...")
-    logic = llm_mod.draft_pd_logic(
-        study_id=study_id,
-        rules_kb=rules_kb,
-        acrf_markdown=acrf_markdown,
-        candidates=candidates,
-    )
-    write_json(logic_path, logic)
-    _upload_if_enabled(
-        logic_path,
-        paths.logic_drafts_blob(study_id),
-        upload=upload,
-        content_type="application/json",
-    )
-    print(f"Wrote {cand_path} and {logic_path}")
 
 
 @app.command("draft-pd")
@@ -481,28 +754,12 @@ def cmd_draft_pd(
     output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
     upload: bool = typer.Option(True, "--upload/--no-upload"),
 ) -> None:
-    """LLM pass 2: rules KB + aCRF → candidates.json and logic_drafts.json."""
+    """Removed; use `pdcheck protocol sections extract` after `protocol segment`."""
     run_draft_pd(study_id=study_id, output_dir=output_dir, upload=upload)
 
 
 def run_merge(*, study_id: str, output_dir: Path, upload: bool) -> None:
-    """Merge candidates + logic → pd_draft_specs.json (validated)."""
-    _load_env()
-    pd_dir = paths.local_pipeline_pd_dir(study_id, output_dir)
-    out_path = pd_dir / "pd_draft_specs.json"
-    merge_and_validate_files(
-        study_id=study_id,
-        candidates_path=pd_dir / "candidates.json",
-        logic_path=pd_dir / "logic_drafts.json",
-        output_path=out_path,
-    )
-    print(f"Wrote {out_path}")
-    _upload_if_enabled(
-        out_path,
-        paths.pd_draft_specs_blob(study_id),
-        upload=upload,
-        content_type="application/json",
-    )
+    raise typer.BadParameter(_STALE_LEGACY)
 
 
 @app.command()
@@ -511,7 +768,7 @@ def merge(
     output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
     upload: bool = typer.Option(True, "--upload/--no-upload"),
 ) -> None:
-    """Merge candidates + logic → pd_draft_specs.json (validated)."""
+    """Removed in Step 1; see `pdcheck merge --help` error text when invoked."""
     run_merge(study_id=study_id, output_dir=output_dir, upload=upload)
 
 
@@ -522,19 +779,7 @@ def cmd_export_review(
     upload: bool = typer.Option(True, "--upload/--no-upload"),
 ) -> None:
     """Export pd_draft_specs to an XLSX workbook for DM review."""
-    _load_env()
-    specs = paths.local_pipeline_pd_dir(study_id, output_dir) / "pd_draft_specs.json"
-    if not specs.exists():
-        raise typer.BadParameter(f"Missing {specs}. Run `merge` first.")
-    xlsx_path = paths.local_dm_review_workbook(study_id, output_dir)
-    export_dm_workbook(pd_specs_path=specs, output_path=xlsx_path)
-    print(f"Wrote {xlsx_path}")
-    _upload_if_enabled(
-        xlsx_path,
-        paths.dm_review_workbook_blob(study_id),
-        upload=upload,
-        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
+    raise typer.BadParameter(_STALE_LEGACY)
 
 
 @app.command("apply-review")
@@ -545,21 +790,7 @@ def cmd_apply_review(
     upload: bool = typer.Option(True, "--upload/--no-upload"),
 ) -> None:
     """Apply DM edits from workbook back into pd_draft_specs.json."""
-    _load_env()
-    specs_in = paths.local_pipeline_pd_dir(study_id, output_dir) / "pd_draft_specs.json"
-    if not specs_in.exists():
-        raise typer.BadParameter(f"Missing {specs_in}. Run `merge` first.")
-    specs_out = specs_in
-    apply_dm_workbook(
-        pd_specs_path=specs_in, workbook_path=workbook, output_specs_path=specs_out
-    )
-    print(f"Updated {specs_out}")
-    _upload_if_enabled(
-        specs_out,
-        paths.pd_draft_specs_blob(study_id),
-        upload=upload,
-        content_type="application/json",
-    )
+    raise typer.BadParameter(_STALE_LEGACY)
 
 
 @app.command("emit-pseudo")
@@ -569,19 +800,7 @@ def cmd_emit_pseudo(
     upload: bool = typer.Option(True, "--upload/--no-upload"),
 ) -> None:
     """Build pseudo_logic_bundle.json (+ .md) from current pd_draft_specs."""
-    _load_env()
-    specs = paths.local_pipeline_pd_dir(study_id, output_dir) / "pd_draft_specs.json"
-    if not specs.exists():
-        raise typer.BadParameter(f"Missing {specs}. Run `merge` (and optionally `apply-review`).")
-    out = paths.local_pseudo_bundle(study_id, output_dir)
-    emit_pseudo_bundle(pd_specs_path=specs, output_path=out, study_id=study_id)
-    print(f"Wrote {out} and {out.with_suffix('.md')}")
-    _upload_if_enabled(
-        out,
-        paths.pseudo_bundle_blob(study_id),
-        upload=upload,
-        content_type="application/json",
-    )
+    raise typer.BadParameter(_STALE_LEGACY)
 
 
 @app.command("run-all")
@@ -591,7 +810,7 @@ def cmd_run_all(
     skip_acrf: bool = typer.Option(False, "--skip-acrf"),
     upload: bool = typer.Option(True, "--upload/--no-upload"),
 ) -> None:
-    """extract → rules → draft-pd → merge (no XLSX / pseudo)."""
+    """extract → protocol segment + Step 1 extract for all sections (no merge / XLSX)."""
     if skip_acrf:
         raise typer.BadParameter("run-all requires aCRF; do not pass --skip-acrf.")
     run_extract(
@@ -607,9 +826,7 @@ def cmd_run_all(
         debug_blob=False,
     )
     run_rules(study_id=study_id, output_dir=output_dir, upload=upload)
-    run_draft_pd(study_id=study_id, output_dir=output_dir, upload=upload)
-    run_merge(study_id=study_id, output_dir=output_dir, upload=upload)
-    print("run-all complete through merge.")
+    print("run-all complete through Step 1 extraction.")
 
 
 def main() -> None:
