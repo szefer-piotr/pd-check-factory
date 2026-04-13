@@ -215,3 +215,23 @@ def describe_blob(
         return f"{blob_name} ({size} bytes)"
     except ResourceNotFoundError:
         return None
+
+
+def delete_blobs(
+    *,
+    blob_service: BlobServiceClient,
+    container_name: str,
+    blob_paths: List[str],
+) -> int:
+    """Delete blobs by exact paths. Returns number successfully deleted."""
+    container_client = blob_service.get_container_client(container_name)
+    deleted = 0
+    for path in blob_paths:
+        blob_name = path.lstrip("/")
+        blob_client = container_client.get_blob_client(blob_name)
+        try:
+            blob_client.delete_blob()
+            deleted += 1
+        except ResourceNotFoundError:
+            continue
+    return deleted

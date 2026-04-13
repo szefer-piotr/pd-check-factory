@@ -326,7 +326,6 @@ def validate_step1_output(
 
     valid_ids: Set[str] = {s["id"] for s in manifest_section.get("sentences", [])}
     rules: List[Dict[str, Any]] = output.get("rules", [])
-    deviations: List[Dict[str, Any]] = output.get("candidate_deviations", [])
 
     rule_ids = {r.get("rule_id") for r in rules if r.get("rule_id")}
     if len(rule_ids) != len(rules):
@@ -339,29 +338,26 @@ def validate_step1_output(
                 errs.append(f"Rule {rid!r} references unknown sentence id {ref!r}.")
 
     if not rules:
-        if deviations:
-            errs.append("When rules is empty, candidate_deviations must be empty.")
         return errs[:50]
 
-    dev_rule_ids = {d.get("parent_rule_id") for d in deviations}
-    missing_cov = rule_ids - dev_rule_ids
-    if missing_cov:
-        errs.append(
-            f"Each rule needs ≥1 deviation; missing coverage for: "
-            f"{sorted(missing_cov)[:10]}"
-        )
-
-    for d in deviations:
-        pr = d.get("parent_rule_id")
-        if pr not in rule_ids:
-            errs.append(
-                f"Deviation {d.get('deviation_id')!r} has unknown parent_rule_id {pr!r}."
-            )
-        for ref in d.get("sentence_refs", []) or []:
-            if ref not in valid_ids:
-                errs.append(
-                    f"Deviation {d.get('deviation_id')!r} references unknown sentence id {ref!r}."
-                )
+    seen_deviation_ids: Set[str] = set()
+    for r in rules:
+        rid = r.get("rule_id")
+        deviations: List[Dict[str, Any]] = r.get("candidate_deviations", []) or []
+        if not deviations:
+            errs.append(f"Rule {rid!r} must include at least one candidate_deviation.")
+            continue
+        for d in deviations:
+            did = d.get("deviation_id")
+            if did in seen_deviation_ids:
+                errs.append(f"deviation_id values must be unique; duplicate {did!r}.")
+            elif did:
+                seen_deviation_ids.add(did)
+            for ref in d.get("sentence_refs", []) or []:
+                if ref not in valid_ids:
+                    errs.append(
+                        f"Deviation {did!r} references unknown sentence id {ref!r}."
+                    )
 
     return errs[:50]
 

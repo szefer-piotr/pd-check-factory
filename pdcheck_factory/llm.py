@@ -15,9 +15,19 @@ from pdcheck_factory.json_util import load_schema, validate
 from pdcheck_factory.prompt_loader import load_prompt
 from pdcheck_factory.protocol_markdown import format_section_for_prompt, validate_step1_output
 
+STEP1_ACRF_MAX_CHARS = 60000
+STEP1_SECTION_PROMPT_MAX_CHARS = 160000
+
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+class Step1Deviation(_StrictModel):
+    deviation_id: str = Field(min_length=1)
+    scenario_description: str = Field(min_length=1)
+    example_violation_narrative: str = Field(min_length=1)
+    sentence_refs: List[str] = Field(min_length=1)
 
 
 class Step1Rule(_StrictModel):
@@ -25,14 +35,7 @@ class Step1Rule(_StrictModel):
     title: str = Field(min_length=1)
     atomic_requirement: str = Field(min_length=1)
     sentence_refs: List[str] = Field(min_length=1)
-
-
-class Step1Deviation(_StrictModel):
-    deviation_id: str = Field(min_length=1)
-    parent_rule_id: str = Field(min_length=1)
-    scenario_description: str = Field(min_length=1)
-    example_violation_narrative: str = Field(min_length=1)
-    sentence_refs: List[str] = Field(min_length=1)
+    candidate_deviations: List[Step1Deviation] = Field(min_length=1)
 
 
 class ProtocolSectionStep1Output(_StrictModel):
@@ -42,7 +45,12 @@ class ProtocolSectionStep1Output(_StrictModel):
     section_id: str = Field(min_length=1)
     section_path: List[str]
     rules: List[Step1Rule]
-    candidate_deviations: List[Step1Deviation]
+
+
+class Step2DedupJudgement(_StrictModel):
+    is_duplicate: bool
+    confidence: float = Field(ge=0.0, le=1.0)
+    rationale: str = Field(min_length=1)
 
 
 def _azure_client() -> AzureOpenAI:
@@ -88,6 +96,22 @@ def chat_json(
             messages=messages,
             response_format=response_model,
             temperature=0.0,
+        )
+        usage = getattr(resp, "usage", None)
+        prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
+        completion_tokens = (
+            getattr(usage, "completion_tokens", None) if usage else None
+        )
+        total_tokens = getattr(usage, "total_tokens", None) if usage else None
+        response_model_name = getattr(resp, "model", None)
+        print(
+            "[llm-usage] "
+            f"deployment={deployment!r} "
+            f"model={response_model_name!r} "
+            f"attempt={attempt + 1}/{max_repairs + 1} "
+            f"prompt_tokens={prompt_tokens} "
+            f"completion_tokens={completion_tokens} "
+            f"total_tokens={total_tokens}"
         )
         message = resp.choices[0].message
         choice = message.content or ""
@@ -138,7 +162,6 @@ def _empty_step1(
         "section_id": section["section_id"],
         "section_path": list(section["section_path"]),
         "rules": [],
-        "candidate_deviations": [],
     }
 
 
@@ -147,8 +170,8 @@ def extract_protocol_section_step1(
     study_id: str,
     section: Dict[str, Any],
     acrf_markdown: Optional[str] = None,
-    acrf_max_chars: int = 60000,
-    section_prompt_max_chars: int = 160000,
+    acrf_max_chars: int = STEP1_ACRF_MAX_CHARS,
+    section_prompt_max_chars: int = STEP1_SECTION_PROMPT_MAX_CHARS,
 ) -> Dict[str, Any]:
     """
     Step 1 LLM: atomic rules + candidate deviations + examples for one manifest section.
@@ -200,4 +223,62 @@ def extract_protocol_section_step1(
         user=user,
         response_model=ProtocolSectionStep1Output,
         validator=_v,
+    )
+
+
+def _validate_dedup_judgement(d: Dict[str, Any]) -> List[str]:
+    errs: List[str] = []
+    conf = d.get("confidence")
+    if not isinstance(conf, (int, float)):
+        errs.append("confidence must be a number.")
+    elif conf < 0.0 or conf > 1.0:
+        errs.append("confidence must be between 0.0 and 1.0.")
+    if not isinstance(d.get("rationale"), str) or not d.get("rationale", "").strip():
+        errs.append("rationale must be a non-empty string.")
+    return errs
+
+
+def judge_step2_rule_duplicate(
+    *,
+    title_a: str,
+    requirement_a: str,
+    title_b: str,
+    requirement_b: str,
+) -> Dict[str, Any]:
+    system = load_prompt("step2_rule_dedup_system")
+    user = load_prompt("step2_rule_dedup_user").format(
+        title_a=title_a,
+        requirement_a=requirement_a,
+        title_b=title_b,
+        requirement_b=requirement_b,
+    )
+    return chat_json(
+        system=system,
+        user=user,
+        response_model=Step2DedupJudgement,
+        validator=_validate_dedup_judgement,
+        max_repairs=1,
+    )
+
+
+def judge_step2_deviation_duplicate(
+    *,
+    scenario_a: str,
+    example_a: str,
+    scenario_b: str,
+    example_b: str,
+) -> Dict[str, Any]:
+    system = load_prompt("step2_deviation_dedup_system")
+    user = load_prompt("step2_deviation_dedup_user").format(
+        scenario_a=scenario_a,
+        example_a=example_a,
+        scenario_b=scenario_b,
+        example_b=example_b,
+    )
+    return chat_json(
+        system=system,
+        user=user,
+        response_model=Step2DedupJudgement,
+        validator=_validate_dedup_judgement,
+        max_repairs=1,
     )

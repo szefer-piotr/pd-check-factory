@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 import typer
 from dotenv import load_dotenv
 
 from pdcheck_factory import blob_io, di_layout, paths
 from pdcheck_factory import llm as llm_mod
-from pdcheck_factory.json_util import write_json
+from pdcheck_factory import step2_merge
+from pdcheck_factory.json_util import load_schema, read_json, validate, write_json
 from pdcheck_factory.protocol_markdown import (
     build_sections_manifest,
     format_section_for_prompt,
@@ -498,7 +500,18 @@ def run_protocol_sections_extract(
     if include_acrf:
         acrf = _optional_acrf_markdown(study_id, output_dir)
         if acrf:
-            print("Including aCRF context in prompts (truncated by LLM layer).")
+            acrf_chars_total = len(acrf.strip())
+            acrf_chars_used = min(acrf_chars_total, llm_mod.STEP1_ACRF_MAX_CHARS)
+            pct_used = (
+                (acrf_chars_used / acrf_chars_total) * 100.0
+                if acrf_chars_total
+                else 0.0
+            )
+            print(
+                "Including aCRF context in prompts "
+                f"(truncated by LLM layer): {acrf_chars_used}/{acrf_chars_total} "
+                f"chars ({pct_used:.1f}%)."
+            )
         else:
             print("No aCRF source.md found; protocol-only prompts.")
 
@@ -558,6 +571,122 @@ def run_rules(
     )
 
 
+def run_clear_stage(
+    *,
+    study_id: str,
+    stage: Literal["extraction", "step1"],
+    output_dir: Path,
+    clear_blob: bool,
+) -> None:
+    """Delete local artifacts (and optionally blob artifacts) for one stage."""
+    if stage == "extraction":
+        targets = [
+            paths.local_extraction_layout(study_id, "protocol", output_dir),
+            paths.local_extraction_layout(study_id, "acrf", output_dir),
+        ]
+        blob_prefixes = [
+            paths.extraction_layout_prefix(study_id, "protocol"),
+            paths.extraction_layout_prefix(study_id, "acrf"),
+        ]
+    elif stage == "step1":
+        targets = [paths.local_protocol_sections_step1_dir(study_id, output_dir)]
+        blob_prefixes = [f"{paths.protocol_sections_blob_prefix(study_id)}/step1/"]
+    else:
+        raise typer.BadParameter(f"Unsupported stage: {stage}")
+
+    removed = 0
+    for target in targets:
+        if target.exists():
+            shutil.rmtree(target)
+            removed += 1
+            print(f"Removed {target}")
+        else:
+            print(f"Skip (missing): {target}")
+
+    if not removed:
+        print(
+            f"No {stage} outputs found for study_id={study_id!r} under {output_dir}."
+        )
+    if not clear_blob:
+        return
+
+    bs = blob_io.blob_service_from_env()
+    container = blob_io.container_from_env()
+    blob_names: List[str] = []
+    for prefix in blob_prefixes:
+        names = blob_io.list_blob_names_with_prefix(
+            blob_service=bs,
+            container_name=container,
+            prefix=prefix,
+        )
+        blob_names.extend(names)
+
+    if not blob_names:
+        print(f"No blob {stage} outputs found for study_id={study_id!r}.")
+        return
+
+    deleted = blob_io.delete_blobs(
+        blob_service=bs,
+        container_name=container,
+        blob_paths=blob_names,
+    )
+    print(
+        f"Deleted {deleted}/{len(blob_names)} blob object(s) "
+        f"for stage={stage!r} in container {container!r}."
+    )
+
+
+def run_step2_merge(
+    *,
+    study_id: str,
+    output_dir: Path,
+    upload: bool,
+) -> Path:
+    """Merge and semantic-dedup all Step 1 section outputs into one Step 2 artifact."""
+    _load_env()
+    step1_dir = paths.local_protocol_sections_step1_dir(study_id, output_dir)
+    if not step1_dir.is_dir():
+        raise typer.BadParameter(
+            f"Missing {step1_dir}. Run `pdcheck protocol sections extract --study-id {study_id} --all` first."
+        )
+    step1_files = sorted(step1_dir.glob("*.json"))
+    if not step1_files:
+        raise typer.BadParameter(f"No Step 1 JSON files found under {step1_dir}.")
+
+    step1_schema = load_schema("protocol_section_step1.schema.json")
+    step1_objects = []
+    for path in step1_files:
+        obj = read_json(path)
+        errs = validate(obj, step1_schema)
+        if errs:
+            raise typer.BadParameter(
+                f"Step 1 file failed schema validation: {path} :: {'; '.join(errs[:5])}"
+            )
+        step1_objects.append(obj)
+
+    merged = step2_merge.merge_step1_outputs(
+        study_id=study_id,
+        step1_objects=step1_objects,
+    )
+    step2_schema = load_schema("protocol_sections_step2_merged.schema.json")
+    out_errs = validate(merged, step2_schema)
+    if out_errs:
+        raise typer.BadParameter(
+            "Step 2 output failed schema validation: " + "; ".join(out_errs[:10])
+        )
+
+    out_path = paths.local_protocol_sections_step2_merged(study_id, output_dir)
+    write_json(out_path, merged)
+    print(f"Wrote {out_path}")
+    _upload_if_enabled(
+        out_path,
+        paths.protocol_sections_step2_merged_blob(study_id),
+        upload=upload,
+        content_type="application/json",
+    )
+    return out_path
+
+
 @app.command("rules")
 def cmd_rules(
     study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
@@ -584,6 +713,41 @@ def cmd_rules(
         strip_page_markers=not keep_di_page_markers,
         rollup_max_section_level=rollup_to_level,
     )
+
+
+@app.command("clear-stage")
+def cmd_clear_stage(
+    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
+    stage: Literal["extraction", "step1"] = typer.Option(
+        ...,
+        "--stage",
+        help="Pipeline stage outputs to clear: extraction or step1.",
+    ),
+    clear_blob: bool = typer.Option(
+        False,
+        "--blob",
+        help="Also clear corresponding blob outputs for the selected stage.",
+    ),
+    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
+) -> None:
+    """Delete local outputs for a selected pipeline stage."""
+    _load_env()
+    run_clear_stage(
+        study_id=study_id,
+        stage=stage,
+        output_dir=output_dir,
+        clear_blob=clear_blob,
+    )
+
+
+@app.command("step2")
+def cmd_step2(
+    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
+    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
+    upload: bool = typer.Option(True, "--upload/--no-upload"),
+) -> None:
+    """Merge Step 1 section outputs and deduplicate semantic duplicates."""
+    run_step2_merge(study_id=study_id, output_dir=output_dir, upload=upload)
 
 
 @protocol_app.command("segment")

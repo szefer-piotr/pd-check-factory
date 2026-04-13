@@ -32,6 +32,10 @@ def protocol_section_step1_blob(study_id: str, section_id: str) -> str:
     return f"{protocol_sections_blob_prefix(study_id)}/step1/{safe}.json"
 
 
+def protocol_sections_step2_merged_blob(study_id: str) -> str:
+    return f"{protocol_sections_blob_prefix(study_id)}/step2_merged.json"
+
+
 def pipeline_pd_dir_blob(study_id: str) -> str:
     return f"pipeline/{study_id}/pd"
 
@@ -82,6 +86,10 @@ def local_protocol_sections_raw_dir(study_id: str, output_dir: Path) -> Path:
 
 def local_protocol_sections_step1_dir(study_id: str, output_dir: Path) -> Path:
     return local_protocol_sections_dir(study_id, output_dir) / "step1"
+
+
+def local_protocol_sections_step2_merged(study_id: str, output_dir: Path) -> Path:
+    return local_protocol_sections_dir(study_id, output_dir) / "step2_merged.json"
 
 
 def local_pipeline_pd_dir(study_id: str, output_dir: Path) -> Path:

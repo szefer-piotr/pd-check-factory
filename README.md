@@ -1,6 +1,6 @@
 # PD Check Factory
 
-Single **Python** application to extract text and tables from clinical trial **protocol** and **annotated CRF (aCRF)** PDFs with **Azure AI Document Intelligence**, segment the protocol Markdown into sections with **numbered sentences**, run **Step 1 Azure OpenAI extraction** (atomic protocol rules plus linked candidate deviations and short violation examples per section), validate JSON, and optionally upload artifacts to Blob.
+Single **Python** application to extract text and tables from clinical trial **protocol** and **annotated CRF (aCRF)** PDFs with **Azure AI Document Intelligence**, segment the protocol Markdown into sections with **numbered sentences**, run **Step 1 Azure OpenAI extraction** (atomic protocol rules plus per-rule nested candidate deviations and short violation examples per section), validate JSON, and optionally upload artifacts to Blob.
 
 **Step 1 scope:** rules, deviations, traceability to sentence IDs, and illustrative examples only—no dataset column mapping, programming logic, or merged cross-section deduplication. A future Phase 2 can bridge Step 1 JSON into DM review Excel / pseudo-logic (`merge`, `export-review`, etc.).
 
@@ -42,6 +42,7 @@ Copy `.env.example` to `.env` and fill in endpoints and keys. The CLI loads `.en
 | Raw PDF uploads | `raw/<study_id>/protocol.pdf`, `raw/<study_id>/acrf.pdf` |
 | DI outputs | `extractions/<study_id>/protocol/layout/...`, `extractions/<study_id>/acrf/layout/...` |
 | Protocol sections (Step 1) | `pipeline/<study_id>/protocol_sections/sections_manifest.json`, `pipeline/<study_id>/protocol_sections/step1/<section_id>.json` |
+| Protocol sections (Step 2 merged) | `pipeline/<study_id>/protocol_sections/step2_merged.json` |
 | Legacy v1 PD JSON (unused by default) | `pipeline/<study_id>/pd/...` |
 | DM workbook | `review/<study_id>/dm_review_roundtrip.xlsx` |
 | Pseudo bundle | `artifacts/<study_id>/pseudo_logic_bundle.json` |
@@ -96,6 +97,17 @@ Local cache mirrors the same structure under `output/<study_id>/`.
    pdcheck rules --study-id MY-STUDY
    ```
 
+6. **Step 2 merge + semantic dedup** (merge all Step 1 section outputs):
+
+   ```bash
+   pdcheck step2 --study-id MY-STUDY
+   ```
+
+   This stage reads all `protocol_sections/step1/*.json`, removes semantic duplicates
+   in rules and their nested candidate deviations, and writes one merged artifact:
+   `pipeline/<study_id>/protocol_sections/step2_merged.json`.
+   Dedup is LLM-assisted, so runtime and token cost are higher than a pure local merge.
+
 **Removed / stale in Step 1:** `draft-pd`, `merge`, `export-review`, `apply-review`, and `emit-pseudo` fail with a message pointing at Step 1 commands; they will be reconnected after a Phase 2 adapter exists.
 
 **End-to-end** through Step 1 (extract PDFs → segment → LLM per section):
@@ -108,6 +120,14 @@ pdcheck run-all --study-id MY-STUDY
 
 Use `--no-upload` on any command to only write under `output/` without Blob uploads.
 
+Clear local outputs for one stage:
+
+```bash
+pdcheck clear-stage --study-id MY-STUDY --stage extraction
+pdcheck clear-stage --study-id MY-STUDY --stage step1
+pdcheck clear-stage --study-id MY-STUDY --stage step1 --blob
+```
+
 ## Sentence splitting
 
 Section bodies are split into sentences with **stdlib heuristics** (including keeping fenced ``` blocks intact). Complex protocol typography may produce imperfect boundaries; sentence IDs remain stable for a given manifest.
@@ -115,6 +135,7 @@ Section bodies are split into sentences with **stdlib heuristics** (including ke
 ## JSON schemas
 
 - `schemas/protocol_section_step1.schema.json` — Step 1 output per section (`schema_version` **2.0.0**)
+- `schemas/protocol_sections_step2_merged.schema.json` — Step 2 merged output (`schema_version` **2.1.0**)
 - `schemas/protocol_rules_kb.schema.json`, `schemas/pd_candidate_output.schema.json`, `schemas/pd_logic_output.schema.json`, `schemas/pd_draft_spec.schema.json` — retained for reference / future Phase 2; not produced by the default Step 1 CLI path
 
 ## LLM prompts
