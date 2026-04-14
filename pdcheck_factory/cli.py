@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 from pdcheck_factory import blob_io, di_layout, paths
 from pdcheck_factory import llm as llm_mod
 from pdcheck_factory import step2_merge
+from pdcheck_factory import step2_review
 from pdcheck_factory.json_util import load_schema, read_json, validate, write_json
 from pdcheck_factory.protocol_markdown import (
     build_sections_manifest,
@@ -574,7 +575,7 @@ def run_rules(
 def run_clear_stage(
     *,
     study_id: str,
-    stage: Literal["extraction", "step1"],
+    stage: Literal["extraction", "step1", "step2"],
     output_dir: Path,
     clear_blob: bool,
 ) -> None:
@@ -591,13 +592,19 @@ def run_clear_stage(
     elif stage == "step1":
         targets = [paths.local_protocol_sections_step1_dir(study_id, output_dir)]
         blob_prefixes = [f"{paths.protocol_sections_blob_prefix(study_id)}/step1/"]
+    elif stage == "step2":
+        targets = [paths.local_pipeline_step2_dir(study_id, output_dir)]
+        blob_prefixes = [f"{paths.pipeline_step2_blob_prefix(study_id)}/"]
     else:
         raise typer.BadParameter(f"Unsupported stage: {stage}")
 
     removed = 0
     for target in targets:
         if target.exists():
-            shutil.rmtree(target)
+            if target.is_dir():
+                shutil.rmtree(target)
+            else:
+                target.unlink()
             removed += 1
             print(f"Removed {target}")
         else:
@@ -676,6 +683,7 @@ def run_step2_merge(
         )
 
     out_path = paths.local_protocol_sections_step2_merged(study_id, output_dir)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     write_json(out_path, merged)
     print(f"Wrote {out_path}")
     _upload_if_enabled(
@@ -685,6 +693,138 @@ def run_step2_merge(
         content_type="application/json",
     )
     return out_path
+
+
+def run_step2_export_review(
+    *,
+    study_id: str,
+    output_dir: Path,
+    workbook: Optional[Path],
+    upload: bool,
+) -> Path:
+    _load_env()
+    step2_path = paths.local_protocol_sections_step2_merged(study_id, output_dir)
+    if not step2_path.is_file():
+        raise typer.BadParameter(
+            f"Missing {step2_path}. Run `pdcheck step2 --study-id {study_id}` first."
+        )
+    workbook_path = workbook or paths.local_protocol_sections_step2_review_workbook(
+        study_id, output_dir
+    )
+    workbook_path.parent.mkdir(parents=True, exist_ok=True)
+    out = step2_review.export_step2_review_workbook(
+        step2_json_path=step2_path,
+        workbook_path=workbook_path,
+    )
+    print(f"Wrote {out}")
+    _upload_if_enabled(
+        out,
+        paths.protocol_sections_step2_review_workbook_blob(study_id),
+        upload=upload,
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    return out
+
+
+def _context_from_sections(*, study_id: str, output_dir: Path, section_ids: List[str]) -> str:
+    raw_dir = paths.local_protocol_sections_raw_dir(study_id, output_dir)
+    chunks: List[str] = []
+    for sid in sorted(set(section_ids)):
+        safe = sid.replace(":", "_")
+        path = raw_dir / f"{safe}.md"
+        if not path.is_file():
+            continue
+        chunks.append(path.read_text(encoding="utf-8"))
+    if chunks:
+        return "\n\n---\n\n".join(chunks)
+    return _read_protocol_source_md(study_id, output_dir).read_text(encoding="utf-8")
+
+
+def run_step2_apply_review(
+    *,
+    study_id: str,
+    output_dir: Path,
+    workbook: Path,
+    context_mode: Literal["full_protocol", "sections_only"],
+    strict: bool,
+    upload: bool,
+) -> None:
+    _load_env()
+    step2_path = paths.local_protocol_sections_step2_merged(study_id, output_dir)
+    if not step2_path.is_file():
+        raise typer.BadParameter(
+            f"Missing {step2_path}. Run `pdcheck step2 --study-id {study_id}` first."
+        )
+    if not workbook.is_file():
+        raise typer.BadParameter(f"Workbook not found: {workbook}")
+    step2_obj = read_json(step2_path)
+    review_rows = step2_review.read_step2_review_workbook(workbook)
+
+    full_protocol = _read_protocol_source_md(study_id, output_dir).read_text(encoding="utf-8")
+
+    def _revalidate(rule: dict, deviation: dict, dm_comments: str) -> List[dict]:
+        if context_mode == "full_protocol":
+            protocol_context = full_protocol
+        else:
+            protocol_context = _context_from_sections(
+                study_id=study_id,
+                output_dir=output_dir,
+                section_ids=list(deviation.get("source_section_ids", [])),
+            )
+        return llm_mod.revalidate_deviation_with_dm_feedback(
+            study_id=study_id,
+            rule=rule,
+            deviation=deviation,
+            dm_comments=dm_comments,
+            protocol_context=protocol_context,
+            context_mode=context_mode,
+        )
+
+    final_obj, audit_obj, final_rows = step2_review.apply_review_and_finalize(
+        step2_obj=step2_obj,
+        review_rows=review_rows,
+        revalidate_deviation=_revalidate,
+        strict=strict,
+    )
+
+    final_json_path = paths.local_protocol_sections_step2_validated(study_id, output_dir)
+    audit_json_path = paths.local_protocol_sections_step2_validation_audit(
+        study_id, output_dir
+    )
+    final_json_path.parent.mkdir(parents=True, exist_ok=True)
+    step2_review.write_finalized_step2_outputs(
+        final_obj=final_obj,
+        audit_obj=audit_obj,
+        final_json_path=final_json_path,
+        audit_json_path=audit_json_path,
+    )
+    print(f"Wrote {final_json_path}")
+    print(f"Wrote {audit_json_path}")
+    reviewed_workbook = paths.local_dm_review_workbook(study_id, output_dir)
+    step2_review.write_final_review_workbook(
+        output_workbook=reviewed_workbook,
+        rows=final_rows,
+    )
+    print(f"Wrote {reviewed_workbook}")
+
+    _upload_if_enabled(
+        final_json_path,
+        paths.protocol_sections_step2_validated_blob(study_id),
+        upload=upload,
+        content_type="application/json",
+    )
+    _upload_if_enabled(
+        audit_json_path,
+        paths.protocol_sections_step2_validation_audit_blob(study_id),
+        upload=upload,
+        content_type="application/json",
+    )
+    _upload_if_enabled(
+        reviewed_workbook,
+        paths.dm_review_workbook_blob(study_id),
+        upload=upload,
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 
 @app.command("rules")
@@ -718,10 +858,10 @@ def cmd_rules(
 @app.command("clear-stage")
 def cmd_clear_stage(
     study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
-    stage: Literal["extraction", "step1"] = typer.Option(
+    stage: Literal["extraction", "step1", "step2"] = typer.Option(
         ...,
         "--stage",
-        help="Pipeline stage outputs to clear: extraction or step1.",
+        help="Pipeline stage outputs to clear: extraction, step1, or step2.",
     ),
     clear_blob: bool = typer.Option(
         False,
@@ -748,6 +888,52 @@ def cmd_step2(
 ) -> None:
     """Merge Step 1 section outputs and deduplicate semantic duplicates."""
     run_step2_merge(study_id=study_id, output_dir=output_dir, upload=upload)
+
+
+@app.command("step2-export-review")
+def cmd_step2_export_review(
+    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
+    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
+    workbook: Optional[Path] = typer.Option(
+        None, "--workbook", "-w", help="Destination workbook path (.xlsx)."
+    ),
+    upload: bool = typer.Option(True, "--upload/--no-upload"),
+) -> None:
+    """Export Step 2 merged deviations to DM review workbook."""
+    run_step2_export_review(
+        study_id=study_id,
+        output_dir=output_dir,
+        workbook=workbook,
+        upload=upload,
+    )
+
+
+@app.command("step2-apply-review")
+def cmd_step2_apply_review(
+    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
+    workbook: Path = typer.Option(..., "--workbook", "-w", help="Reviewed workbook path"),
+    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
+    context_mode: Literal["full_protocol", "sections_only"] = typer.Option(
+        "full_protocol",
+        "--context-mode",
+        help="Protocol context for revalidation prompt.",
+    ),
+    strict: bool = typer.Option(
+        False,
+        "--strict",
+        help="Fail if any revalidation rows remain unresolved or invalid.",
+    ),
+    upload: bool = typer.Option(True, "--upload/--no-upload"),
+) -> None:
+    """Apply reviewed DM workbook and produce validated Step 2 outputs."""
+    run_step2_apply_review(
+        study_id=study_id,
+        output_dir=output_dir,
+        workbook=workbook,
+        context_mode=context_mode,
+        strict=strict,
+        upload=upload,
+    )
 
 
 @protocol_app.command("segment")

@@ -53,6 +53,16 @@ class Step2DedupJudgement(_StrictModel):
     rationale: str = Field(min_length=1)
 
 
+class Step2RevalidatedDeviation(_StrictModel):
+    scenario_description: str = Field(min_length=1)
+    example_violation_narrative: str = Field(min_length=1)
+    sentence_refs: List[str] = Field(min_length=1)
+
+
+class Step2RevalidatedDeviationResponse(_StrictModel):
+    deviations: List[Step2RevalidatedDeviation] = Field(min_length=1)
+
+
 def _azure_client() -> AzureOpenAI:
     endpoint = blob_io.require_env("AZURE_OPENAI_ENDPOINT")
     api_key = os.getenv("AZURE_OPENAI_API_KEY")
@@ -282,3 +292,75 @@ def judge_step2_deviation_duplicate(
         validator=_validate_dedup_judgement,
         max_repairs=1,
     )
+
+
+def _validate_step2_revalidated_deviation(d: Dict[str, Any]) -> List[str]:
+    errs: List[str] = []
+    deviations = d.get("deviations")
+    if not isinstance(deviations, list) or not deviations:
+        return ["deviations must be a non-empty list."]
+    for idx, dev in enumerate(deviations):
+        if not isinstance(dev, dict):
+            errs.append(f"deviations[{idx}] must be an object.")
+            continue
+        for key in ("scenario_description", "example_violation_narrative"):
+            value = dev.get(key)
+            if not isinstance(value, str) or not value.strip():
+                errs.append(f"deviations[{idx}].{key} must be a non-empty string.")
+        refs = dev.get("sentence_refs")
+        if not isinstance(refs, list) or not refs:
+            errs.append(f"deviations[{idx}].sentence_refs must be a non-empty list.")
+        else:
+            bad = [r for r in refs if not isinstance(r, str) or not r.strip()]
+            if bad:
+                errs.append(
+                    f"deviations[{idx}].sentence_refs must contain non-empty strings."
+                )
+    return errs
+
+
+def revalidate_deviation_with_dm_feedback(
+    *,
+    study_id: str,
+    rule: Dict[str, Any],
+    deviation: Dict[str, Any],
+    dm_comments: str,
+    protocol_context: str,
+    context_mode: Literal["full_protocol", "sections_only"] = "full_protocol",
+) -> List[Dict[str, Any]]:
+    """Reconsider one Step 2 deviation using DM comments and protocol context."""
+    now = datetime.now(timezone.utc).isoformat()
+    system = load_prompt("step2_revalidate_deviation_system")
+    user = load_prompt("step2_revalidate_deviation_user").format(
+        study_id=study_id,
+        now=now,
+        context_mode=context_mode,
+        rule_json=json.dumps(rule, ensure_ascii=False, indent=2),
+        deviation_json=json.dumps(deviation, ensure_ascii=False, indent=2),
+        dm_comments=dm_comments.strip(),
+        protocol_context=protocol_context.strip(),
+    )
+    out = chat_json(
+        system=system,
+        user=user,
+        response_model=Step2RevalidatedDeviationResponse,
+        validator=_validate_step2_revalidated_deviation,
+        max_repairs=1,
+    )
+    result: List[Dict[str, Any]] = []
+    for idx, item in enumerate(out.get("deviations", [])):
+        base_id = deviation.get("deviation_id", "dev")
+        suffix = "" if idx == 0 else f"-r{idx + 1}"
+        result.append(
+            {
+                "deviation_id": f"{base_id}{suffix}",
+                "scenario_description": item["scenario_description"].strip(),
+                "example_violation_narrative": item[
+                    "example_violation_narrative"
+                ].strip(),
+                "sentence_refs": [s.strip() for s in item["sentence_refs"]],
+                "source_section_ids": list(deviation.get("source_section_ids", [])),
+                "source_section_paths": list(deviation.get("source_section_paths", [])),
+            }
+        )
+    return result

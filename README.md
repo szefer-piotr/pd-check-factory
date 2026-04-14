@@ -1,8 +1,8 @@
 # PD Check Factory
 
-Single **Python** application to extract text and tables from clinical trial **protocol** and **annotated CRF (aCRF)** PDFs with **Azure AI Document Intelligence**, segment the protocol Markdown into sections with **numbered sentences**, run **Step 1 Azure OpenAI extraction** (atomic protocol rules plus per-rule nested candidate deviations and short violation examples per section), validate JSON, and optionally upload artifacts to Blob.
+Single **Python** application to extract text and tables from clinical trial **protocol** and **annotated CRF (aCRF)** PDFs with **Azure AI Document Intelligence**, segment the protocol Markdown into sections with **numbered sentences**, run **Step 1 Azure OpenAI extraction** (atomic protocol rules plus per-rule nested candidate deviations and short violation examples per section), run **Step 2 semantic merge/dedup**, support **DM Excel validation round-trip**, and optionally upload artifacts to Blob.
 
-**Step 1 scope:** rules, deviations, traceability to sentence IDs, and illustrative examples only—no dataset column mapping, programming logic, or merged cross-section deduplication. A future Phase 2 can bridge Step 1 JSON into DM review Excel / pseudo-logic (`merge`, `export-review`, etc.).
+**Current scope:** Step 1 extraction, Step 2 merge/dedup, and DM validation round-trip (`step2-export-review`, `step2-apply-review`) for protocol deviations. Legacy v1 pseudo-logic commands remain out of the default path.
 
 There is no Azure Functions, Event Grid, or separate review UI in this MVP—only Blob storage, DI, and OpenAI.
 
@@ -42,7 +42,9 @@ Copy `.env.example` to `.env` and fill in endpoints and keys. The CLI loads `.en
 | Raw PDF uploads | `raw/<study_id>/protocol.pdf`, `raw/<study_id>/acrf.pdf` |
 | DI outputs | `extractions/<study_id>/protocol/layout/...`, `extractions/<study_id>/acrf/layout/...` |
 | Protocol sections (Step 1) | `pipeline/<study_id>/protocol_sections/sections_manifest.json`, `pipeline/<study_id>/protocol_sections/step1/<section_id>.json` |
-| Protocol sections (Step 2 merged) | `pipeline/<study_id>/protocol_sections/step2_merged.json` |
+| Protocol sections (Step 2 merged) | `pipeline/<study_id>/step2/step2_merged.json` |
+| Step 2 DM workbook (export) | `pipeline/<study_id>/step2/step2_dm_review.xlsx` |
+| Step 2 DM outputs (apply) | `pipeline/<study_id>/step2/step2_validated.json`, `pipeline/<study_id>/step2/step2_validation_audit.json`, `pipeline/<study_id>/step2/step2_dm_review.reviewed.xlsx` |
 | Legacy v1 PD JSON (unused by default) | `pipeline/<study_id>/pd/...` |
 | DM workbook | `review/<study_id>/dm_review_roundtrip.xlsx` |
 | Pseudo bundle | `artifacts/<study_id>/pseudo_logic_bundle.json` |
@@ -105,10 +107,45 @@ Local cache mirrors the same structure under `output/<study_id>/`.
 
    This stage reads all `protocol_sections/step1/*.json`, removes semantic duplicates
    in rules and their nested candidate deviations, and writes one merged artifact:
-   `pipeline/<study_id>/protocol_sections/step2_merged.json`.
+   `pipeline/<study_id>/step2/step2_merged.json`.
    Dedup is LLM-assisted, so runtime and token cost are higher than a pure local merge.
 
-**Removed / stale in Step 1:** `draft-pd`, `merge`, `export-review`, `apply-review`, and `emit-pseudo` fail with a message pointing at Step 1 commands; they will be reconnected after a Phase 2 adapter exists.
+7. **Step 2 DM review export** (one deviation per row in Excel):
+
+   ```bash
+   pdcheck step2-export-review --study-id MY-STUDY
+   ```
+
+   Optional:
+   - `--workbook /path/to/review.xlsx` to override output path
+   - `--no-upload` for local-only output
+
+   Workbook schema includes DM-editable columns:
+   - `validation_status` with allowed values: `accepted`, `to_review`, `rejected`
+   - `dm_comments` free text
+
+8. **Step 2 DM review apply + revalidation loop**:
+
+   ```bash
+   pdcheck step2-apply-review --study-id MY-STUDY --workbook output/MY-STUDY/pipeline/step2/step2_dm_review.xlsx
+   ```
+
+   Behavior:
+   - `accepted` deviations remain unchanged.
+   - `rejected` deviations are removed from final output.
+   - `to_review` deviations are sent back to the LLM with DM comments plus protocol context and replaced when a valid corrected deviation is returned.
+
+   Output artifacts:
+   - `pipeline/<study_id>/step2/step2_validated.json`
+   - `pipeline/<study_id>/step2/step2_validation_audit.json`
+   - `pipeline/<study_id>/step2/step2_dm_review.reviewed.xlsx` (only corrected rows highlighted in yellow)
+
+   Optional flags:
+   - `--context-mode full_protocol|sections_only` (default `full_protocol`)
+   - `--strict` (fail when unresolved `to_review` rows remain)
+   - `--no-upload`
+
+**Removed / stale in Step 1:** `draft-pd`, `merge`, `export-review`, `apply-review`, and `emit-pseudo` still target the legacy v1 pipeline and remain disabled.
 
 **End-to-end** through Step 1 (extract PDFs → segment → LLM per section):
 
@@ -125,7 +162,9 @@ Clear local outputs for one stage:
 ```bash
 pdcheck clear-stage --study-id MY-STUDY --stage extraction
 pdcheck clear-stage --study-id MY-STUDY --stage step1
+pdcheck clear-stage --study-id MY-STUDY --stage step2
 pdcheck clear-stage --study-id MY-STUDY --stage step1 --blob
+pdcheck clear-stage --study-id MY-STUDY --stage step2 --blob
 ```
 
 ## Sentence splitting
@@ -140,7 +179,7 @@ Section bodies are split into sentences with **stdlib heuristics** (including ke
 
 ## LLM prompts
 
-System and user instructions for Azure OpenAI are Markdown files under [`pdcheck_factory/prompts/`](pdcheck_factory/prompts/). Step 1 uses `section_step1_system.md` and `section_step1_user.md`. Input size limits remain enforced in [`pdcheck_factory/llm.py`](pdcheck_factory/llm.py).
+System and user instructions for Azure OpenAI are Markdown files under [`pdcheck_factory/prompts/`](pdcheck_factory/prompts/). Step 1 uses `section_step1_system.md` and `section_step1_user.md`; Step 2 review revalidation uses `step2_revalidate_deviation_system.md` and `step2_revalidate_deviation_user.md`. Input size limits remain enforced in [`pdcheck_factory/llm.py`](pdcheck_factory/llm.py).
 
 ## License
 
