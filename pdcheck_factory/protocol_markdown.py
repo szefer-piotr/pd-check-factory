@@ -175,7 +175,8 @@ def build_sections_manifest(
         if not body and sections_raw:
             return
         path = ["(preamble)"]
-        sid = f"sec:{_short_hash(study_id + '\n' + '\n'.join(path) + '\n0')}"
+        sid_seed = study_id + "\n" + "\n".join(path) + "\n0"
+        sid = f"sec:{_short_hash(sid_seed)}"
         sections_raw.append(
             {
                 "section_id": sid,
@@ -205,7 +206,8 @@ def build_sections_manifest(
             return
         path, hlevel = open_meta
         body = "".join(open_parts).strip()
-        sid = f"sec:{_short_hash(study_id + '\n' + '\n'.join(path) + f'\n{emit_ord}')}"
+        sid_seed = study_id + "\n" + "\n".join(path) + f"\n{emit_ord}"
+        sid = f"sec:{_short_hash(sid_seed)}"
         sections_raw.append(
             {
                 "section_id": sid,

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 from pathlib import Path
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Tuple
 
 import typer
 from dotenv import load_dotenv
@@ -29,6 +30,7 @@ app = typer.Typer(no_args_is_help=True, help="PD Check Factory — Azure MVP mon
 protocol_app = typer.Typer(help="Segment protocol Markdown and run Step 1 extraction per section.")
 sections_app = typer.Typer(help="List, preview, or extract sections.")
 protocol_app.add_typer(sections_app, name="sections")
+acrf_app = typer.Typer(help="Tools for aCRF markdown processing.")
 
 _STALE_LEGACY = (
     "This command targets the removed v1 pipeline (candidates.json + logic_drafts.json). "
@@ -36,9 +38,125 @@ _STALE_LEGACY = (
     "A future Phase 2 adapter will bridge Step 1 JSON to pd_draft_specs."
 )
 
+_TOC_ROW = re.compile(
+    r"<tr>\s*<td>(.*?)</td>\s*<td>(.*?)</td>\s*</tr>",
+    re.IGNORECASE | re.DOTALL,
+)
+_TOC_CODE = re.compile(r"\(([^)]+)\)\s*$")
+_PAGE_HEADER = re.compile(r"^Page:\s*(.+)$")
+_PAGE_CODE = re.compile(r"\(([^)]+)\)")
+_PAGE_NUMBER = re.compile(r'<!--\s*PageNumber\s*=\s*"Page\s+(\d+)\s+of\s+\d+\s+pages"\s*-->')
+
 
 def _load_env() -> None:
     load_dotenv()
+
+
+def _slugify_filename(s: str) -> str:
+    cleaned = re.sub(r"[^A-Za-z0-9]+", "_", s.strip()).strip("_").lower()
+    return cleaned or "section"
+
+
+def _read_acrf_source_md(study_id: str, output_dir: Path) -> Path:
+    acrf_md = (
+        paths.local_extraction_layout(study_id, "acrf", output_dir)
+        / "rendered"
+        / "source.md"
+    )
+    if not acrf_md.exists():
+        raise typer.BadParameter(
+            f"Missing {acrf_md}. Run `extract --study-id {study_id}` first."
+        )
+    return acrf_md
+
+
+def run_acrf_split_toc(
+    *,
+    source_md: Path,
+    destination_dir: Path,
+    write_manifest: bool,
+) -> Tuple[int, Path]:
+    text = source_md.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+
+    page_marker = "\n".join(lines[:300])
+    rows = _TOC_ROW.findall(page_marker)
+    toc: List[Dict[str, object]] = []
+    for raw_name, raw_page in rows:
+        name = " ".join(raw_name.split())
+        page_txt = raw_page.strip()
+        if not page_txt.isdigit():
+            continue
+        page_no = int(page_txt)
+        m_code = _TOC_CODE.search(name)
+        code = m_code.group(1) if m_code else ""
+        toc.append({"name": name, "code": code, "toc_page": page_no})
+    if not toc:
+        raise typer.BadParameter(f"No TOC rows found in {source_md}.")
+
+    starts_by_code: Dict[str, int] = {}
+    starts_by_page: Dict[int, int] = {}
+
+    for i, line in enumerate(lines, start=1):
+        ph = _PAGE_HEADER.match(line.rstrip("\n"))
+        if ph:
+            full = ph.group(1)
+            m_code = _PAGE_CODE.search(full)
+            if m_code:
+                code = m_code.group(1)
+                starts_by_code.setdefault(code, i)
+        pn = _PAGE_NUMBER.search(line)
+        if pn:
+            page_num = int(pn.group(1))
+            starts_by_page.setdefault(page_num, i + 1)
+
+    out_rows: List[Dict[str, object]] = []
+    sorted_toc = sorted(toc, key=lambda x: int(x["toc_page"]))
+    for idx, row in enumerate(sorted_toc):
+        code = str(row["code"])
+        toc_page = int(row["toc_page"])
+        start = starts_by_code.get(code) or starts_by_page.get(toc_page)
+        if start is None:
+            continue
+        end = len(lines)
+        for nxt in sorted_toc[idx + 1 :]:
+            n_code = str(nxt["code"])
+            n_page = int(nxt["toc_page"])
+            n_start = starts_by_code.get(n_code) or starts_by_page.get(n_page)
+            if n_start is not None and n_start > start:
+                end = n_start - 1
+                break
+        row["start_line"] = start
+        row["end_line"] = end
+        out_rows.append(row)
+
+    if not out_rows:
+        raise typer.BadParameter("Could not determine section boundaries from TOC.")
+
+    destination_dir.mkdir(parents=True, exist_ok=True)
+    written = 0
+    for row in out_rows:
+        name = str(row["name"])
+        code = str(row["code"])
+        page = int(row["toc_page"])
+        start = int(row["start_line"])
+        end = int(row["end_line"])
+        body = "".join(lines[start - 1 : end])
+        label = f"{code}_{name}" if code else name
+        file_name = f"{page:03d}_{_slugify_filename(label)}.md"
+        out_path = destination_dir / file_name
+        out_path.write_text(body, encoding="utf-8")
+        written += 1
+
+    manifest_path = destination_dir / "sections_manifest.json"
+    if write_manifest:
+        manifest = {
+            "source_md": str(source_md),
+            "sections": out_rows,
+        }
+        write_json(manifest_path, manifest)
+
+    return written, manifest_path
 
 
 def _debug_log_local_layout_tree(
@@ -1086,7 +1204,43 @@ def cmd_protocol_sections_extract(
     )
 
 
+@acrf_app.command("split-toc")
+def cmd_acrf_split_toc(
+    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
+    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
+    source_md: Optional[Path] = typer.Option(
+        None,
+        "--source-md",
+        help="Path to aCRF source markdown (default output/<study-id>/extractions/acrf/layout/rendered/source.md).",
+    ),
+    destination_dir: Optional[Path] = typer.Option(
+        None,
+        "--destination-dir",
+        help="Directory for split TOC section markdown files.",
+    ),
+    no_manifest: bool = typer.Option(
+        False,
+        "--no-manifest",
+        help="Skip writing sections_manifest.json.",
+    ),
+) -> None:
+    """Split aCRF markdown into TOC-listed section files."""
+    src = source_md or _read_acrf_source_md(study_id, output_dir)
+    if not src.is_file():
+        raise typer.BadParameter(f"source markdown not found: {src}")
+    dest = destination_dir or (src.parent / "sections_toc")
+    count, manifest_path = run_acrf_split_toc(
+        source_md=src,
+        destination_dir=dest,
+        write_manifest=not no_manifest,
+    )
+    print(f"Wrote {count} section files to {dest}")
+    if not no_manifest:
+        print(f"Wrote {manifest_path}")
+
+
 app.add_typer(protocol_app, name="protocol")
+app.add_typer(acrf_app, name="acrf")
 
 
 def run_draft_pd(*, study_id: str, output_dir: Path, upload: bool) -> None:
