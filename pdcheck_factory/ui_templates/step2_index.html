@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>Step 2 review — {{ study_id }}</title>
+  <style>
+    body { font-family: system-ui, sans-serif; margin: 1rem; max-width: 1400px; }
+    table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
+    th, td { border: 1px solid #ccc; padding: 0.35rem; vertical-align: top; }
+    th { background: #f0f0f0; }
+    textarea.comments { width: 100%; min-height: 3rem; box-sizing: border-box; }
+    pre.ctx { white-space: pre-wrap; max-height: 28rem; overflow: auto; background: #f7f7f7; padding: 0.75rem; }
+    .toolbar { margin: 1rem 0; display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
+    .muted { color: #555; font-size: 0.85rem; }
+    .err { color: #a00; }
+    .ok { color: #060; }
+  </style>
+</head>
+<body>
+  <h1>Step 2 DM review</h1>
+  <p class="muted">Study <strong>{{ study_id }}</strong> · output <code>{{ output_dir }}</code></p>
+  <p>Reading: <code>{{ step2_path }}</code></p>
+  <p>Baseline:
+    <a href="/?baseline=merged">merged</a> ·
+    <a href="/?baseline=validated">validated</a> ·
+    <a href="/?baseline=working">working</a>
+    <span class="muted">(merged={% if has_merged %}yes{% else %}no{% endif %},
+      validated={% if has_validated %}yes{% else %}no{% endif %},
+      working={% if has_working %}yes{% else %}no{% endif %})</span>
+  </p>
+  <p class="muted">Revalidation uses context_mode=<code>{{ context_mode }}</code>,
+    use_acrf_summary=<code>{% if use_acrf_summary %}true{% else %}false{% endif %}</code> (from server flags).</p>
+
+  <div class="toolbar">
+    <label><input type="checkbox" id="strict"/> strict (fail on unresolved)</label>
+    <button type="button" id="applyBtn">Apply + LLM revalidate (<code>to_review</code> rows)</button>
+    <button type="button" id="promoteBtn">Promote validated → <code>step2_merged.working.json</code></button>
+    <span id="msg"></span>
+  </div>
+
+  <h2>Context preview</h2>
+  <p class="muted">Select a row and click Preview context.</p>
+  <pre class="ctx" id="ctxPane">(no row selected)</pre>
+
+  <h2>Deviations</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>Preview</th>
+        <th>row_key</th>
+        <th>Rule</th>
+        <th>Deviation</th>
+        <th>programmable</th>
+        <th>validation_status</th>
+        <th>dm_comments</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rows %}
+      <tr data-row-key="{{ r.row_key }}">
+        <td><button type="button" class="previewBtn">Preview</button></td>
+        <td><code>{{ r.row_key }}</code></td>
+        <td>
+          <span class="rule_id" hidden>{{ r.rule.get("rule_id", "") }}</span>
+          <strong>{{ r.rule.get("title", "") }}</strong>
+          <div class="muted">{{ r.rule.get("atomic_requirement", "") }}</div>
+        </td>
+        <td>
+          <span class="deviation_id" hidden>{{ r.deviation.get("deviation_id", "") }}</span>
+          <div>{{ r.deviation.get("scenario_description", "") }}</div>
+          <div class="muted">{{ r.deviation.get("example_violation_narrative", "") }}</div>
+        </td>
+        <td>
+          <select class="prog">
+            <option value="">(unchanged)</option>
+            <option value="true" {% if r.deviation.get("programmable", False) %}selected{% endif %}>true</option>
+            <option value="false" {% if not r.deviation.get("programmable", False) %}selected{% endif %}>false</option>
+          </select>
+        </td>
+        <td>
+          <select class="status">
+            <option value="accepted" selected>accepted</option>
+            <option value="to_review">to_review</option>
+            <option value="rejected">rejected</option>
+          </select>
+        </td>
+        <td><textarea class="comments" placeholder="DM comments (required for to_review)"></textarea></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <script>
+    const baseline = {{ baseline | tojson }};
+    const ctxPane = document.getElementById("ctxPane");
+    const msg = document.getElementById("msg");
+
+    function setMsg(text, ok) {
+      msg.textContent = text;
+      msg.className = ok ? "ok" : "err";
+    }
+
+    document.querySelectorAll(".previewBtn").forEach((btn) => {
+      btn.addEventListener("click", async () => {
+        const tr = btn.closest("tr");
+        const rk = tr.getAttribute("data-row-key");
+        if (!rk) return;
+        setMsg("Loading context…", true);
+        const enc = encodeURIComponent(rk);
+        const res = await fetch(`/api/context/${enc}?baseline=${encodeURIComponent(baseline)}`);
+        const data = await res.json();
+        if (!res.ok) {
+          setMsg(data.detail || res.statusText, false);
+          return;
+        }
+        let out = "# Protocol sections\n\n" + (data.protocol_markdown || "(empty)");
+        if (data.acrf_summary_json) {
+          out += "\n\n---\n\n# aCRF merged summary (JSON)\n\n" + data.acrf_summary_json;
+        } else {
+          out += "\n\n---\n\n# aCRF merged summary\n\n(not found)";
+        }
+        if (data.acrf_raw_excerpt) {
+          out += "\n\n---\n\n# aCRF source excerpt\n\n" + data.acrf_raw_excerpt;
+        }
+        ctxPane.textContent = out;
+        setMsg("Context loaded.", true);
+      });
+    });
+
+    document.getElementById("applyBtn").addEventListener("click", async () => {
+      const updates = {};
+      document.querySelectorAll("tr[data-row-key]").forEach((tr) => {
+        const rk = tr.getAttribute("data-row-key");
+        const rule_id = tr.querySelector(".rule_id").textContent.trim();
+        const deviation_id = tr.querySelector(".deviation_id").textContent.trim();
+        updates[rk] = {
+          rule_id: rule_id,
+          deviation_id: deviation_id,
+          validation_status: tr.querySelector(".status").value,
+          dm_comments: tr.querySelector(".comments").value,
+          programmable: tr.querySelector(".prog").value,
+        };
+      });
+      const body = {
+        baseline: baseline,
+        updates: updates,
+        strict: document.getElementById("strict").checked,
+      };
+      setMsg("Applying…", true);
+      const res = await fetch("/api/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setMsg(JSON.stringify(data.detail || data), false);
+        return;
+      }
+      setMsg("Wrote " + data.wrote_validated + " — reload to see new validated baseline link.", true);
+    });
+
+    document.getElementById("promoteBtn").addEventListener("click", async () => {
+      setMsg("Promoting…", true);
+      const res = await fetch("/api/promote-validated", { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) {
+        setMsg(JSON.stringify(data.detail || data), false);
+        return;
+      }
+      setMsg("Wrote " + data.wrote + " — open ?baseline=working after reload.", true);
+    });
+  </script>
+</body>
+</html>

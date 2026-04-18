@@ -23,6 +23,12 @@ pip install -U pip
 pip install -e .           # or: pip install -r requirements.txt && pip install -e .
 ```
 
+Optional **local Step 2 review UI** (FastAPI):
+
+```bash
+pip install -e ".[ui]"
+```
+
 The console script `**pdcheck**` is provided by the editable install (see `[project.scripts]` in `pyproject.toml`). Alternatively:
 
 ```bash
@@ -155,6 +161,14 @@ Local cache mirrors the same structure under `output/<study_id>/`.
   - `--use-acrf-summary/--no-use-acrf-summary` (default enabled)
   - `--strict` (fail when unresolved `to_review` rows remain)
   - `--no-upload`
+11. **Step 2 local web UI (optional)** — browse `step2_merged.json` (or **validated** / **working** baseline), preview protocol + aCRF context per deviation, set `accepted` / `to_review` / `rejected`, add comments, and run the same revalidation path as `step2-apply-review` without Excel:
+
+   ```bash
+   pip install -e ".[ui]"
+   pdcheck ui step2-review --study-id MY-STUDY --output-dir output
+   ```
+
+   Then open `http://127.0.0.1:8765/` (default). Use **Apply + LLM revalidate** for rows marked `to_review` (writes `step2_validated.json` + audit). **Promote validated → working** copies `step2_validated.json` to `pipeline/<study_id>/step2/step2_merged.working.json` so you can open `?baseline=working` and iterate again. Optional flags: `--host`, `--port`, `--context-mode`, `--use-acrf-summary` / `--no-use-acrf-summary`.
 
 **Removed / stale in Step 1:** `draft-pd`, `merge`, `export-review`, `apply-review`, and `emit-pseudo` still target the legacy v1 pipeline and remain disabled.
 

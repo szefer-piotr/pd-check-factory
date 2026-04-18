@@ -20,6 +20,13 @@ dependencies = [
   "azure-storage-blob",
 ]
 
+[project.optional-dependencies]
+ui = [
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "jinja2>=3.1",
+]
+
 [project.scripts]
 pdcheck = "pdcheck_factory.cli:main"
 
@@ -28,4 +35,4 @@ where = ["."]
 include = ["pdcheck_factory*"]
 
 [tool.setuptools.package-data]
-pdcheck_factory = ["prompts/*.md"]
+pdcheck_factory = ["prompts/*.md", "ui_templates/*.html"]
