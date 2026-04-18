@@ -26,6 +26,7 @@ class _DeviationRow:
     scenario_description: str
     example_violation_narrative: str
     sentence_refs: List[str]
+    programmable: bool
     source_section_id: str
     source_section_path: List[str]
 
@@ -101,6 +102,7 @@ def _merge_rule_cluster(cluster: List[_RuleRow]) -> Dict[str, Any]:
                     scenario_description=d.get("scenario_description", ""),
                     example_violation_narrative=d.get("example_violation_narrative", ""),
                     sentence_refs=list(d.get("sentence_refs", []) or []),
+                    programmable=bool(d.get("programmable")),
                     source_section_id=r.source_section_id,
                     source_section_path=list(r.source_section_path),
                 )
@@ -126,7 +128,9 @@ def _letters(n: int) -> str:
     return "".join(reversed(chars))
 
 
-def _default_rule_duplicate_judge(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+def _default_rule_duplicate_judge(
+    a: Dict[str, Any], b: Dict[str, Any], acrf_summary_context: str | None = None
+) -> bool:
     from pdcheck_factory import llm as llm_mod
 
     return bool(
@@ -135,11 +139,14 @@ def _default_rule_duplicate_judge(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
             requirement_a=a["atomic_requirement"],
             title_b=b["title"],
             requirement_b=b["atomic_requirement"],
+            acrf_summary_context=acrf_summary_context,
         )["is_duplicate"]
     )
 
 
-def _default_deviation_duplicate_judge(a: Dict[str, Any], b: Dict[str, Any]) -> bool:
+def _default_deviation_duplicate_judge(
+    a: Dict[str, Any], b: Dict[str, Any], acrf_summary_context: str | None = None
+) -> bool:
     from pdcheck_factory import llm as llm_mod
 
     return bool(
@@ -148,6 +155,7 @@ def _default_deviation_duplicate_judge(a: Dict[str, Any], b: Dict[str, Any]) -> 
             example_a=a["example_violation_narrative"],
             scenario_b=b["scenario_description"],
             example_b=b["example_violation_narrative"],
+            acrf_summary_context=acrf_summary_context,
         )["is_duplicate"]
     )
 
@@ -159,11 +167,16 @@ def merge_step1_outputs(
     rule_duplicate_judge: Callable[[Dict[str, Any], Dict[str, Any]], bool] | None = None,
     deviation_duplicate_judge: Callable[[Dict[str, Any], Dict[str, Any]], bool]
     | None = None,
+    acrf_summary_context: str | None = None,
 ) -> Dict[str, Any]:
     if rule_duplicate_judge is None:
-        rule_duplicate_judge = _default_rule_duplicate_judge
+        rule_duplicate_judge = lambda a, b: _default_rule_duplicate_judge(
+            a, b, acrf_summary_context
+        )
     if deviation_duplicate_judge is None:
-        deviation_duplicate_judge = _default_deviation_duplicate_judge
+        deviation_duplicate_judge = lambda a, b: _default_deviation_duplicate_judge(
+            a, b, acrf_summary_context
+        )
 
     rows: List[_RuleRow] = []
     for obj in step1_objects:
@@ -249,6 +262,7 @@ def merge_step1_outputs(
                     "scenario_description": rep.scenario_description,
                     "example_violation_narrative": rep.example_violation_narrative,
                     "sentence_refs": sorted(d_refs),
+                    "programmable": all(d.programmable for d in dc),
                     "source_section_ids": sorted(d_sec_ids),
                     "source_section_paths": d_paths,
                 }

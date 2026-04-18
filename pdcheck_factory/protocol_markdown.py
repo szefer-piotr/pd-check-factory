@@ -128,7 +128,7 @@ def build_sections_manifest(
     *,
     study_id: str,
     strip_page_markers: bool = True,
-    rollup_max_section_level: Optional[int] = None,
+    rollup_max_section_level: Optional[int] = 1,
 ) -> Dict[str, Any]:
     """
     Split markdown on ATX headings (# .. ######). Preamble before the first heading
@@ -139,7 +139,8 @@ def build_sections_manifest(
 
     If rollup_max_section_level is set (1..6), only headings at that depth or shallower
     start a new manifest section; deeper headings are inlined into the parent section body
-    as ATX lines. None means legacy behavior (same as rollup_max_section_level=6).
+    as ATX lines. Default is 1 (only top-level # headings start sections). Pass None for legacy
+    behavior (same as rollup_max_section_level=6: every heading is its own section).
     """
     if rollup_max_section_level is not None and not (
         1 <= rollup_max_section_level <= _MAX_ATX_LEVEL

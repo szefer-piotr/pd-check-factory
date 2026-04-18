@@ -34,6 +34,7 @@ def _step2_fixture() -> dict:
                         "scenario_description": "Subject is 16 years old.",
                         "example_violation_narrative": "Enrollment was performed before age 18.",
                         "sentence_refs": ["sec:a#s1"],
+                        "programmable": True,
                         "source_section_ids": ["sec:a"],
                         "source_section_paths": [["Section A"]],
                     },
@@ -42,6 +43,7 @@ def _step2_fixture() -> dict:
                         "scenario_description": "Subject age unavailable.",
                         "example_violation_narrative": "Site could not verify age eligibility.",
                         "sentence_refs": ["sec:a#s2"],
+                        "programmable": False,
                         "source_section_ids": ["sec:a"],
                         "source_section_paths": [["Section A"]],
                     },
@@ -68,9 +70,9 @@ class Step2ReviewTests(unittest.TestCase):
             wb = load_workbook(workbook_path)
             ws = wb.active
             # Row 2 -> to_review, Row 3 -> rejected.
-            ws["K2"] = "to_review"
-            ws["L2"] = "Keep same intent but rewrite using DM comment."
-            ws["K3"] = "rejected"
+            ws["L2"] = "to_review"
+            ws["M2"] = "Keep same intent but rewrite using DM comment."
+            ws["L3"] = "rejected"
             wb.save(workbook_path)
 
             parsed = read_step2_review_workbook(workbook_path)
@@ -83,6 +85,7 @@ class Step2ReviewTests(unittest.TestCase):
                         "scenario_description": f"{deviation['scenario_description']} (updated)",
                         "example_violation_narrative": dm_comments,
                         "sentence_refs": list(deviation["sentence_refs"]),
+                        "programmable": True,
                         "source_section_ids": list(deviation["source_section_ids"]),
                         "source_section_paths": list(deviation["source_section_paths"]),
                     }
@@ -107,7 +110,7 @@ class Step2ReviewTests(unittest.TestCase):
             )
             reviewed = load_workbook(reviewed_workbook_path)
             rws = reviewed.active
-            self.assertEqual(rws["M2"].value, "yes")
+            self.assertEqual(rws["N2"].value, "yes")
             self.assertNotEqual(rws["A2"].fill.fill_type, None)
             self.assertEqual(rws.max_row, 2)
 
@@ -124,7 +127,7 @@ class Step2ReviewTests(unittest.TestCase):
             )
             wb = load_workbook(workbook_path)
             ws = wb.active
-            ws["K2"] = "maybe"
+            ws["L2"] = "maybe"
             wb.save(workbook_path)
 
             parsed = read_step2_review_workbook(workbook_path)
@@ -186,6 +189,7 @@ class Step2ReviewTests(unittest.TestCase):
                     "scenario_description": "Procedure A missing.",
                     "example_violation_narrative": dm_comments,
                     "sentence_refs": list(deviation["sentence_refs"]),
+                    "programmable": True,
                     "source_section_ids": list(deviation["source_section_ids"]),
                     "source_section_paths": list(deviation["source_section_paths"]),
                 },
@@ -194,6 +198,7 @@ class Step2ReviewTests(unittest.TestCase):
                     "scenario_description": "Procedure B missing.",
                     "example_violation_narrative": dm_comments,
                     "sentence_refs": list(deviation["sentence_refs"]),
+                    "programmable": True,
                     "source_section_ids": list(deviation["source_section_ids"]),
                     "source_section_paths": list(deviation["source_section_paths"]),
                 },

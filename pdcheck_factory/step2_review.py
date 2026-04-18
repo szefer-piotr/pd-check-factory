@@ -26,6 +26,7 @@ HEADERS = [
     "atomic_requirement",
     "scenario_description",
     "example_violation_narrative",
+    "programmable",
     "rule_sentence_refs",
     "deviation_sentence_refs",
     "source_section_ids",
@@ -105,6 +106,7 @@ def _build_row(
         rule.get("atomic_requirement", ""),
         deviation.get("scenario_description", ""),
         deviation.get("example_violation_narrative", ""),
+        str(bool(deviation.get("programmable", False))).lower(),
         _csv(rule.get("sentence_refs", [])),
         _csv(deviation.get("sentence_refs", [])),
         _csv(deviation.get("source_section_ids", [])),
@@ -191,6 +193,7 @@ def read_step2_review_workbook(workbook_path: Path) -> Dict[str, Any]:
             "deviation_id": deviation_id,
             "validation_status": status or "",
             "dm_comments": _get_cell(row, colmap, "dm_comments"),
+            "programmable": _get_cell(row, colmap, "programmable"),
         }
         if row_key in updates:
             warnings.append(f"Row {excel_row_idx} ({row_key}): duplicate key, using last row.")
@@ -227,6 +230,9 @@ def apply_review_and_finalize(
             update = updates.get(row_key, {})
             status = (update.get("validation_status") or "accepted").strip().lower()
             dm_comments = update.get("dm_comments", "")
+            programmable_raw = (update.get("programmable") or "").strip().lower()
+            if programmable_raw in {"true", "false"}:
+                deviation["programmable"] = programmable_raw == "true"
 
             if status not in VALIDATION_STATUSES:
                 errors.append(f"{row_key}: unsupported status {status!r}.")
@@ -318,6 +324,9 @@ def apply_review_and_finalize(
                 updated["deviation_id"] = new_dev_id
                 updated["source_section_ids"] = deviation.get("source_section_ids", [])
                 updated["source_section_paths"] = deviation.get("source_section_paths", [])
+                updated["programmable"] = bool(
+                    updated.get("programmable", deviation.get("programmable", False))
+                )
                 kept_deviations.append(updated)
                 final_rows.append(
                     {

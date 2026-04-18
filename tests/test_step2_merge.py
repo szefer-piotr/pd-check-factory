@@ -25,6 +25,7 @@ def _step1_obj(section_id: str, path: list[str], title: str, req: str, scenario:
                         "scenario_description": scenario,
                         "example_violation_narrative": "Example",
                         "sentence_refs": [f"{section_id}#s1"],
+                        "programmable": True,
                     }
                 ],
             }
@@ -60,6 +61,7 @@ class Step2MergeTests(unittest.TestCase):
         r = out["rules"][0]
         self.assertEqual(sorted(r["source_section_ids"]), ["sec:a", "sec:b"])
         self.assertEqual(len(r["candidate_deviations"]), 1)
+        self.assertTrue(r["candidate_deviations"][0]["programmable"])
 
     def test_uses_llm_judges_when_not_injected(self) -> None:
         objs = [

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import json
 import re
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple
 
@@ -68,6 +70,21 @@ def _read_acrf_source_md(study_id: str, output_dir: Path) -> Path:
             f"Missing {acrf_md}. Run `extract --study-id {study_id}` first."
         )
     return acrf_md
+
+
+def _default_acrf_toc_dir(study_id: str, output_dir: Path) -> Path:
+    return _read_acrf_source_md(study_id, output_dir).parent / "sections_toc"
+
+
+def _acrf_section_meta_from_file(section_md: Path) -> Tuple[str, List[str]]:
+    stem = section_md.stem
+    section_id = f"acrf:{stem}"
+    if "_" in stem:
+        pretty = stem.split("_", 1)[1].replace("_", " ").strip()
+    else:
+        pretty = stem.replace("_", " ").strip()
+    section_path = [pretty] if pretty else [section_id]
+    return section_id, section_path
 
 
 def run_acrf_split_toc(
@@ -157,6 +174,147 @@ def run_acrf_split_toc(
         write_json(manifest_path, manifest)
 
     return written, manifest_path
+
+
+def run_acrf_summarize_sections(
+    *,
+    study_id: str,
+    output_dir: Path,
+    upload: bool,
+    source_dir: Optional[Path] = None,
+) -> Path:
+    """Summarize each split aCRF TOC section with structured LLM output."""
+    _load_env()
+    toc_dir = source_dir or _default_acrf_toc_dir(study_id, output_dir)
+    if not toc_dir.is_dir():
+        raise typer.BadParameter(
+            f"Missing aCRF TOC section directory: {toc_dir}. "
+            "Run `pdcheck acrf split-toc --study-id ...` first."
+        )
+    section_files = sorted(
+        p for p in toc_dir.glob("*.md") if p.name.lower() != "sections_manifest.json"
+    )
+    if not section_files:
+        raise typer.BadParameter(f"No aCRF TOC section markdown files found under {toc_dir}.")
+
+    out_dir = paths.local_acrf_summary_sections_dir(study_id, output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    summary_schema = load_schema("acrf_section_summary.schema.json")
+
+    for section_md in section_files:
+        section_id, section_path = _acrf_section_meta_from_file(section_md)
+        print(f"aCRF summarize: {section_id} …")
+        out_obj = llm_mod.summarize_acrf_section(
+            study_id=study_id,
+            acrf_section_id=section_id,
+            acrf_section_path=section_path,
+            section_markdown=section_md.read_text(encoding="utf-8"),
+        )
+        errs = validate(out_obj, summary_schema)
+        if errs:
+            raise typer.BadParameter(
+                f"aCRF section summary failed schema validation ({section_id}): "
+                + "; ".join(errs[:10])
+            )
+        out_path = paths.local_acrf_summary_section(study_id, section_id, output_dir)
+        write_json(out_path, out_obj)
+        print(f"  Wrote {out_path}")
+        _upload_if_enabled(
+            out_path,
+            paths.acrf_summary_section_blob(study_id, section_id),
+            upload=upload,
+            content_type="application/json",
+        )
+    return out_dir
+
+
+def run_acrf_merge_summaries(*, study_id: str, output_dir: Path, upload: bool) -> Path:
+    """Merge per-section aCRF summaries into one consolidated artifact."""
+    _load_env()
+    sections_dir = paths.local_acrf_summary_sections_dir(study_id, output_dir)
+    if not sections_dir.is_dir():
+        raise typer.BadParameter(
+            f"Missing {sections_dir}. Run `pdcheck acrf summarize-sections --study-id {study_id}` first."
+        )
+    section_files = sorted(sections_dir.glob("*.json"))
+    if not section_files:
+        raise typer.BadParameter(f"No aCRF section summaries found under {sections_dir}.")
+
+    section_schema = load_schema("acrf_section_summary.schema.json")
+    section_summaries: List[Dict[str, object]] = []
+    dataset_index_map: Dict[str, Dict[str, object]] = {}
+    for path in section_files:
+        obj = read_json(path)
+        errs = validate(obj, section_schema)
+        if errs:
+            raise typer.BadParameter(
+                f"aCRF section summary failed schema validation: {path} :: {'; '.join(errs[:10])}"
+            )
+        section_summaries.append(obj)
+        sec_id = str(obj.get("acrf_section_id", ""))
+        for ds in obj.get("datasets", []):
+            if not isinstance(ds, dict):
+                continue
+            ds_name = str(ds.get("dataset_name", "")).strip()
+            if not ds_name:
+                continue
+            bucket = dataset_index_map.setdefault(
+                ds_name,
+                {"dataset_name": ds_name, "column_names": set(), "source_section_ids": set()},
+            )
+            bucket["source_section_ids"].add(sec_id)
+            for col in ds.get("columns", []):
+                if not isinstance(col, dict):
+                    continue
+                col_name = str(col.get("column_name", "")).strip()
+                if col_name:
+                    bucket["column_names"].add(col_name)
+
+    dataset_index = []
+    for ds_name in sorted(dataset_index_map):
+        bucket = dataset_index_map[ds_name]
+        dataset_index.append(
+            {
+                "dataset_name": ds_name,
+                "column_names": sorted(bucket["column_names"]),
+                "source_section_ids": sorted(bucket["source_section_ids"]),
+            }
+        )
+
+    merged = {
+        "schema_version": "1.0.0",
+        "study_id": study_id,
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "section_summaries": section_summaries,
+        "dataset_index": dataset_index,
+    }
+    merged_schema = load_schema("acrf_section_summaries_merged.schema.json")
+    out_errs = validate(merged, merged_schema)
+    if out_errs:
+        raise typer.BadParameter(
+            "aCRF merged summary failed schema validation: " + "; ".join(out_errs[:10])
+        )
+    out_path = paths.local_acrf_summary_merged(study_id, output_dir)
+    write_json(out_path, merged)
+    print(f"Wrote {out_path}")
+    _upload_if_enabled(
+        out_path,
+        paths.acrf_summary_merged_blob(study_id),
+        upload=upload,
+        content_type="application/json",
+    )
+    return out_path
+
+
+def run_acrf_summarize(*, study_id: str, output_dir: Path, upload: bool) -> Path:
+    """Summarize aCRF TOC sections and merge into one artifact."""
+    run_acrf_summarize_sections(
+        study_id=study_id,
+        output_dir=output_dir,
+        upload=upload,
+        source_dir=None,
+    )
+    return run_acrf_merge_summaries(study_id=study_id, output_dir=output_dir, upload=upload)
 
 
 def _debug_log_local_layout_tree(
@@ -545,13 +703,62 @@ def _optional_acrf_markdown(study_id: str, output_dir: Path) -> Optional[str]:
     return acrf_md.read_text(encoding="utf-8")
 
 
+def _optional_acrf_summary_context(study_id: str, output_dir: Path) -> Optional[str]:
+    merged = paths.local_acrf_summary_merged(study_id, output_dir)
+    if not merged.is_file():
+        return None
+    obj = read_json(merged)
+    # Keep on-disk artifact human-readable, but pass compact JSON to LLM prompts.
+    return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+
+
+def _load_acrf_contexts(
+    *,
+    study_id: str,
+    output_dir: Path,
+    include_acrf: bool,
+    use_acrf_summary: bool,
+    caller: str,
+) -> Tuple[Optional[str], Optional[str]]:
+    """Return (raw_acrf_markdown, merged_acrf_summary_json_text)."""
+    if not include_acrf:
+        return None, None
+
+    acrf_summary_context: Optional[str] = None
+    if use_acrf_summary:
+        acrf_summary_context = _optional_acrf_summary_context(study_id, output_dir)
+        if acrf_summary_context:
+            print(
+                f"[{caller}] Including merged aCRF summary context from "
+                f"{paths.local_acrf_summary_merged(study_id, output_dir)}."
+            )
+        else:
+            print(
+                f"[{caller}] --use-acrf-summary set but merged summary not found; "
+                "falling back to raw aCRF/protocol context."
+            )
+
+    acrf = _optional_acrf_markdown(study_id, output_dir)
+    if acrf and not acrf_summary_context:
+        acrf_chars_total = len(acrf.strip())
+        acrf_chars_used = min(acrf_chars_total, llm_mod.STEP1_ACRF_MAX_CHARS)
+        pct_used = ((acrf_chars_used / acrf_chars_total) * 100.0) if acrf_chars_total else 0.0
+        print(
+            f"[{caller}] Including raw aCRF context (truncated by LLM layer): "
+            f"{acrf_chars_used}/{acrf_chars_total} chars ({pct_used:.1f}%)."
+        )
+    elif not acrf:
+        print(f"[{caller}] No aCRF source.md found; protocol-only prompts.")
+    return acrf, acrf_summary_context
+
+
 def run_protocol_segment(
     *,
     study_id: str,
     output_dir: Path,
     upload: bool,
     strip_page_markers: bool = True,
-    rollup_max_section_level: Optional[int] = None,
+    rollup_max_section_level: Optional[int] = 1,
 ) -> Path:
     """Parse protocol source.md → sections_manifest.json (+ raw numbered fragments)."""
     _load_env()
@@ -594,6 +801,7 @@ def run_protocol_sections_extract(
     skip_section_id: List[str],
     skip_regex: Optional[str],
     include_acrf: bool,
+    use_acrf_summary: bool = True,
 ) -> None:
     """Run Step 1 LLM per selected section; write pipeline/.../protocol_sections/step1/*.json."""
     _load_env()
@@ -615,24 +823,13 @@ def run_protocol_sections_extract(
     except ValueError as ex:
         raise typer.BadParameter(str(ex)) from ex
 
-    acrf: Optional[str] = None
-    if include_acrf:
-        acrf = _optional_acrf_markdown(study_id, output_dir)
-        if acrf:
-            acrf_chars_total = len(acrf.strip())
-            acrf_chars_used = min(acrf_chars_total, llm_mod.STEP1_ACRF_MAX_CHARS)
-            pct_used = (
-                (acrf_chars_used / acrf_chars_total) * 100.0
-                if acrf_chars_total
-                else 0.0
-            )
-            print(
-                "Including aCRF context in prompts "
-                f"(truncated by LLM layer): {acrf_chars_used}/{acrf_chars_total} "
-                f"chars ({pct_used:.1f}%)."
-            )
-        else:
-            print("No aCRF source.md found; protocol-only prompts.")
+    acrf, acrf_summary_context = _load_acrf_contexts(
+        study_id=study_id,
+        output_dir=output_dir,
+        include_acrf=include_acrf,
+        use_acrf_summary=use_acrf_summary,
+        caller="step1",
+    )
 
     step1_dir = paths.local_protocol_sections_step1_dir(study_id, output_dir)
     step1_dir.mkdir(parents=True, exist_ok=True)
@@ -648,6 +845,7 @@ def run_protocol_sections_extract(
             study_id=study_id,
             section=sec,
             acrf_markdown=acrf,
+            acrf_summary_context=acrf_summary_context,
         )
         safe = cid.replace(":", "_")
         out_path = step1_dir / f"{safe}.json"
@@ -667,7 +865,8 @@ def run_rules(
     output_dir: Path,
     upload: bool,
     strip_page_markers: bool = True,
-    rollup_max_section_level: Optional[int] = None,
+    rollup_max_section_level: Optional[int] = 1,
+    use_acrf_summary: bool = True,
 ) -> None:
     """Alias: segment protocol + Step 1 extract for all sections."""
     run_protocol_segment(
@@ -687,6 +886,7 @@ def run_rules(
         skip_section_id=[],
         skip_regex=None,
         include_acrf=True,
+        use_acrf_summary=use_acrf_summary,
     )
 
 
@@ -766,6 +966,7 @@ def run_step2_merge(
     study_id: str,
     output_dir: Path,
     upload: bool,
+    use_acrf_summary: bool = True,
 ) -> Path:
     """Merge and semantic-dedup all Step 1 section outputs into one Step 2 artifact."""
     _load_env()
@@ -789,9 +990,17 @@ def run_step2_merge(
             )
         step1_objects.append(obj)
 
+    _, acrf_summary_context = _load_acrf_contexts(
+        study_id=study_id,
+        output_dir=output_dir,
+        include_acrf=True,
+        use_acrf_summary=use_acrf_summary,
+        caller="step2-dedup",
+    )
     merged = step2_merge.merge_step1_outputs(
         study_id=study_id,
         step1_objects=step1_objects,
+        acrf_summary_context=acrf_summary_context,
     )
     step2_schema = load_schema("protocol_sections_step2_merged.schema.json")
     out_errs = validate(merged, step2_schema)
@@ -866,6 +1075,7 @@ def run_step2_apply_review(
     context_mode: Literal["full_protocol", "sections_only"],
     strict: bool,
     upload: bool,
+    use_acrf_summary: bool = True,
 ) -> None:
     _load_env()
     step2_path = paths.local_protocol_sections_step2_merged(study_id, output_dir)
@@ -879,6 +1089,13 @@ def run_step2_apply_review(
     review_rows = step2_review.read_step2_review_workbook(workbook)
 
     full_protocol = _read_protocol_source_md(study_id, output_dir).read_text(encoding="utf-8")
+    _, acrf_summary_context = _load_acrf_contexts(
+        study_id=study_id,
+        output_dir=output_dir,
+        include_acrf=True,
+        use_acrf_summary=use_acrf_summary,
+        caller="step2-revalidate",
+    )
 
     def _revalidate(rule: dict, deviation: dict, dm_comments: str) -> List[dict]:
         if context_mode == "full_protocol":
@@ -896,6 +1113,7 @@ def run_step2_apply_review(
             dm_comments=dm_comments,
             protocol_context=protocol_context,
             context_mode=context_mode,
+            acrf_summary_context=acrf_summary_context,
         )
 
     final_obj, audit_obj, final_rows = step2_review.apply_review_and_finalize(
@@ -955,12 +1173,17 @@ def cmd_rules(
         "--keep-di-page-markers",
         help="Keep DI PageHeader/PageFooter/PageNumber/PageBreak HTML comments in markdown.",
     ),
-    rollup_to_level: Optional[int] = typer.Option(
-        None,
+    rollup_to_level: int = typer.Option(
+        1,
         "--rollup-to-level",
         min=1,
         max=6,
-        help="Max ATX depth for manifest sections (1=# only … 6=######). Deeper headings roll into parent body.",
+        help="Max ATX depth for manifest sections (1=# only … 6=######). Deeper headings roll into parent body. Use 6 for legacy one-section-per-heading behavior.",
+    ),
+    use_acrf_summary: bool = typer.Option(
+        True,
+        "--use-acrf-summary/--no-use-acrf-summary",
+        help="Attach merged aCRF summary context when available.",
     ),
 ) -> None:
     """Segment protocol and run Step 1 extraction on every section (shortcut)."""
@@ -970,6 +1193,7 @@ def cmd_rules(
         upload=upload,
         strip_page_markers=not keep_di_page_markers,
         rollup_max_section_level=rollup_to_level,
+        use_acrf_summary=use_acrf_summary,
     )
 
 
@@ -1003,9 +1227,19 @@ def cmd_step2(
     study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
     output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
     upload: bool = typer.Option(True, "--upload/--no-upload"),
+    use_acrf_summary: bool = typer.Option(
+        True,
+        "--use-acrf-summary/--no-use-acrf-summary",
+        help="Attach merged aCRF summary context to dedup LLM prompts when available.",
+    ),
 ) -> None:
     """Merge Step 1 section outputs and deduplicate semantic duplicates."""
-    run_step2_merge(study_id=study_id, output_dir=output_dir, upload=upload)
+    run_step2_merge(
+        study_id=study_id,
+        output_dir=output_dir,
+        upload=upload,
+        use_acrf_summary=use_acrf_summary,
+    )
 
 
 @app.command("step2-export-review")
@@ -1042,6 +1276,11 @@ def cmd_step2_apply_review(
         help="Fail if any revalidation rows remain unresolved or invalid.",
     ),
     upload: bool = typer.Option(True, "--upload/--no-upload"),
+    use_acrf_summary: bool = typer.Option(
+        True,
+        "--use-acrf-summary/--no-use-acrf-summary",
+        help="Attach merged aCRF summary context to revalidation prompts when available.",
+    ),
 ) -> None:
     """Apply reviewed DM workbook and produce validated Step 2 outputs."""
     run_step2_apply_review(
@@ -1051,6 +1290,7 @@ def cmd_step2_apply_review(
         context_mode=context_mode,
         strict=strict,
         upload=upload,
+        use_acrf_summary=use_acrf_summary,
     )
 
 
@@ -1064,12 +1304,12 @@ def cmd_protocol_segment(
         "--keep-di-page-markers",
         help="Keep DI PageHeader/PageFooter/PageNumber/PageBreak HTML comments in markdown.",
     ),
-    rollup_to_level: Optional[int] = typer.Option(
-        None,
+    rollup_to_level: int = typer.Option(
+        1,
         "--rollup-to-level",
         min=1,
         max=6,
-        help="Max ATX depth for manifest sections (1=# only … 6=######). Deeper headings roll into parent body.",
+        help="Max ATX depth for manifest sections (1=# only … 6=######). Deeper headings roll into parent body. Use 6 for legacy one-section-per-heading behavior.",
     ),
 ) -> None:
     """Build sections_manifest.json from protocol source.md."""
@@ -1182,6 +1422,11 @@ def cmd_protocol_sections_extract(
         "--no-acrf",
         help="Do not append aCRF context to prompts.",
     ),
+    use_acrf_summary: bool = typer.Option(
+        True,
+        "--use-acrf-summary/--no-use-acrf-summary",
+        help="Attach merged aCRF summary context when available.",
+    ),
 ) -> None:
     """Run Step 1 LLM extraction for selected sections."""
     _load_env()
@@ -1201,6 +1446,7 @@ def cmd_protocol_sections_extract(
         skip_section_id=sk_list,
         skip_regex=skip_regex,
         include_acrf=not no_acrf,
+        use_acrf_summary=use_acrf_summary,
     )
 
 
@@ -1237,6 +1483,46 @@ def cmd_acrf_split_toc(
     print(f"Wrote {count} section files to {dest}")
     if not no_manifest:
         print(f"Wrote {manifest_path}")
+
+
+@acrf_app.command("summarize-sections")
+def cmd_acrf_summarize_sections(
+    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
+    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
+    source_dir: Optional[Path] = typer.Option(
+        None,
+        "--source-dir",
+        help="Directory with split TOC markdown files (default extraction aCRF rendered/sections_toc).",
+    ),
+    upload: bool = typer.Option(True, "--upload/--no-upload"),
+) -> None:
+    """Run LLM summary for each split aCRF section markdown file."""
+    run_acrf_summarize_sections(
+        study_id=study_id,
+        output_dir=output_dir,
+        upload=upload,
+        source_dir=source_dir,
+    )
+
+
+@acrf_app.command("merge-summaries")
+def cmd_acrf_merge_summaries(
+    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
+    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
+    upload: bool = typer.Option(True, "--upload/--no-upload"),
+) -> None:
+    """Merge all per-section aCRF summaries into one artifact."""
+    run_acrf_merge_summaries(study_id=study_id, output_dir=output_dir, upload=upload)
+
+
+@acrf_app.command("summarize")
+def cmd_acrf_summarize(
+    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
+    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
+    upload: bool = typer.Option(True, "--upload/--no-upload"),
+) -> None:
+    """Shortcut: summarize aCRF sections and merge outputs."""
+    run_acrf_summarize(study_id=study_id, output_dir=output_dir, upload=upload)
 
 
 app.add_typer(protocol_app, name="protocol")
@@ -1313,8 +1599,13 @@ def cmd_run_all(
     output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
     skip_acrf: bool = typer.Option(False, "--skip-acrf"),
     upload: bool = typer.Option(True, "--upload/--no-upload"),
+    use_acrf_summary: bool = typer.Option(
+        True,
+        "--use-acrf-summary/--no-use-acrf-summary",
+        help="Attach merged aCRF summary context to downstream LLM prompts when available.",
+    ),
 ) -> None:
-    """extract → protocol segment + Step 1 extract for all sections (no merge / XLSX)."""
+    """extract → aCRF summarize → protocol segment + Step 1 extract for all sections."""
     if skip_acrf:
         raise typer.BadParameter("run-all requires aCRF; do not pass --skip-acrf.")
     run_extract(
@@ -1329,8 +1620,19 @@ def cmd_run_all(
         upload_only=False,
         debug_blob=False,
     )
-    run_rules(study_id=study_id, output_dir=output_dir, upload=upload)
-    print("run-all complete through Step 1 extraction.")
+    run_acrf_split_toc(
+        source_md=_read_acrf_source_md(study_id, output_dir),
+        destination_dir=_default_acrf_toc_dir(study_id, output_dir),
+        write_manifest=True,
+    )
+    run_acrf_summarize(study_id=study_id, output_dir=output_dir, upload=upload)
+    run_rules(
+        study_id=study_id,
+        output_dir=output_dir,
+        upload=upload,
+        use_acrf_summary=use_acrf_summary,
+    )
+    print("run-all complete through Step 1 extraction with aCRF summary context.")
 
 
 def main() -> None:

@@ -17,6 +17,7 @@ from pdcheck_factory.protocol_markdown import format_section_for_prompt, validat
 
 STEP1_ACRF_MAX_CHARS = 60000
 STEP1_SECTION_PROMPT_MAX_CHARS = 160000
+ACRF_SECTION_PROMPT_MAX_CHARS = 120000
 
 
 class _StrictModel(BaseModel):
@@ -28,6 +29,7 @@ class Step1Deviation(_StrictModel):
     scenario_description: str = Field(min_length=1)
     example_violation_narrative: str = Field(min_length=1)
     sentence_refs: List[str] = Field(min_length=1)
+    programmable: bool
 
 
 class Step1Rule(_StrictModel):
@@ -57,10 +59,40 @@ class Step2RevalidatedDeviation(_StrictModel):
     scenario_description: str = Field(min_length=1)
     example_violation_narrative: str = Field(min_length=1)
     sentence_refs: List[str] = Field(min_length=1)
+    programmable: bool
 
 
 class Step2RevalidatedDeviationResponse(_StrictModel):
     deviations: List[Step2RevalidatedDeviation] = Field(min_length=1)
+
+
+class AcrfColumnValueRange(_StrictModel):
+    min: str = ""
+    max: str = ""
+
+
+class AcrfColumnSummary(_StrictModel):
+    column_name: str = Field(min_length=1)
+    variable_type: Literal[
+        "categorical", "numeric", "date", "datetime", "text", "boolean", "unknown"
+    ]
+    categorical_values: List[str] = Field(default_factory=list)
+    value_range: AcrfColumnValueRange
+    notes: str = ""
+
+
+class AcrfDatasetSummary(_StrictModel):
+    dataset_name: str = Field(min_length=1)
+    columns: List[AcrfColumnSummary] = Field(default_factory=list)
+
+
+class AcrfSectionSummaryOutput(_StrictModel):
+    schema_version: Literal["1.0.0"]
+    study_id: str = Field(min_length=1)
+    generated_at: str
+    acrf_section_id: str = Field(min_length=1)
+    acrf_section_path: List[str] = Field(min_length=1)
+    datasets: List[AcrfDatasetSummary] = Field(default_factory=list)
 
 
 def _azure_client() -> AzureOpenAI:
@@ -180,6 +212,7 @@ def extract_protocol_section_step1(
     study_id: str,
     section: Dict[str, Any],
     acrf_markdown: Optional[str] = None,
+    acrf_summary_context: Optional[str] = None,
     acrf_max_chars: int = STEP1_ACRF_MAX_CHARS,
     section_prompt_max_chars: int = STEP1_SECTION_PROMPT_MAX_CHARS,
 ) -> Dict[str, Any]:
@@ -209,6 +242,13 @@ def extract_protocol_section_step1(
         section_path_json=section_path_json,
         numbered_section=numbered,
     )
+    if acrf_summary_context:
+        user += (
+            "\n\naCRF structured summary context "
+            "(prioritize this over raw aCRF text when both are available):\n---\n"
+        )
+        user += acrf_summary_context.strip()
+        user += "\n---\n"
     if acrf_markdown:
         frag = acrf_markdown.strip()
         if len(frag) > acrf_max_chars:
@@ -254,6 +294,7 @@ def judge_step2_rule_duplicate(
     requirement_a: str,
     title_b: str,
     requirement_b: str,
+    acrf_summary_context: Optional[str] = None,
 ) -> Dict[str, Any]:
     system = load_prompt("step2_rule_dedup_system")
     user = load_prompt("step2_rule_dedup_user").format(
@@ -262,6 +303,10 @@ def judge_step2_rule_duplicate(
         title_b=title_b,
         requirement_b=requirement_b,
     )
+    if acrf_summary_context:
+        user += "\n\naCRF structured summary context:\n---\n"
+        user += acrf_summary_context.strip()
+        user += "\n---\n"
     return chat_json(
         system=system,
         user=user,
@@ -277,6 +322,7 @@ def judge_step2_deviation_duplicate(
     example_a: str,
     scenario_b: str,
     example_b: str,
+    acrf_summary_context: Optional[str] = None,
 ) -> Dict[str, Any]:
     system = load_prompt("step2_deviation_dedup_system")
     user = load_prompt("step2_deviation_dedup_user").format(
@@ -285,6 +331,10 @@ def judge_step2_deviation_duplicate(
         scenario_b=scenario_b,
         example_b=example_b,
     )
+    if acrf_summary_context:
+        user += "\n\naCRF structured summary context:\n---\n"
+        user += acrf_summary_context.strip()
+        user += "\n---\n"
     return chat_json(
         system=system,
         user=user,
@@ -316,6 +366,8 @@ def _validate_step2_revalidated_deviation(d: Dict[str, Any]) -> List[str]:
                 errs.append(
                     f"deviations[{idx}].sentence_refs must contain non-empty strings."
                 )
+        if not isinstance(dev.get("programmable"), bool):
+            errs.append(f"deviations[{idx}].programmable must be a boolean.")
     return errs
 
 
@@ -327,6 +379,7 @@ def revalidate_deviation_with_dm_feedback(
     dm_comments: str,
     protocol_context: str,
     context_mode: Literal["full_protocol", "sections_only"] = "full_protocol",
+    acrf_summary_context: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Reconsider one Step 2 deviation using DM comments and protocol context."""
     now = datetime.now(timezone.utc).isoformat()
@@ -339,6 +392,7 @@ def revalidate_deviation_with_dm_feedback(
         deviation_json=json.dumps(deviation, ensure_ascii=False, indent=2),
         dm_comments=dm_comments.strip(),
         protocol_context=protocol_context.strip(),
+        acrf_summary_context=(acrf_summary_context or "").strip(),
     )
     out = chat_json(
         system=system,
@@ -359,8 +413,52 @@ def revalidate_deviation_with_dm_feedback(
                     "example_violation_narrative"
                 ].strip(),
                 "sentence_refs": [s.strip() for s in item["sentence_refs"]],
+                "programmable": bool(item["programmable"]),
                 "source_section_ids": list(deviation.get("source_section_ids", [])),
                 "source_section_paths": list(deviation.get("source_section_paths", [])),
             }
         )
     return result
+
+
+def summarize_acrf_section(
+    *,
+    study_id: str,
+    acrf_section_id: str,
+    acrf_section_path: List[str],
+    section_markdown: str,
+    section_prompt_max_chars: int = ACRF_SECTION_PROMPT_MAX_CHARS,
+) -> Dict[str, Any]:
+    """Summarize one aCRF section into dataset/column/value metadata."""
+    schema = load_schema("acrf_section_summary.schema.json")
+    now = datetime.now(timezone.utc).isoformat()
+    section_body = section_markdown.strip()
+    if len(section_body) > section_prompt_max_chars:
+        section_body = (
+            section_body[:section_prompt_max_chars]
+            + "\n\n[TRUNCATED: aCRF section exceeded character budget]\n"
+        )
+
+    system = load_prompt("acrf_section_summary_system")
+    user = load_prompt("acrf_section_summary_user").format(
+        study_id=study_id,
+        now=now,
+        acrf_section_id=acrf_section_id,
+        acrf_section_path_json=json.dumps(acrf_section_path, ensure_ascii=False),
+        section_markdown=section_body,
+    )
+
+    def _v(d: Dict[str, Any]) -> List[str]:
+        d.setdefault("generated_at", now)
+        d.setdefault("study_id", study_id)
+        d.setdefault("schema_version", "1.0.0")
+        d["acrf_section_id"] = acrf_section_id
+        d["acrf_section_path"] = list(acrf_section_path)
+        return validate(d, schema)
+
+    return chat_json(
+        system=system,
+        user=user,
+        response_model=AcrfSectionSummaryOutput,
+        validator=_v,
+    )

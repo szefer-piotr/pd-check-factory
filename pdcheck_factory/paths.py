@@ -23,6 +23,23 @@ def protocol_sections_blob_prefix(study_id: str) -> str:
     return f"pipeline/{study_id}/protocol_sections"
 
 
+def acrf_summary_blob_prefix(study_id: str) -> str:
+    return f"pipeline/{study_id}/acrf_summary"
+
+
+def acrf_summary_sections_blob_prefix(study_id: str) -> str:
+    return f"{acrf_summary_blob_prefix(study_id)}/sections"
+
+
+def acrf_summary_section_blob(study_id: str, acrf_section_id: str) -> str:
+    safe = acrf_section_id.replace(":", "_")
+    return f"{acrf_summary_sections_blob_prefix(study_id)}/{safe}.json"
+
+
+def acrf_summary_merged_blob(study_id: str) -> str:
+    return f"{acrf_summary_blob_prefix(study_id)}/acrf_summary_merged.json"
+
+
 def pipeline_step2_blob_prefix(study_id: str) -> str:
     return f"pipeline/{study_id}/step2"
 
@@ -94,6 +111,23 @@ def local_pipeline_rules_kb(study_id: str, output_dir: Path) -> Path:
 
 def local_protocol_sections_dir(study_id: str, output_dir: Path) -> Path:
     return local_study_root(study_id, output_dir) / "pipeline" / "protocol_sections"
+
+
+def local_acrf_summary_dir(study_id: str, output_dir: Path) -> Path:
+    return local_study_root(study_id, output_dir) / "pipeline" / "acrf_summary"
+
+
+def local_acrf_summary_sections_dir(study_id: str, output_dir: Path) -> Path:
+    return local_acrf_summary_dir(study_id, output_dir) / "sections"
+
+
+def local_acrf_summary_section(study_id: str, acrf_section_id: str, output_dir: Path) -> Path:
+    safe = acrf_section_id.replace(":", "_")
+    return local_acrf_summary_sections_dir(study_id, output_dir) / f"{safe}.json"
+
+
+def local_acrf_summary_merged(study_id: str, output_dir: Path) -> Path:
+    return local_acrf_summary_dir(study_id, output_dir) / "acrf_summary_merged.json"
 
 
 def local_pipeline_step2_dir(study_id: str, output_dir: Path) -> Path:

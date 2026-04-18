@@ -1,0 +1,113 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pdcheck/schemas/acrf_section_summary.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "study_id",
+    "generated_at",
+    "acrf_section_id",
+    "acrf_section_path",
+    "datasets"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": "1.0.0"
+    },
+    "study_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "acrf_section_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "acrf_section_path": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "minItems": 1
+    },
+    "datasets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "dataset_name",
+          "columns"
+        ],
+        "properties": {
+          "dataset_name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "columns": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "column_name",
+                "variable_type",
+                "categorical_values",
+                "value_range"
+              ],
+              "properties": {
+                "column_name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "variable_type": {
+                  "type": "string",
+                  "enum": [
+                    "categorical",
+                    "numeric",
+                    "date",
+                    "datetime",
+                    "text",
+                    "boolean",
+                    "unknown"
+                  ]
+                },
+                "categorical_values": {
+                  "type": "array",
+                  "items": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "value_range": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "min",
+                    "max"
+                  ],
+                  "properties": {
+                    "min": {
+                      "type": "string"
+                    },
+                    "max": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "notes": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

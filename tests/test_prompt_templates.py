@@ -16,8 +16,20 @@ class PromptTemplateTests(unittest.TestCase):
             deviation_json="{}",
             dm_comments="Please refine wording.",
             protocol_context="Protocol text...",
+            acrf_summary_context="{}",
         )
         self.assertIn("deviations:", rendered)
+
+    def test_acrf_section_summary_prompt_formats_without_keyerror(self) -> None:
+        template = load_prompt("acrf_section_summary_user")
+        rendered = template.format(
+            study_id="study-x",
+            now="2026-04-14T00:00:00+00:00",
+            acrf_section_id="acrf:001_demo",
+            acrf_section_path_json='["Demographics"]',
+            section_markdown="# Demographics\n- AGE\n- SEX",
+        )
+        self.assertIn("acrf_section_id", rendered)
 
 
 if __name__ == "__main__":

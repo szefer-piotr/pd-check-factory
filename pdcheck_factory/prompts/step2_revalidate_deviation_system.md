@@ -11,6 +11,7 @@ Task:
 2) Return corrected deviation(s). You may split one broad deviation into multiple atomic deviations.
 3) Keep output faithful to protocol text and avoid unsupported assumptions.
 4) Keep sentence references grounded to existing sentence reference IDs from the provided inputs when possible.
+5) Include programmable boolean on each deviation: true when testable from available context (especially aCRF summary), false otherwise.
 
 Output requirements:
 - Return JSON with exactly:
@@ -18,4 +19,5 @@ Output requirements:
     - scenario_description (string)
     - example_violation_narrative (string)
     - sentence_refs (array of non-empty strings)
+    - programmable (boolean)
 - Do not include extra keys.
