@@ -23,10 +23,10 @@ from pdcheck_factory.step2_review import (
 )
 from pdcheck_factory.step2_ui_helpers import (
     BaselineName,
-    acrf_preview,
     build_review_rows_from_ui_updates,
     flatten_step2_rows,
     local_step2_working_merged,
+    protocol_referenced_sentences_preview,
     protocol_section_preview,
     resolve_step2_baseline_path,
 )
@@ -35,13 +35,15 @@ _templates_dir = Path(__file__).resolve().parent / "ui_templates"
 templates = Jinja2Templates(directory=str(_templates_dir))
 
 
-def _find_deviation(step2_obj: Dict[str, Any], row_key: str) -> Optional[Dict[str, Any]]:
+def _find_rule_and_deviation(
+    step2_obj: Dict[str, Any], row_key: str
+) -> tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]]]:
     for rule in step2_obj.get("rules", []) or []:
         rid = str(rule.get("rule_id", ""))
         for dev in rule.get("candidate_deviations", []) or []:
             if build_row_key(rid, str(dev.get("deviation_id", ""))) == row_key:
-                return dev
-    return None
+                return rule, dev
+    return None, None
 
 
 class ApplyPayload(BaseModel):
@@ -95,28 +97,30 @@ def build_app(
         for b in (baseline, "merged", "working", "validated"):
             if b not in order:
                 order.append(b)
+        target_rule: Optional[Dict[str, Any]] = None
         target_dev: Optional[Dict[str, Any]] = None
         for b in order:
             p = resolve_step2_baseline_path(study_id, output_dir, b)
             if not p.is_file():
                 continue
             step2_obj = read_json(p)
-            target_dev = _find_deviation(step2_obj, row_key)
+            target_rule, target_dev = _find_rule_and_deviation(step2_obj, row_key)
             if target_dev is not None:
                 break
         if target_dev is None:
             raise HTTPException(status_code=404, detail=f"Unknown row_key: {row_key}")
-        sids = list(target_dev.get("source_section_ids", []) or [])
-        protocol_txt = protocol_section_preview(
-            study_id=study_id, output_dir=output_dir, section_ids=sids
+        rule_refs = list((target_rule or {}).get("sentence_refs") or [])
+        dev_refs = list(target_dev.get("sentence_refs") or [])
+        protocol_txt = protocol_referenced_sentences_preview(
+            study_id=study_id,
+            output_dir=output_dir,
+            rule_sentence_refs=rule_refs,
+            deviation_sentence_refs=dev_refs,
         )
-        merged_json, raw_acrf = acrf_preview(study_id=study_id, output_dir=output_dir)
         return JSONResponse(
             {
                 "row_key": row_key,
                 "protocol_markdown": protocol_txt,
-                "acrf_summary_json": merged_json,
-                "acrf_raw_excerpt": raw_acrf,
             }
         )
 

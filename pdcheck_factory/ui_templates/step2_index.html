@@ -11,6 +11,7 @@
     th { background: #f0f0f0; }
     textarea.comments { width: 100%; min-height: 3rem; box-sizing: border-box; }
     pre.ctx { white-space: pre-wrap; max-height: 28rem; overflow: auto; background: #f7f7f7; padding: 0.75rem; }
+    pre.pseudo_sql { white-space: pre-wrap; max-height: 10rem; overflow: auto; font-size: 0.8rem; background: #fafafa; margin: 0.35rem 0 0; padding: 0.35rem; }
     .toolbar { margin: 1rem 0; display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; }
     .muted { color: #555; font-size: 0.85rem; }
     .err { color: #a00; }
@@ -40,7 +41,7 @@
   </div>
 
   <h2>Context preview</h2>
-  <p class="muted">Select a row and click Preview context.</p>
+  <p class="muted">Select a row and click Preview to show only the protocol sentences cited on that rule and deviation (<code>sentence_refs</code>). aCRF is not shown here.</p>
   <pre class="ctx" id="ctxPane">(no row selected)</pre>
 
   <h2>Deviations</h2>
@@ -70,6 +71,8 @@
           <span class="deviation_id" hidden>{{ r.deviation.get("deviation_id", "") }}</span>
           <div>{{ r.deviation.get("scenario_description", "") }}</div>
           <div class="muted">{{ r.deviation.get("example_violation_narrative", "") }}</div>
+          <div class="muted" style="margin-top:0.35rem"><strong>pseudo_sql_logic</strong></div>
+          <pre class="pseudo_sql">{{ r.deviation.get("pseudo_sql_logic", "") or "(none)" }}</pre>
         </td>
         <td>
           <select class="prog">
@@ -114,16 +117,8 @@
           setMsg(data.detail || res.statusText, false);
           return;
         }
-        let out = "# Protocol sections\n\n" + (data.protocol_markdown || "(empty)");
-        if (data.acrf_summary_json) {
-          out += "\n\n---\n\n# aCRF merged summary (JSON)\n\n" + data.acrf_summary_json;
-        } else {
-          out += "\n\n---\n\n# aCRF merged summary\n\n(not found)";
-        }
-        if (data.acrf_raw_excerpt) {
-          out += "\n\n---\n\n# aCRF source excerpt\n\n" + data.acrf_raw_excerpt;
-        }
-        ctxPane.textContent = out;
+        const body = data.protocol_markdown || "(empty)";
+        ctxPane.textContent = "# Referenced protocol sentences\n\n" + body;
         setMsg("Context loaded.", true);
       });
     });

@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Set, Tuple
 
 from pdcheck_factory import paths
+from pdcheck_factory.protocol_markdown import load_manifest
 from pdcheck_factory.step2_review import VALIDATION_STATUSES, build_row_key
 
 BaselineName = Literal["merged", "validated", "working"]
@@ -25,6 +26,56 @@ def resolve_step2_baseline_path(
     if baseline == "validated":
         return paths.local_protocol_sections_step2_validated(study_id, output_dir)
     return local_step2_working_merged(study_id, output_dir)
+
+
+def _sentence_text_index(manifest: Dict[str, Any]) -> Dict[str, str]:
+    """Map sentence id (e.g. sec:abc#s1) to sentence text from sections_manifest."""
+    out: Dict[str, str] = {}
+    for sec in manifest.get("sections", []) or []:
+        for sent in sec.get("sentences", []) or []:
+            sid = sent.get("id")
+            if not isinstance(sid, str) or not sid.strip():
+                continue
+            out[sid.strip()] = (sent.get("text") or "").strip()
+    return out
+
+
+def protocol_referenced_sentences_preview(
+    *,
+    study_id: str,
+    output_dir: Path,
+    rule_sentence_refs: List[str],
+    deviation_sentence_refs: List[str],
+) -> str:
+    """
+    Markdown-ish text for only the cited protocol sentences (rule refs, then deviation refs,
+    de-duplicated in order). Requires sections_manifest.json from protocol segmentation.
+    """
+    man_path = paths.local_protocol_sections_manifest(study_id, output_dir)
+    if not man_path.is_file():
+        return (
+            "(sections manifest not found; run `pdcheck protocol segment` for this study.)\n"
+        )
+    manifest = load_manifest(man_path)
+    index = _sentence_text_index(manifest)
+    ordered: List[str] = []
+    seen: Set[str] = set()
+    for ref in list(rule_sentence_refs or []) + list(deviation_sentence_refs or []):
+        r = (ref or "").strip()
+        if not r or r in seen:
+            continue
+        seen.add(r)
+        ordered.append(r)
+    if not ordered:
+        return "(no sentence references on this rule or deviation.)\n"
+    blocks: List[str] = []
+    for ref in ordered:
+        txt = index.get(ref)
+        if txt:
+            blocks.append(f"`{ref}`\n\n{txt}")
+        else:
+            blocks.append(f"`{ref}`\n\n_(sentence text not found in manifest)_")
+    return "\n\n---\n\n".join(blocks)
 
 
 def protocol_section_preview(

@@ -36,9 +36,9 @@ acrf_app = typer.Typer(help="Tools for aCRF markdown processing.")
 ui_app = typer.Typer(help="Local web UIs.", no_args_is_help=True)
 
 _STALE_LEGACY = (
-    "This command targets the removed v1 pipeline (candidates.json + logic_drafts.json). "
-    "Step 1 uses `pdcheck protocol segment` and `pdcheck protocol sections extract`. "
-    "A future Phase 2 adapter will bridge Step 1 JSON to pd_draft_specs."
+    "This command targeted the removed v1 pipeline (rules KB → PD candidates → logic drafts → pd_draft_specs). "
+    "Use Step 1/2 instead: `pdcheck protocol segment`, `pdcheck protocol sections extract` (or `pdcheck rules`), "
+    "then `pdcheck step2-dedup` and `pdcheck step2-export-review` / `step2-apply-review`."
 )
 
 _TOC_ROW = re.compile(
@@ -803,6 +803,7 @@ def run_protocol_sections_extract(
     skip_regex: Optional[str],
     include_acrf: bool,
     use_acrf_summary: bool = True,
+    overwrite: bool = True,
 ) -> None:
     """Run Step 1 LLM per selected section; write pipeline/.../protocol_sections/step1/*.json."""
     _load_env()
@@ -823,6 +824,14 @@ def run_protocol_sections_extract(
         )
     except ValueError as ex:
         raise typer.BadParameter(str(ex)) from ex
+
+    if overwrite:
+        run_clear_stage(
+            study_id=study_id,
+            stage="step1",
+            output_dir=output_dir,
+            clear_blob=False,
+        )
 
     acrf, acrf_summary_context = _load_acrf_contexts(
         study_id=study_id,
@@ -868,6 +877,7 @@ def run_rules(
     strip_page_markers: bool = True,
     rollup_max_section_level: Optional[int] = 1,
     use_acrf_summary: bool = True,
+    overwrite: bool = True,
 ) -> None:
     """Alias: segment protocol + Step 1 extract for all sections."""
     run_protocol_segment(
@@ -888,6 +898,7 @@ def run_rules(
         skip_regex=None,
         include_acrf=True,
         use_acrf_summary=use_acrf_summary,
+        overwrite=overwrite,
     )
 
 
@@ -968,9 +979,17 @@ def run_step2_merge(
     output_dir: Path,
     upload: bool,
     use_acrf_summary: bool = True,
+    overwrite: bool = True,
 ) -> Path:
     """Merge and semantic-dedup all Step 1 section outputs into one Step 2 artifact."""
     _load_env()
+    if overwrite:
+        run_clear_stage(
+            study_id=study_id,
+            stage="step2",
+            output_dir=output_dir,
+            clear_blob=False,
+        )
     step1_dir = paths.local_protocol_sections_step1_dir(study_id, output_dir)
     if not step1_dir.is_dir():
         raise typer.BadParameter(
@@ -1186,6 +1205,11 @@ def cmd_rules(
         "--use-acrf-summary/--no-use-acrf-summary",
         help="Attach merged aCRF summary context when available.",
     ),
+    overwrite: bool = typer.Option(
+        True,
+        "--overwrite/--no-overwrite",
+        help="Before Step 1 extract, remove existing local Step 1 JSON under pipeline/.../protocol_sections/step1/.",
+    ),
 ) -> None:
     """Segment protocol and run Step 1 extraction on every section (shortcut)."""
     run_rules(
@@ -1195,6 +1219,7 @@ def cmd_rules(
         strip_page_markers=not keep_di_page_markers,
         rollup_max_section_level=rollup_to_level,
         use_acrf_summary=use_acrf_summary,
+        overwrite=overwrite,
     )
 
 
@@ -1233,6 +1258,11 @@ def cmd_step2(
         "--use-acrf-summary/--no-use-acrf-summary",
         help="Attach merged aCRF summary context to dedup LLM prompts when available.",
     ),
+    overwrite: bool = typer.Option(
+        True,
+        "--overwrite/--no-overwrite",
+        help="Before merge, remove existing local Step 2 outputs under pipeline/.../step2/.",
+    ),
 ) -> None:
     """Merge Step 1 section outputs and deduplicate semantic duplicates."""
     run_step2_merge(
@@ -1240,6 +1270,7 @@ def cmd_step2(
         output_dir=output_dir,
         upload=upload,
         use_acrf_summary=use_acrf_summary,
+        overwrite=overwrite,
     )
 
 
@@ -1428,6 +1459,11 @@ def cmd_protocol_sections_extract(
         "--use-acrf-summary/--no-use-acrf-summary",
         help="Attach merged aCRF summary context when available.",
     ),
+    overwrite: bool = typer.Option(
+        True,
+        "--overwrite/--no-overwrite",
+        help="Before extract, remove existing local Step 1 JSON under pipeline/.../protocol_sections/step1/.",
+    ),
 ) -> None:
     """Run Step 1 LLM extraction for selected sections."""
     _load_env()
@@ -1448,6 +1484,7 @@ def cmd_protocol_sections_extract(
         skip_regex=skip_regex,
         include_acrf=not no_acrf,
         use_acrf_summary=use_acrf_summary,
+        overwrite=overwrite,
     )
 
 
@@ -1608,7 +1645,7 @@ def cmd_export_review(
     output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
     upload: bool = typer.Option(True, "--upload/--no-upload"),
 ) -> None:
-    """Export pd_draft_specs to an XLSX workbook for DM review."""
+    """Removed v1 command; use `pdcheck step2-export-review`."""
     raise typer.BadParameter(_STALE_LEGACY)
 
 
@@ -1619,7 +1656,7 @@ def cmd_apply_review(
     output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
     upload: bool = typer.Option(True, "--upload/--no-upload"),
 ) -> None:
-    """Apply DM edits from workbook back into pd_draft_specs.json."""
+    """Removed v1 command; use `pdcheck step2-apply-review`."""
     raise typer.BadParameter(_STALE_LEGACY)
 
 
@@ -1629,7 +1666,7 @@ def cmd_emit_pseudo(
     output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
     upload: bool = typer.Option(True, "--upload/--no-upload"),
 ) -> None:
-    """Build pseudo_logic_bundle.json (+ .md) from current pd_draft_specs."""
+    """Removed v1 pseudo-logic bundle command."""
     raise typer.BadParameter(_STALE_LEGACY)
 
 
@@ -1643,6 +1680,11 @@ def cmd_run_all(
         True,
         "--use-acrf-summary/--no-use-acrf-summary",
         help="Attach merged aCRF summary context to downstream LLM prompts when available.",
+    ),
+    overwrite: bool = typer.Option(
+        True,
+        "--overwrite/--no-overwrite",
+        help="Before Step 1 extract in run-all, remove existing local Step 1 outputs (same as protocol sections extract).",
     ),
 ) -> None:
     """extract → aCRF summarize → protocol segment + Step 1 extract for all sections."""
@@ -1671,6 +1713,7 @@ def cmd_run_all(
         output_dir=output_dir,
         upload=upload,
         use_acrf_summary=use_acrf_summary,
+        overwrite=overwrite,
     )
     print("run-all complete through Step 1 extraction with aCRF summary context.")
 

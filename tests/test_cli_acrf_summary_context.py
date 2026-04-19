@@ -50,7 +50,7 @@ class CliAcrfSummaryContextTests(unittest.TestCase):
             ), patch(
                 "pdcheck_factory.llm.extract_protocol_section_step1",
                 return_value={
-                    "schema_version": "2.0.0",
+                    "schema_version": "2.0.1",
                     "study_id": study_id,
                     "generated_at": "2026-01-01T00:00:00+00:00",
                     "section_id": "sec:abc",
@@ -80,7 +80,7 @@ class CliAcrfSummaryContextTests(unittest.TestCase):
             proto_md.write_text("# Protocol\nText", encoding="utf-8")
 
             merged = {
-                "schema_version": "2.1.0",
+                "schema_version": "2.1.1",
                 "study_id": study_id,
                 "generated_at": "2026-01-01T00:00:00+00:00",
                 "rules": [
@@ -98,6 +98,7 @@ class CliAcrfSummaryContextTests(unittest.TestCase):
                                 "example_violation_narrative": "Example",
                                 "sentence_refs": ["sec:abc#s1"],
                                 "programmable": True,
+                                "pseudo_sql_logic": "SELECT 1 FROM dual",
                                 "source_section_ids": ["sec:abc"],
                                 "source_section_paths": [["Inclusion"]],
                             }
@@ -112,8 +113,8 @@ class CliAcrfSummaryContextTests(unittest.TestCase):
             export_step2_review_workbook(step2_json_path=step2_path, workbook_path=workbook_path)
             wb = load_workbook(workbook_path)
             ws = wb.active
-            ws["L2"] = "to_review"
-            ws["M2"] = "Please refine."
+            ws["M2"] = "to_review"
+            ws["N2"] = "Please refine."
             wb.save(workbook_path)
 
             acrf_merged = paths.local_acrf_summary_merged(study_id, output_dir)
@@ -129,6 +130,7 @@ class CliAcrfSummaryContextTests(unittest.TestCase):
                         "example_violation_narrative": "Example updated",
                         "sentence_refs": ["sec:abc#s1"],
                         "programmable": True,
+                        "pseudo_sql_logic": "SELECT subject_id FROM dm WHERE flag = 1",
                         "source_section_ids": ["sec:abc"],
                         "source_section_paths": [["Inclusion"]],
                     }

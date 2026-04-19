@@ -28,4 +28,4 @@ Instructions:
 - Keep sentence_refs limited to references relevant to the corrected deviation.
 - Set programmable=true only when the deviation can be tested with available context data; otherwise set programmable=false.
 - Return strict JSON only with:
-  - deviations: [{{scenario_description, example_violation_narrative, sentence_refs, programmable}}, ...]
+  - deviations: [{{scenario_description, example_violation_narrative, sentence_refs, programmable, pseudo_sql_logic}}, ...]

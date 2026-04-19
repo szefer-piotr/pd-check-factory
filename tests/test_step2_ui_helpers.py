@@ -5,10 +5,12 @@ import unittest
 from pathlib import Path
 
 from pdcheck_factory import paths
+from pdcheck_factory.protocol_markdown import write_manifest
 from pdcheck_factory.step2_ui_helpers import (
     build_review_rows_from_ui_updates,
     flatten_step2_rows,
     local_step2_working_merged,
+    protocol_referenced_sentences_preview,
     protocol_section_preview,
 )
 
@@ -79,6 +81,61 @@ class Step2UiHelpersTests(unittest.TestCase):
         rows = flatten_step2_rows(obj)
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["row_key"], "rule-001::dev-001a")
+
+    def test_protocol_referenced_sentences_preview_order_and_lookup(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            output_dir = Path(td) / "out"
+            study_id = "s1"
+            man_path = paths.local_protocol_sections_manifest(study_id, output_dir)
+            man_path.parent.mkdir(parents=True, exist_ok=True)
+            write_manifest(
+                man_path,
+                {
+                    "manifest_schema_version": "1.1.0",
+                    "study_id": study_id,
+                    "sections": [
+                        {
+                            "section_id": "sec:x",
+                            "section_path": ["X"],
+                            "sentences": [
+                                {"id": "sec:x#s1", "text": "First sentence."},
+                                {"id": "sec:x#s2", "text": "Second sentence."},
+                            ],
+                        }
+                    ],
+                },
+            )
+            text = protocol_referenced_sentences_preview(
+                study_id=study_id,
+                output_dir=output_dir,
+                rule_sentence_refs=["sec:x#s2", "sec:x#s1"],
+                deviation_sentence_refs=["sec:x#s1"],
+            )
+            self.assertIn("First sentence.", text)
+            self.assertIn("Second sentence.", text)
+            self.assertLess(text.index("Second sentence."), text.index("First sentence."))
+
+    def test_protocol_referenced_sentences_preview_unknown_ref(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            output_dir = Path(td) / "out"
+            study_id = "s2"
+            man_path = paths.local_protocol_sections_manifest(study_id, output_dir)
+            man_path.parent.mkdir(parents=True, exist_ok=True)
+            write_manifest(
+                man_path,
+                {
+                    "manifest_schema_version": "1.1.0",
+                    "study_id": study_id,
+                    "sections": [],
+                },
+            )
+            text = protocol_referenced_sentences_preview(
+                study_id=study_id,
+                output_dir=output_dir,
+                rule_sentence_refs=["sec:missing#s1"],
+                deviation_sentence_refs=[],
+            )
+            self.assertIn("not found in manifest", text)
 
 
 class Step2UiFastapiSmokeTests(unittest.TestCase):

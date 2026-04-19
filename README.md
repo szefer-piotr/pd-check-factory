@@ -2,7 +2,7 @@
 
 Single **Python** application to extract text and tables from clinical trial **protocol** and **annotated CRF (aCRF)** PDFs with **Azure AI Document Intelligence**, segment the protocol Markdown into sections with **numbered sentences**, run **Step 1 Azure OpenAI extraction** (atomic protocol rules plus per-rule nested candidate deviations and short violation examples per section), run **Step 2 semantic merge/dedup**, support **DM Excel validation round-trip**, and optionally upload artifacts to Blob.
 
-**Current scope:** Step 1 extraction, Step 2 merge/dedup, and DM validation round-trip (`step2-export-review`, `step2-apply-review`) for protocol deviations. Legacy v1 pseudo-logic commands remain out of the default path.
+**Current scope:** Step 1 extraction, Step 2 merge/dedup, and DM validation round-trip (`step2-export-review`, `step2-apply-review`) for protocol deviations.
 
 There is no Azure Functions, Event Grid, or separate review UI in this MVP—only Blob storage, DI, and OpenAI.
 
@@ -53,9 +53,7 @@ Copy `.env.example` to `.env` and fill in endpoints and keys. The CLI loads `.en
 | Protocol sections (Step 2 merged)     | `pipeline/<study_id>/step2/step2_merged.json`                                                                                                                        |
 | Step 2 DM workbook (export)           | `pipeline/<study_id>/step2/step2_dm_review.xlsx`                                                                                                                     |
 | Step 2 DM outputs (apply)             | `pipeline/<study_id>/step2/step2_validated.json`, `pipeline/<study_id>/step2/step2_validation_audit.json`, `pipeline/<study_id>/step2/step2_dm_review.reviewed.xlsx` |
-| Legacy v1 PD JSON (unused by default) | `pipeline/<study_id>/pd/...`                                                                                                                                         |
 | DM workbook                           | `review/<study_id>/dm_review_roundtrip.xlsx`                                                                                                                         |
-| Pseudo bundle                         | `artifacts/<study_id>/pseudo_logic_bundle.json`                                                                                                                      |
 
 
 Local cache mirrors the same structure under `output/<study_id>/`.
@@ -120,11 +118,12 @@ Local cache mirrors the same structure under `output/<study_id>/`.
    pdcheck protocol sections extract --study-id MY-STUDY --section-id sec:abc --skip-regex '^Appendix'
   ```
   Use `--no-acrf` to omit aCRF context from prompts. Use `--no-use-acrf-summary` to disable merged summary injection even when `pipeline/<study_id>/acrf_summary/acrf_summary_merged.json` exists. By default, merged aCRF summary is attached first when available, then raw aCRF text is used as fallback.
+  **Overwrite (default on):** `--overwrite` (default) deletes existing local Step 1 JSON under `pipeline/<study_id>/protocol_sections/step1/` before this run; use `--no-overwrite` to keep orphan files when extracting a subset.
 7. **Rules** (shortcut: **segment + extract all sections**):
   ```bash
    pdcheck rules --study-id MY-STUDY
   ```
-   `rules` also supports `--use-acrf-summary/--no-use-acrf-summary` (default: use summary).
+   `rules` also supports `--use-acrf-summary/--no-use-acrf-summary` (default: use summary) and `--overwrite/--no-overwrite` for the Step 1 extract phase (same semantics as `protocol sections extract`).
 8. **Step 2 merge + semantic dedup** (merge all Step 1 section outputs):
   ```bash
    pdcheck step2 --study-id MY-STUDY
@@ -133,6 +132,7 @@ Local cache mirrors the same structure under `output/<study_id>/`.
    in rules and their nested candidate deviations, and writes one merged artifact:
    `pipeline/<study_id>/step2/step2_merged.json`.
    Dedup is LLM-assisted, so runtime and token cost are higher than a pure local merge.
+   **Overwrite (default on):** `--overwrite` (default) deletes existing local files under `pipeline/<study_id>/step2/` before writing the new merged JSON; use `--no-overwrite` to retain prior DM workbooks or validated outputs in that directory.
 9. **Step 2 DM review export** (one deviation per row in Excel):
   ```bash
    pdcheck step2-export-review --study-id MY-STUDY
@@ -151,7 +151,7 @@ Local cache mirrors the same structure under `output/<study_id>/`.
   - `accepted` deviations remain unchanged.
   - `rejected` deviations are removed from final output.
   - `to_review` deviations are sent back to the LLM with DM comments plus protocol context (and merged aCRF summary unless disabled) and replaced when a valid corrected deviation is returned.
-  - Each deviation now carries `programmable` (`true`/`false`) to indicate whether it is directly testable from available captured data context.
+  - Each deviation carries `programmable` (`true`/`false`) for direct testability from captured data context, and `pseudo_sql_logic` (short pseudo-SQL) as an implementation hint for programmed checks.
    Output artifacts:
   - `pipeline/<study_id>/step2/step2_validated.json`
   - `pipeline/<study_id>/step2/step2_validation_audit.json`
@@ -161,7 +161,7 @@ Local cache mirrors the same structure under `output/<study_id>/`.
   - `--use-acrf-summary/--no-use-acrf-summary` (default enabled)
   - `--strict` (fail when unresolved `to_review` rows remain)
   - `--no-upload`
-11. **Step 2 local web UI (optional)** — browse `step2_merged.json` (or **validated** / **working** baseline), preview protocol + aCRF context per deviation, set `accepted` / `to_review` / `rejected`, add comments, and run the same revalidation path as `step2-apply-review` without Excel:
+11. **Step 2 local web UI (optional)** — browse `step2_merged.json` (or **validated** / **working** baseline), preview **only the cited protocol sentences** (`sentence_refs`) per row, set `accepted` / `to_review` / `rejected`, add comments, and run the same revalidation path as `step2-apply-review` without Excel (revalidation still receives full protocol / aCRF context per server flags):
 
    ```bash
    pip install -e ".[ui]"
@@ -170,7 +170,7 @@ Local cache mirrors the same structure under `output/<study_id>/`.
 
    Then open `http://127.0.0.1:8765/` (default). Use **Apply + LLM revalidate** for rows marked `to_review` (writes `step2_validated.json` + audit). **Promote validated → working** copies `step2_validated.json` to `pipeline/<study_id>/step2/step2_merged.working.json` so you can open `?baseline=working` and iterate again. Optional flags: `--host`, `--port`, `--context-mode`, `--use-acrf-summary` / `--no-use-acrf-summary`.
 
-**Removed / stale in Step 1:** `draft-pd`, `merge`, `export-review`, `apply-review`, and `emit-pseudo` still target the legacy v1 pipeline and remain disabled.
+**Removed CLI stubs:** `draft-pd`, `merge`, `export-review`, `apply-review`, and `emit-pseudo` invoke Typer but only raise an error pointing at the Step 1/2 commands above (the old rules-KB → PD-candidate pipeline code and schemas were removed).
 
 **End-to-end** through Step 1 (extract PDFs → aCRF summarize → segment → LLM per section):
 
@@ -179,6 +179,8 @@ pdcheck run-all --study-id MY-STUDY
 ```
 
 (`run-all` still requires aCRF extraction today because it calls `extract` without `--skip-acrf` and then executes `acrf split-toc` + `acrf summarize`.)
+
+`run-all` accepts `--overwrite/--no-overwrite` and passes it through to the Step 1 extract inside `rules` (same as `protocol sections extract`).
 
 Use `--no-upload` on any command to only write under `output/` without Blob uploads.
 
@@ -198,11 +200,10 @@ Section bodies are split into sentences with **stdlib heuristics** (including ke
 
 ## JSON schemas
 
-- `schemas/protocol_section_step1.schema.json` — Step 1 output per section (`schema_version` **2.0.0**)
+- `schemas/protocol_section_step1.schema.json` — Step 1 output per section (`schema_version` **2.0.1**)
 - `schemas/acrf_section_summary.schema.json` — aCRF summary per TOC section (`schema_version` **1.0.0**)
 - `schemas/acrf_section_summaries_merged.schema.json` — merged aCRF summaries (`schema_version` **1.0.0**)
-- `schemas/protocol_sections_step2_merged.schema.json` — Step 2 merged output (`schema_version` **2.1.0**)
-- `schemas/protocol_rules_kb.schema.json`, `schemas/pd_candidate_output.schema.json`, `schemas/pd_logic_output.schema.json`, `schemas/pd_draft_spec.schema.json` — retained for reference / future Phase 2; not produced by the default Step 1 CLI path
+- `schemas/protocol_sections_step2_merged.schema.json` — Step 2 merged output (`schema_version` **2.1.1**)
 
 ## LLM prompts
 

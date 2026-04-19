@@ -30,6 +30,7 @@ class Step1Deviation(_StrictModel):
     example_violation_narrative: str = Field(min_length=1)
     sentence_refs: List[str] = Field(min_length=1)
     programmable: bool
+    pseudo_sql_logic: str = Field(min_length=1)
 
 
 class Step1Rule(_StrictModel):
@@ -41,7 +42,7 @@ class Step1Rule(_StrictModel):
 
 
 class ProtocolSectionStep1Output(_StrictModel):
-    schema_version: Literal["2.0.0"]
+    schema_version: Literal["2.0.1"]
     study_id: str = Field(min_length=1)
     generated_at: str
     section_id: str = Field(min_length=1)
@@ -60,6 +61,7 @@ class Step2RevalidatedDeviation(_StrictModel):
     example_violation_narrative: str = Field(min_length=1)
     sentence_refs: List[str] = Field(min_length=1)
     programmable: bool
+    pseudo_sql_logic: str = Field(min_length=1)
 
 
 class Step2RevalidatedDeviationResponse(_StrictModel):
@@ -198,7 +200,7 @@ def _empty_step1(
     now: str,
 ) -> Dict[str, Any]:
     return {
-        "schema_version": "2.0.0",
+        "schema_version": "2.0.1",
         "study_id": study_id,
         "generated_at": now,
         "section_id": section["section_id"],
@@ -260,7 +262,7 @@ def extract_protocol_section_step1(
     def _v(d: Dict[str, Any]) -> List[str]:
         d.setdefault("generated_at", now)
         d.setdefault("study_id", study_id)
-        d.setdefault("schema_version", "2.0.0")
+        d.setdefault("schema_version", "2.0.1")
         d["section_id"] = section["section_id"]
         d["section_path"] = list(section["section_path"])
         errs = validate(d, schema)
@@ -368,6 +370,9 @@ def _validate_step2_revalidated_deviation(d: Dict[str, Any]) -> List[str]:
                 )
         if not isinstance(dev.get("programmable"), bool):
             errs.append(f"deviations[{idx}].programmable must be a boolean.")
+        psql = dev.get("pseudo_sql_logic")
+        if not isinstance(psql, str) or not psql.strip():
+            errs.append(f"deviations[{idx}].pseudo_sql_logic must be a non-empty string.")
     return errs
 
 
@@ -405,6 +410,11 @@ def revalidate_deviation_with_dm_feedback(
     for idx, item in enumerate(out.get("deviations", [])):
         base_id = deviation.get("deviation_id", "dev")
         suffix = "" if idx == 0 else f"-r{idx + 1}"
+        psql = (item.get("pseudo_sql_logic") or "").strip()
+        if not psql:
+            psql = (deviation.get("pseudo_sql_logic") or "").strip()
+        if not psql:
+            psql = "SELECT 1 WHERE 1=0 -- pseudo_sql_logic not provided by revalidation"
         result.append(
             {
                 "deviation_id": f"{base_id}{suffix}",
@@ -414,6 +424,7 @@ def revalidate_deviation_with_dm_feedback(
                 ].strip(),
                 "sentence_refs": [s.strip() for s in item["sentence_refs"]],
                 "programmable": bool(item["programmable"]),
+                "pseudo_sql_logic": psql,
                 "source_section_ids": list(deviation.get("source_section_ids", [])),
                 "source_section_paths": list(deviation.get("source_section_paths", [])),
             }

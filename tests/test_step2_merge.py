@@ -8,7 +8,7 @@ from pdcheck_factory.step2_merge import merge_step1_outputs
 
 def _step1_obj(section_id: str, path: list[str], title: str, req: str, scenario: str) -> dict:
     return {
-        "schema_version": "2.0.0",
+        "schema_version": "2.0.1",
         "study_id": "study-x",
         "generated_at": "2026-01-01T00:00:00+00:00",
         "section_id": section_id,
@@ -26,6 +26,7 @@ def _step1_obj(section_id: str, path: list[str], title: str, req: str, scenario:
                         "example_violation_narrative": "Example",
                         "sentence_refs": [f"{section_id}#s1"],
                         "programmable": True,
+                        "pseudo_sql_logic": "SELECT subject_id FROM dm WHERE age < 18",
                     }
                 ],
             }

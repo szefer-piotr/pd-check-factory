@@ -14,7 +14,7 @@
   "properties": {
     "schema_version": {
       "type": "string",
-      "const": "2.0.0"
+      "const": "2.0.1"
     },
     "study_id": {
       "type": "string",
@@ -78,7 +78,8 @@
                 "scenario_description",
                 "example_violation_narrative",
                 "sentence_refs",
-                "programmable"
+                "programmable",
+                "pseudo_sql_logic"
               ],
               "properties": {
                 "deviation_id": {
@@ -103,6 +104,10 @@
                 },
                 "programmable": {
                   "type": "boolean"
+                },
+                "pseudo_sql_logic": {
+                  "type": "string",
+                  "minLength": 1
                 }
               },
               "additionalProperties": false

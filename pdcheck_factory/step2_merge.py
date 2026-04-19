@@ -27,6 +27,7 @@ class _DeviationRow:
     example_violation_narrative: str
     sentence_refs: List[str]
     programmable: bool
+    pseudo_sql_logic: str
     source_section_id: str
     source_section_path: List[str]
 
@@ -97,12 +98,16 @@ def _merge_rule_cluster(cluster: List[_RuleRow]) -> Dict[str, Any]:
             seen_paths.add(pkey)
             section_paths.append(list(r.source_section_path))
         for d in r.candidate_deviations or []:
+            psql = (d.get("pseudo_sql_logic") or "").strip()
+            if not psql:
+                psql = "SELECT 1 WHERE 1=0 -- pseudo_sql_logic missing in step1 input"
             deviations.append(
                 _DeviationRow(
                     scenario_description=d.get("scenario_description", ""),
                     example_violation_narrative=d.get("example_violation_narrative", ""),
                     sentence_refs=list(d.get("sentence_refs", []) or []),
                     programmable=bool(d.get("programmable")),
+                    pseudo_sql_logic=psql,
                     source_section_id=r.source_section_id,
                     source_section_path=list(r.source_section_path),
                 )
@@ -203,7 +208,7 @@ def merge_step1_outputs(
 
     if not rows:
         return {
-            "schema_version": "2.1.0",
+            "schema_version": "2.1.1",
             "study_id": study_id,
             "generated_at": datetime.now(timezone.utc).isoformat(),
             "rules": [],
@@ -263,6 +268,7 @@ def merge_step1_outputs(
                     "example_violation_narrative": rep.example_violation_narrative,
                     "sentence_refs": sorted(d_refs),
                     "programmable": all(d.programmable for d in dc),
+                    "pseudo_sql_logic": rep.pseudo_sql_logic,
                     "source_section_ids": sorted(d_sec_ids),
                     "source_section_paths": d_paths,
                 }
@@ -276,7 +282,7 @@ def merge_step1_outputs(
         )
 
     return {
-        "schema_version": "2.1.0",
+        "schema_version": "2.1.1",
         "study_id": study_id,
         "generated_at": datetime.now(timezone.utc).isoformat(),
         "rules": out_rules,

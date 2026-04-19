@@ -12,7 +12,7 @@
   "properties": {
     "schema_version": {
       "type": "string",
-      "const": "2.1.0"
+      "const": "2.1.1"
     },
     "study_id": {
       "type": "string",
@@ -87,6 +87,7 @@
                 "example_violation_narrative",
                 "sentence_refs",
                 "programmable",
+                "pseudo_sql_logic",
                 "source_section_ids",
                 "source_section_paths"
               ],
@@ -113,6 +114,10 @@
                 },
                 "programmable": {
                   "type": "boolean"
+                },
+                "pseudo_sql_logic": {
+                  "type": "string",
+                  "minLength": 1
                 },
                 "source_section_ids": {
                   "type": "array",

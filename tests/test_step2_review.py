@@ -17,7 +17,7 @@ from pdcheck_factory.step2_review import (
 
 def _step2_fixture() -> dict:
     return {
-        "schema_version": "2.1.0",
+        "schema_version": "2.1.1",
         "study_id": "study-x",
         "generated_at": "2026-01-01T00:00:00+00:00",
         "rules": [
@@ -35,6 +35,7 @@ def _step2_fixture() -> dict:
                         "example_violation_narrative": "Enrollment was performed before age 18.",
                         "sentence_refs": ["sec:a#s1"],
                         "programmable": True,
+                        "pseudo_sql_logic": "SELECT subject_id FROM dm WHERE age < 18",
                         "source_section_ids": ["sec:a"],
                         "source_section_paths": [["Section A"]],
                     },
@@ -44,6 +45,7 @@ def _step2_fixture() -> dict:
                         "example_violation_narrative": "Site could not verify age eligibility.",
                         "sentence_refs": ["sec:a#s2"],
                         "programmable": False,
+                        "pseudo_sql_logic": "SELECT subject_id FROM dm WHERE age IS NULL",
                         "source_section_ids": ["sec:a"],
                         "source_section_paths": [["Section A"]],
                     },
@@ -70,9 +72,9 @@ class Step2ReviewTests(unittest.TestCase):
             wb = load_workbook(workbook_path)
             ws = wb.active
             # Row 2 -> to_review, Row 3 -> rejected.
-            ws["L2"] = "to_review"
-            ws["M2"] = "Keep same intent but rewrite using DM comment."
-            ws["L3"] = "rejected"
+            ws["M2"] = "to_review"
+            ws["N2"] = "Keep same intent but rewrite using DM comment."
+            ws["M3"] = "rejected"
             wb.save(workbook_path)
 
             parsed = read_step2_review_workbook(workbook_path)
@@ -86,6 +88,7 @@ class Step2ReviewTests(unittest.TestCase):
                         "example_violation_narrative": dm_comments,
                         "sentence_refs": list(deviation["sentence_refs"]),
                         "programmable": True,
+                        "pseudo_sql_logic": "SELECT subject_id FROM dm WHERE age < 18",
                         "source_section_ids": list(deviation["source_section_ids"]),
                         "source_section_paths": list(deviation["source_section_paths"]),
                     }
@@ -110,7 +113,7 @@ class Step2ReviewTests(unittest.TestCase):
             )
             reviewed = load_workbook(reviewed_workbook_path)
             rws = reviewed.active
-            self.assertEqual(rws["N2"].value, "yes")
+            self.assertEqual(rws["O2"].value, "yes")
             self.assertNotEqual(rws["A2"].fill.fill_type, None)
             self.assertEqual(rws.max_row, 2)
 
@@ -127,7 +130,7 @@ class Step2ReviewTests(unittest.TestCase):
             )
             wb = load_workbook(workbook_path)
             ws = wb.active
-            ws["L2"] = "maybe"
+            ws["M2"] = "maybe"
             wb.save(workbook_path)
 
             parsed = read_step2_review_workbook(workbook_path)
@@ -190,6 +193,7 @@ class Step2ReviewTests(unittest.TestCase):
                     "example_violation_narrative": dm_comments,
                     "sentence_refs": list(deviation["sentence_refs"]),
                     "programmable": True,
+                    "pseudo_sql_logic": "SELECT s FROM proc WHERE proc_a IS NULL",
                     "source_section_ids": list(deviation["source_section_ids"]),
                     "source_section_paths": list(deviation["source_section_paths"]),
                 },
@@ -199,6 +203,7 @@ class Step2ReviewTests(unittest.TestCase):
                     "example_violation_narrative": dm_comments,
                     "sentence_refs": list(deviation["sentence_refs"]),
                     "programmable": True,
+                    "pseudo_sql_logic": "SELECT s FROM proc WHERE proc_b IS NULL",
                     "source_section_ids": list(deviation["source_section_ids"]),
                     "source_section_paths": list(deviation["source_section_paths"]),
                 },
