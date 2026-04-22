@@ -18,6 +18,7 @@ dependencies = [
   "azure-identity",
   "azure-ai-documentintelligence",
   "azure-storage-blob",
+  "opendataloader-pdf",
 ]
 
 [project.optional-dependencies]

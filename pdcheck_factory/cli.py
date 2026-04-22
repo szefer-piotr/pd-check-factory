@@ -13,7 +13,7 @@ from typing import Dict, List, Literal, Optional, Tuple
 import typer
 from dotenv import load_dotenv
 
-from pdcheck_factory import blob_io, di_layout, paths
+from pdcheck_factory import blob_io, di_layout, opendataloader_ocr, paths
 from pdcheck_factory import llm as llm_mod
 from pdcheck_factory import step2_merge
 from pdcheck_factory import step2_review
@@ -455,12 +455,20 @@ def run_extract(
     upload: bool,
     skip_acrf: bool,
     upload_only: bool,
+    run_opendataloader_ocr: bool,
+    opendataloader_only: bool,
     debug_blob: bool = False,
 ) -> None:
-    """Run Document Intelligence Layout on protocol (+ optional aCRF) PDFs in Blob."""
+    """Run extraction for protocol (+ optional aCRF) PDFs in Blob."""
     _load_env()
     if upload_only and not upload:
         raise typer.BadParameter("--upload-only cannot be used with --no-upload.")
+    if upload_only and opendataloader_only:
+        raise typer.BadParameter("--upload-only cannot be used with --opendataloader-only.")
+    if opendataloader_only and not run_opendataloader_ocr:
+        raise typer.BadParameter(
+            "--opendataloader-only requires --opendataloader-ocr (or omit --no-opendataloader-ocr)."
+        )
 
     bs = blob_io.blob_service_from_env()
     container = blob_io.container_from_env()
@@ -536,6 +544,41 @@ def run_extract(
             )
         return
 
+    if opendataloader_only:
+        if not blob_io.blob_exists(
+            blob_service=bs, container_name=container, blob_path=protocol_resolved
+        ):
+            raise typer.BadParameter(
+                f"Protocol blob not found: {protocol_resolved} (container {container})"
+            )
+        opendataloader_ocr.run_ocr_for_blob(
+            doc_role="protocol",
+            source_blob_path=protocol_resolved,
+            local_output_base=paths.local_extraction_opendataloader(
+                study_id, "protocol", output_dir
+            ),
+            blob_service=bs,
+            container_name=container,
+        )
+        if skip_acrf:
+            return
+        if not blob_io.blob_exists(
+            blob_service=bs, container_name=container, blob_path=acrf_resolved
+        ):
+            raise typer.BadParameter(
+                f"aCRF blob not found: {acrf_resolved}. Upload it or pass --skip-acrf."
+            )
+        opendataloader_ocr.run_ocr_for_blob(
+            doc_role="acrf",
+            source_blob_path=acrf_resolved,
+            local_output_base=paths.local_extraction_opendataloader(
+                study_id, "acrf", output_dir
+            ),
+            blob_service=bs,
+            container_name=container,
+        )
+        return
+
     cs = blob_io.require_env("STORAGE_CONNECTION_STRING")
     di_endpoint = blob_io.require_env("DI_ENDPOINT")
     di_key = blob_io.require_env("DI_KEY")
@@ -576,6 +619,16 @@ def run_extract(
         upload_to_blob=upload,
         debug_blob=debug_blob,
     )
+    if run_opendataloader_ocr:
+        opendataloader_ocr.run_ocr_for_blob(
+            doc_role="protocol",
+            source_blob_path=protocol_resolved,
+            local_output_base=paths.local_extraction_opendataloader(
+                study_id, "protocol", output_dir
+            ),
+            blob_service=bs,
+            container_name=container,
+        )
 
     if debug_blob:
         _debug_log_extract_blob_state(
@@ -616,6 +669,16 @@ def run_extract(
         upload_to_blob=upload,
         debug_blob=debug_blob,
     )
+    if run_opendataloader_ocr:
+        opendataloader_ocr.run_ocr_for_blob(
+            doc_role="acrf",
+            source_blob_path=acrf_resolved,
+            local_output_base=paths.local_extraction_opendataloader(
+                study_id, "acrf", output_dir
+            ),
+            blob_service=bs,
+            container_name=container,
+        )
 
     if debug_blob:
         _debug_log_extract_blob_state(
@@ -659,6 +722,16 @@ def extract(
         "--upload-only",
         help="Skip Document Intelligence; upload existing files under output/<study-id>/extractions/... to Blob.",
     ),
+    run_opendataloader_ocr: bool = typer.Option(
+        True,
+        "--opendataloader-ocr/--no-opendataloader-ocr",
+        help="Also run OpenDataLoader OCR and write markdown under output/<study-id>/extractions/<doc>/opendataloader/ for DI comparison.",
+    ),
+    opendataloader_only: bool = typer.Option(
+        False,
+        "--opendataloader-only",
+        help="Skip Document Intelligence and run only OpenDataLoader OCR outputs.",
+    ),
     debug_blob: bool = typer.Option(
         False,
         "--debug-blob",
@@ -676,6 +749,8 @@ def extract(
         upload=upload,
         skip_acrf=skip_acrf,
         upload_only=upload_only,
+        run_opendataloader_ocr=run_opendataloader_ocr,
+        opendataloader_only=opendataloader_only,
         debug_blob=debug_blob,
     )
 
@@ -914,6 +989,8 @@ def run_clear_stage(
         targets = [
             paths.local_extraction_layout(study_id, "protocol", output_dir),
             paths.local_extraction_layout(study_id, "acrf", output_dir),
+            paths.local_extraction_opendataloader(study_id, "protocol", output_dir),
+            paths.local_extraction_opendataloader(study_id, "acrf", output_dir),
         ]
         blob_prefixes = [
             paths.extraction_layout_prefix(study_id, "protocol"),
@@ -1700,6 +1777,8 @@ def cmd_run_all(
         upload=upload,
         skip_acrf=False,
         upload_only=False,
+        run_opendataloader_ocr=True,
+        opendataloader_only=False,
         debug_blob=False,
     )
     run_acrf_split_toc(

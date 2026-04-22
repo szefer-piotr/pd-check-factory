@@ -9,6 +9,7 @@ There is no Azure Functions, Event Grid, or separate review UI in this MVP—onl
 ## Prerequisites
 
 - Python **3.11+**
+- Java Runtime (**required for OpenDataLoader OCR**, e.g. OpenJDK 17+)
 - Azure Storage Account (one container is enough)
 - Azure AI Document Intelligence resource
 - Azure OpenAI deployment (chat model supporting JSON mode / `response_format`)
@@ -48,6 +49,7 @@ Copy `.env.example` to `.env` and fill in endpoints and keys. The CLI loads `.en
 | ------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Raw PDF uploads                       | `raw/<study_id>/protocol.pdf`, `raw/<study_id>/acrf.pdf`                                                                                                             |
 | DI outputs                            | `extractions/<study_id>/protocol/layout/...`, `extractions/<study_id>/acrf/layout/...`                                                                               |
+| OpenDataLoader OCR (comparison)       | `extractions/<study_id>/protocol/opendataloader/rendered/source.md`, `extractions/<study_id>/acrf/opendataloader/rendered/source.md`                                 |
 | Protocol sections (Step 1)            | `pipeline/<study_id>/protocol_sections/sections_manifest.json`, `pipeline/<study_id>/protocol_sections/step1/<section_id>.json`                                      |
 | aCRF section summaries                | `pipeline/<study_id>/acrf_summary/sections/<acrf_section_id>.json`, `pipeline/<study_id>/acrf_summary/acrf_summary_merged.json`                                      |
 | Protocol sections (Step 2 merged)     | `pipeline/<study_id>/step2/step2_merged.json`                                                                                                                        |
@@ -61,11 +63,11 @@ Local cache mirrors the same structure under `output/<study_id>/`.
 ## Pipeline Commands
 
 1. **Upload** `protocol.pdf` and `acrf.pdf` to the raw paths above (AzCopy, Portal, or SDK).
-2. **Extract** (DI Layout, markdown + JSON):
+2. **Extract** (DI Layout + OpenDataLoader OCR comparison markdown):
   ```bash
    pdcheck extract --study-id MY-STUDY
   ```
-   Optional: `--protocol-blob`, `--acrf-blob`, `--skip-acrf` (for protocol-only tests).
+   Optional: `--protocol-blob`, `--acrf-blob`, `--skip-acrf` (for protocol-only tests), `--no-opendataloader-ocr` (disable extra OCR comparison output), `--opendataloader-only` (skip DI and run only OpenDataLoader OCR).
 3. **Segment protocol** (headings → sections, sentences enumerated with stable IDs):
   ```bash
    pdcheck protocol segment --study-id MY-STUDY
