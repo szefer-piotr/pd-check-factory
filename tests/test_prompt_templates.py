@@ -56,6 +56,23 @@ class PromptTemplateTests(unittest.TestCase):
         )
         self.assertIn("sec:abc", rendered)
 
+    def test_deviations_v2_prompt_emphasizes_explicit_constraints(self) -> None:
+        system_template = load_prompt("deviations_v2_system")
+        self.assertIn("Write `DEVIATION_TEXT` so it is directly runnable against data", system_template)
+        self.assertIn("Do not use placeholders such as", system_template)
+
+        user_template = load_prompt("deviations_v2_user")
+        rendered = user_template.format(
+            study_id="study-x",
+            rule_id="rule-001",
+            rule_title="Visit timing",
+            rule_text="Visit must happen Day 3-5 after dose.",
+            rule_paragraph_refs="p1",
+            acrf_summary='{"datasets":[]}',
+            protocol_paragraphs="p1: Visit Day 3 to Day 5 after dose.",
+        )
+        self.assertIn("Restate concrete protocol constraints explicitly", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

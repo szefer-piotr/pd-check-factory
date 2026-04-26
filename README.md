@@ -24,7 +24,7 @@ pip install -U pip
 pip install -e .           # or: pip install -r requirements.txt && pip install -e .
 ```
 
-Optional **local Step 2 review UI** (FastAPI):
+Optional **local review UIs** (Step 2 FastAPI + V2 Streamlit):
 
 ```bash
 pip install -e ".[ui]"
@@ -89,11 +89,42 @@ Pipeline V2 steps:
 9. pseudo-logic review/revision cycle in UI
 10. final JSON + XLSX production
 
-Launch V2 review UI:
+Launch V2 review UI (Streamlit):
 
 ```bash
 pdcheck ui v2-review --study-id MY-STUDY --output-dir output
 ```
+
+V2 UI quickstart:
+
+1. Install UI dependencies:
+   ```bash
+   pip install -e ".[ui]"
+   ```
+2. Generate required V2 inputs through step 4:
+   ```bash
+   pdcheck v2 run --study-id MY-STUDY --from-step 1 --to-step 4
+   ```
+3. Start the UI:
+   ```bash
+   pdcheck ui v2-review --study-id MY-STUDY --output-dir output
+   ```
+4. Open the Streamlit URL shown in terminal (default `http://127.0.0.1:8766`).
+5. In the UI:
+   - update `status` / `DM comment`,
+   - use rule/paragraph tooltip previews for context,
+   - click **Generate Logic** per row or **Generate Logic for All deviations**.
+6. Click **Apply review updates** to persist review changes and optional revision-cycle edits.
+
+Expected files used/written by the V2 UI:
+- Input: `output/<study_id>/pipeline/review/deviations_review_state.json`
+- Input: `output/<study_id>/pipeline/rules/rules_parsed.json`
+- Input: `output/<study_id>/pipeline/protocol_index/paragraph_index.json`
+- Output: `output/<study_id>/pipeline/review/deviations_review_state.json`
+- Output: `output/<study_id>/pipeline/review/deviations_validated.json`
+- Output: `output/<study_id>/pipeline/review/deviations_review_audit.json`
+- Output: `output/<study_id>/pipeline/review/pseudo_logic_review_state.json`
+- Output: `output/<study_id>/pipeline/pseudo_logic/pseudo_logic_validated.json`
 
 1. **Upload** `protocol.pdf` and `acrf.pdf` to the raw paths above (AzCopy, Portal, or SDK).
 2. **Extract** (DI Layout + OpenDataLoader OCR comparison markdown):

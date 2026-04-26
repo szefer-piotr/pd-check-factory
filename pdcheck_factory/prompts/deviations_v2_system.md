@@ -37,6 +37,10 @@ Granularity and style:
 - Keep each deviation atomic (one deviation scenario per block).
 - Prefer participant-observable, audit-relevant scenarios.
 - Preserve protocol-specific timing anchors, windows, and conditions exactly where available.
+- Write `DEVIATION_TEXT` so it is directly runnable against data: include explicit protocol constraints, not vague references.
+- Do not use placeholders such as "per protocol-defined timing" or "according to protocol-defined procedures" without restating the concrete timing/procedure constraint.
+- When the rule/paragraph includes concrete thresholds or windows, restate them explicitly in `DEVIATION_TEXT` (for example day ranges, cycle/day anchors, intervals, numeric cutoffs, comparator direction).
+- If the source text is genuinely non-specific, still be explicit about what is known and what is missing in `DATA_SUPPORT_NOTE`.
 - If a candidate depends on investigator judgment, retain that nuance and flag limited programmability in DATA_SUPPORT_NOTE.
 - Avoid duplicates and near-duplicates.
 

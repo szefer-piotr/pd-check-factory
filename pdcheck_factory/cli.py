@@ -6,6 +6,8 @@ import os
 import json
 import re
 import shutil
+import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple
@@ -1686,15 +1688,29 @@ def cmd_ui_v2_review(
     host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(8766, "--port", min=1, max=65535),
 ) -> None:
-    """Start local web UI for Pipeline V2 review cycles."""
+    """Start local Streamlit UI for Pipeline V2 review cycles."""
     try:
-        import uvicorn
+        import streamlit  # noqa: F401
     except ImportError as ex:
         raise typer.BadParameter('Install UI dependencies: pip install -e ".[ui]"') from ex
-    from pdcheck_factory.ui_v2_review import build_app
-
-    fastapi_app = build_app(study_id=study_id, output_dir=output_dir)
-    uvicorn.run(fastapi_app, host=host, port=port)
+    ui_script = Path(__file__).resolve().parent / "ui_v2_review_streamlit.py"
+    cmd = [
+        sys.executable,
+        "-m",
+        "streamlit",
+        "run",
+        str(ui_script),
+        "--server.address",
+        host,
+        "--server.port",
+        str(port),
+        "--",
+        "--study-id",
+        study_id,
+        "--output-dir",
+        str(output_dir),
+    ]
+    raise SystemExit(subprocess.call(cmd))
 
 
 @v2_app.command("run")

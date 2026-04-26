@@ -134,6 +134,14 @@ def _validate_pseudo_reply(t: str) -> Optional[str]:
     return None
 
 
+def _validate_programmability_reply(t: str) -> Optional[str]:
+    if not (t or "").strip():
+        return "Empty programmability response."
+    if "PROGRAMMABLE:" not in (t or "").upper():
+        return "Must include PROGRAMMABLE: yes|no."
+    return None
+
+
 def _filter_refs(refs: List[str], valid: set[str]) -> List[str]:
     return [r for r in refs if r in valid]
 
@@ -217,6 +225,11 @@ def step3_extract_rules(study_id: str, output_dir: Path) -> Dict[str, Any]:
 def _acrf_summary_text(study_id: str, output_dir: Path) -> str:
     summary = read_json(paths.local_acrf_summary_text_merged(study_id, output_dir))
     return json.dumps(summary, ensure_ascii=False, indent=2)
+
+
+def _protocol_paragraph_text(study_id: str, output_dir: Path) -> str:
+    index_obj = read_json(paths.local_protocol_paragraph_index_json(study_id, output_dir))
+    return _numbered_protocol_text(index_obj)
 
 
 def step4_5_extract_deviations(study_id: str, output_dir: Path) -> Dict[str, Any]:
@@ -330,12 +343,34 @@ def step8_generate_pseudo_logic(study_id: str, output_dir: Path) -> Dict[str, An
         )
         raw_chunks.append(reply)
         pseudo = text_parse.parse_pseudo_v2_blocks(reply)[0]
+        prog_reply = llm.chat_text_repairs(
+            system=(
+                "You are a data programmability assessor.\n"
+                "Return exactly two lines:\n"
+                "PROGRAMMABLE: yes|no\n"
+                "RATIONALE: short reason grounded in provided deviation, pseudo logic, and aCRF summary."
+            ),
+            user=(
+                f"study_id: {study_id}\n"
+                f"rule_id: {dev.get('rule_id', '')}\n"
+                f"deviation_id: {dev.get('deviation_id', '')}\n"
+                f"deviation_text: {dev.get('text', '')}\n\n"
+                f"pseudo_logic:\n{pseudo}\n\n"
+                f"acrf_summary:\n{acrf_summary}\n"
+            ),
+            validate_reply=_validate_programmability_reply,
+            max_repairs=1,
+            label=f"v2-programmability-{dev.get('deviation_id', '')}",
+        )
+        programmable, rationale = text_parse.parse_programmability(prog_reply)
         items.append(
             {
                 "deviation_id": dev["deviation_id"],
                 "rule_id": dev["rule_id"],
                 "rule_title": rule.get("title", ""),
                 "pseudo_logic": pseudo,
+                "programmable": programmable,
+                "programmability_note": rationale,
                 "status": "pending",
                 "dm_comment": "",
             }
@@ -355,6 +390,67 @@ def step8_generate_pseudo_logic(study_id: str, output_dir: Path) -> Dict[str, An
     write_json(paths.local_pseudo_logic_validated_json(study_id, output_dir), out)
     write_json(paths.local_pseudo_logic_review_state(study_id, output_dir), out)
     return out
+
+
+def generate_pseudo_logic_for_deviation(
+    *,
+    study_id: str,
+    output_dir: Path,
+    deviation: Dict[str, Any],
+    rule_by_id: Optional[Dict[str, Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """Generate pseudo logic for one deviation and return one pseudo item row."""
+    if rule_by_id is None:
+        rules_obj = read_json(paths.local_rules_parsed_json(study_id, output_dir))
+        rule_by_id = {r["rule_id"]: r for r in rules_obj.get("rules", [])}
+    rule = rule_by_id.get(str(deviation.get("rule_id", "")), {})
+    acrf_summary = _acrf_summary_text(study_id, output_dir)[:50000]
+    reply = llm.chat_text_repairs(
+        system=load_prompt("pseudo_logic_v2_system"),
+        user=load_prompt("pseudo_logic_v2_user").format(
+            study_id=study_id,
+            rule_id=deviation.get("rule_id", ""),
+            deviation_id=deviation.get("deviation_id", ""),
+            deviation_text=deviation.get("text", ""),
+            paragraph_refs=", ".join(deviation.get("paragraph_refs", [])),
+            acrf_summary=acrf_summary,
+        ),
+        validate_reply=_validate_pseudo_reply,
+        max_repairs=2,
+        label=f"v2-pseudo-{deviation.get('deviation_id', '')}",
+    )
+    parsed = text_parse.parse_pseudo_v2_blocks(reply)
+    pseudo_logic = parsed[0] if parsed else "SELECT 1 WHERE 1=0 -- pseudo logic unavailable"
+    prog_reply = llm.chat_text_repairs(
+        system=(
+            "You are a data programmability assessor.\n"
+            "Return exactly two lines:\n"
+            "PROGRAMMABLE: yes|no\n"
+            "RATIONALE: short reason grounded in provided deviation, pseudo logic, and aCRF summary."
+        ),
+        user=(
+            f"study_id: {study_id}\n"
+            f"rule_id: {deviation.get('rule_id', '')}\n"
+            f"deviation_id: {deviation.get('deviation_id', '')}\n"
+            f"deviation_text: {deviation.get('text', '')}\n\n"
+            f"pseudo_logic:\n{pseudo_logic}\n\n"
+            f"acrf_summary:\n{acrf_summary}\n"
+        ),
+        validate_reply=_validate_programmability_reply,
+        max_repairs=1,
+        label=f"v2-programmability-{deviation.get('deviation_id', '')}",
+    )
+    programmable, rationale = text_parse.parse_programmability(prog_reply)
+    return {
+        "deviation_id": deviation.get("deviation_id", ""),
+        "rule_id": deviation.get("rule_id", ""),
+        "rule_title": rule.get("title", ""),
+        "pseudo_logic": pseudo_logic,
+        "programmable": programmable,
+        "programmability_note": rationale,
+        "status": "pending",
+        "dm_comment": "",
+    }
 
 
 def step10_finalize(study_id: str, output_dir: Path) -> Dict[str, Any]:
@@ -440,6 +536,59 @@ def revise_text_with_comment(
     )
     parsed = text_parse.parse_revision_block(reply) or {"revised_text": original_text, "paragraph_refs": paragraph_refs}
     return parsed["revised_text"], list(parsed.get("paragraph_refs", paragraph_refs))
+
+
+def apply_deviation_review_updates(
+    *,
+    study_id: str,
+    output_dir: Path,
+    state_obj: Dict[str, Any],
+    updates: Dict[str, Dict[str, str]],
+    run_revision_cycle: bool,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    Apply in-memory review updates to deviation rows with field-preserving semantics.
+
+    Only user-controlled fields are changed directly (status, dm_comment, text/refs when revised).
+    Existing fields (including previously generated pseudo logic metadata) are retained.
+    """
+    rows = list(state_obj.get("deviations", []))
+    protocol_text = _protocol_paragraph_text(study_id, output_dir)
+    acrf_summary_text = _acrf_summary_text(study_id, output_dir)
+    updated = 0
+    revised = 0
+    for row in rows:
+        key = str(row.get("deviation_id", ""))
+        update = updates.get(key)
+        if not update:
+            continue
+        status = str(update.get("status", "")).strip() or str(row.get("status", "pending"))
+        row["status"] = status
+        row["dm_comment"] = str(update.get("dm_comment", row.get("dm_comment", "")))
+        updated += 1
+        if run_revision_cycle and status == "to_review" and row["dm_comment"].strip():
+            revised_text, revised_refs = revise_text_with_comment(
+                study_id=study_id,
+                item_type="deviations",
+                original_text=str(row.get("text", "")),
+                paragraph_refs=list(row.get("paragraph_refs", [])),
+                dm_comment=row["dm_comment"],
+                protocol_paragraphs=protocol_text,
+                acrf_summary=acrf_summary_text,
+            )
+            row["text"] = revised_text
+            if revised_refs:
+                row["paragraph_refs"] = revised_refs
+            revised += 1
+    state_obj["deviations"] = rows
+    audit = {
+        "study_id": study_id,
+        "review_type": "deviations",
+        "updated_rows": updated,
+        "revised_rows": revised,
+        "run_revision_cycle": run_revision_cycle,
+    }
+    return state_obj, audit
 
 
 def run_steps(study_id: str, output_dir: Path, from_step: int, to_step: int) -> None:

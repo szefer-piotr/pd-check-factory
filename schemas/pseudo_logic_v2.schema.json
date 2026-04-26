@@ -17,6 +17,8 @@
           "deviation_id": { "type": "string", "minLength": 1 },
           "rule_id": { "type": "string", "minLength": 1 },
           "pseudo_logic": { "type": "string", "minLength": 1 },
+          "programmable": { "type": "boolean" },
+          "programmability_note": { "type": "string" },
           "status": { "type": "string", "enum": ["pending", "accepted", "to_review", "rejected"] },
           "dm_comment": { "type": "string" }
         },
