@@ -142,6 +142,56 @@ def _validate_programmability_reply(t: str) -> Optional[str]:
     return None
 
 
+def _coerce_pseudo_logic_text(raw_text: str) -> str:
+    """
+    Accept either the legacy block format or plain text and return a safe pseudo string.
+    This keeps the UI path resilient if the model drifts from strict block formatting.
+    """
+    parsed = text_parse.parse_pseudo_v2_blocks(raw_text)
+    if parsed:
+        return parsed[0]
+    body = (raw_text or "").strip()
+    if body:
+        return body
+    return "SELECT 1 WHERE 1=0 -- pseudo logic unavailable"
+
+
+def _generate_single_pseudo_logic(
+    *,
+    study_id: str,
+    rule_id: str,
+    deviation_id: str,
+    deviation_text: str,
+    paragraph_refs: List[str],
+    acrf_summary: str,
+) -> str:
+    system = load_prompt("pseudo_logic_v2_system")
+    user = load_prompt("pseudo_logic_v2_user").format(
+        study_id=study_id,
+        rule_id=rule_id,
+        deviation_id=deviation_id,
+        deviation_text=deviation_text,
+        paragraph_refs=", ".join(paragraph_refs),
+        acrf_summary=acrf_summary,
+    )
+    try:
+        return llm.generate_pseudo_logic_structured(
+            system=system,
+            user=user,
+            max_repairs=2,
+        )
+    except ValueError:
+        # Compatibility fallback for deployments without stable JSON parse behavior.
+        reply = llm.chat_text_repairs(
+            system=system,
+            user=user,
+            validate_reply=lambda t: None if (t or "").strip() else "Empty pseudo logic response.",
+            max_repairs=1,
+            label=f"v2-pseudo-fallback-{deviation_id}",
+        )
+        return _coerce_pseudo_logic_text(reply)
+
+
 def _filter_refs(refs: List[str], valid: set[str]) -> List[str]:
     return [r for r in refs if r in valid]
 
@@ -318,31 +368,21 @@ def step8_generate_pseudo_logic(study_id: str, output_dir: Path) -> Dict[str, An
     rules_obj = read_json(paths.local_rules_parsed_json(study_id, output_dir))
     rule_by_id = {r["rule_id"]: r for r in rules_obj.get("rules", [])}
     acrf_summary = _acrf_summary_text(study_id, output_dir)[:50000]
-    system = load_prompt("pseudo_logic_v2_system")
-    user_t = load_prompt("pseudo_logic_v2_user")
     items: List[Dict[str, Any]] = []
     raw_chunks: List[str] = []
     for dev in deviations_obj.get("deviations", []):
         if dev.get("status") != "accepted":
             continue
         rule = rule_by_id.get(dev.get("rule_id"), {})
-        user = user_t.format(
+        pseudo = _generate_single_pseudo_logic(
             study_id=study_id,
-            rule_id=dev.get("rule_id", ""),
-            deviation_id=dev.get("deviation_id", ""),
+            rule_id=str(dev.get("rule_id", "")),
+            deviation_id=str(dev.get("deviation_id", "")),
             deviation_text=dev.get("text", ""),
-            paragraph_refs=", ".join(dev.get("paragraph_refs", [])),
+            paragraph_refs=list(dev.get("paragraph_refs", [])),
             acrf_summary=acrf_summary,
         )
-        reply = llm.chat_text_repairs(
-            system=system,
-            user=user,
-            validate_reply=_validate_pseudo_reply,
-            max_repairs=2,
-            label=f"v2-pseudo-{dev.get('deviation_id', '')}",
-        )
-        raw_chunks.append(reply)
-        pseudo = text_parse.parse_pseudo_v2_blocks(reply)[0]
+        raw_chunks.append(pseudo)
         prog_reply = llm.chat_text_repairs(
             system=(
                 "You are a data programmability assessor.\n"
@@ -405,22 +445,14 @@ def generate_pseudo_logic_for_deviation(
         rule_by_id = {r["rule_id"]: r for r in rules_obj.get("rules", [])}
     rule = rule_by_id.get(str(deviation.get("rule_id", "")), {})
     acrf_summary = _acrf_summary_text(study_id, output_dir)[:50000]
-    reply = llm.chat_text_repairs(
-        system=load_prompt("pseudo_logic_v2_system"),
-        user=load_prompt("pseudo_logic_v2_user").format(
-            study_id=study_id,
-            rule_id=deviation.get("rule_id", ""),
-            deviation_id=deviation.get("deviation_id", ""),
-            deviation_text=deviation.get("text", ""),
-            paragraph_refs=", ".join(deviation.get("paragraph_refs", [])),
-            acrf_summary=acrf_summary,
-        ),
-        validate_reply=_validate_pseudo_reply,
-        max_repairs=2,
-        label=f"v2-pseudo-{deviation.get('deviation_id', '')}",
+    pseudo_logic = _generate_single_pseudo_logic(
+        study_id=study_id,
+        rule_id=str(deviation.get("rule_id", "")),
+        deviation_id=str(deviation.get("deviation_id", "")),
+        deviation_text=str(deviation.get("text", "")),
+        paragraph_refs=list(deviation.get("paragraph_refs", [])),
+        acrf_summary=acrf_summary,
     )
-    parsed = text_parse.parse_pseudo_v2_blocks(reply)
-    pseudo_logic = parsed[0] if parsed else "SELECT 1 WHERE 1=0 -- pseudo logic unavailable"
     prog_reply = llm.chat_text_repairs(
         system=(
             "You are a data programmability assessor.\n"

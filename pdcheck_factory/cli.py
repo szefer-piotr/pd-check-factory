@@ -35,7 +35,7 @@ protocol_app = typer.Typer(help="Segment protocol Markdown and run Step 1 extrac
 sections_app = typer.Typer(help="List, preview, or extract sections.")
 protocol_app.add_typer(sections_app, name="sections")
 acrf_app = typer.Typer(help="Tools for aCRF markdown processing.")
-ui_app = typer.Typer(help="Local web UIs.", no_args_is_help=True)
+ui_app = typer.Typer(help="Pipeline V2 Streamlit review UI.", no_args_is_help=True)
 v2_app = typer.Typer(help="Pipeline V2 runner (paragraph anchors, staged reviews).", no_args_is_help=True)
 
 _TOC_ROW = re.compile(
@@ -1643,46 +1643,8 @@ app.add_typer(ui_app, name="ui")
 app.add_typer(v2_app, name="v2")
 
 
-@ui_app.command("step2-review")
-def cmd_ui_step2_review(
-    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
-    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
-    host: str = typer.Option(
-        "127.0.0.1",
-        "--host",
-        help="Bind address (default loopback only).",
-    ),
-    port: int = typer.Option(8765, "--port", min=1, max=65535),
-    context_mode: Literal["full_protocol", "sections_only"] = typer.Option(
-        "full_protocol",
-        "--context-mode",
-        help="Protocol context for LLM revalidation.",
-    ),
-    use_acrf_summary: bool = typer.Option(
-        True,
-        "--use-acrf-summary/--no-use-acrf-summary",
-        help="Attach merged aCRF summary to revalidation prompts when available.",
-    ),
-) -> None:
-    """Start local web UI for Step 2 DM review (requires: pip install -e ".[ui]")."""
-    try:
-        import uvicorn
-    except ImportError as ex:
-        raise typer.BadParameter('Install UI dependencies: pip install -e ".[ui]"') from ex
-    _load_env()
-    from pdcheck_factory.ui_step2_review import build_app
-
-    fastapi_app = build_app(
-        study_id=study_id,
-        output_dir=output_dir,
-        context_mode=context_mode,
-        use_acrf_summary=use_acrf_summary,
-    )
-    uvicorn.run(fastapi_app, host=host, port=port)
-
-
-@ui_app.command("v2-review")
-def cmd_ui_v2_review(
+@ui_app.command("review")
+def cmd_ui_review(
     study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
     output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
     host: str = typer.Option("127.0.0.1", "--host"),

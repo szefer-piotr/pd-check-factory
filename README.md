@@ -24,7 +24,7 @@ pip install -U pip
 pip install -e .           # or: pip install -r requirements.txt && pip install -e .
 ```
 
-Optional **local review UIs** (Step 2 FastAPI + V2 Streamlit):
+Optional **local review UI** (Pipeline V2 Streamlit):
 
 ```bash
 pip install -e ".[ui]"
@@ -92,7 +92,7 @@ Pipeline V2 steps:
 Launch V2 review UI (Streamlit):
 
 ```bash
-pdcheck ui v2-review --study-id MY-STUDY --output-dir output
+pdcheck ui review --study-id MY-STUDY --output-dir output
 ```
 
 V2 UI quickstart:
@@ -107,7 +107,7 @@ V2 UI quickstart:
    ```
 3. Start the UI:
    ```bash
-   pdcheck ui v2-review --study-id MY-STUDY --output-dir output
+   pdcheck ui review --study-id MY-STUDY --output-dir output
    ```
 4. Open the Streamlit URL shown in terminal (default `http://127.0.0.1:8766`).
 5. In the UI:
@@ -228,14 +228,14 @@ Expected files used/written by the V2 UI:
   - `--use-acrf-summary/--no-use-acrf-summary` (default enabled)
   - `--strict` (fail when unresolved `to_review` rows remain)
   - `--no-upload`
-11. **Step 2 local web UI (optional)** — browse `step2_merged.json` (or **validated** / **working** baseline), preview **only the cited protocol sentences** (`sentence_refs`) per row, set `accepted` / `to_review` / `rejected`, add comments, and run the same revalidation path as `step2-apply-review` without Excel (revalidation still receives full protocol / aCRF context per server flags):
+11. **Pipeline V2 review UI (optional, Streamlit)** — review deviations and pseudo-logic directly from V2 artifacts, use rule/protocol reference tooltips, update statuses/comments, and run the same revision-cycle behavior without Excel:
 
    ```bash
    pip install -e ".[ui]"
-   pdcheck ui step2-review --study-id MY-STUDY --output-dir output
+   pdcheck ui review --study-id MY-STUDY --output-dir output
    ```
 
-   Then open `http://127.0.0.1:8765/` (default). Use **Apply + LLM revalidate** for rows marked `to_review` (writes `step2_validated.json` + audit). **Promote validated → working** copies `step2_validated.json` to `pipeline/<study_id>/step2/step2_merged.working.json` so you can open `?baseline=working` and iterate again. Optional flags: `--host`, `--port`, `--context-mode`, `--use-acrf-summary` / `--no-use-acrf-summary`.
+   Then open `http://127.0.0.1:8766/` (default). Use **Apply review updates** to persist status/comment edits and optional revision-cycle updates for rows marked `to_review`. Use **Generate Logic** per row or **Generate Logic for All deviations** to manage pseudo-logic artifacts.
 
 **Removed CLI stubs:** `draft-pd`, `merge`, `export-review`, `apply-review`, and `emit-pseudo` invoke Typer but only raise an error pointing at the Step 1/2 commands above (the old rules-KB → PD-candidate pipeline code and schemas were removed).
 

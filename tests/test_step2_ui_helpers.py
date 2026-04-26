@@ -138,23 +138,5 @@ class Step2UiHelpersTests(unittest.TestCase):
             self.assertIn("not found in manifest", text)
 
 
-class Step2UiFastapiSmokeTests(unittest.TestCase):
-    def test_build_app_index_missing_file_404(self) -> None:
-        try:
-            from fastapi.testclient import TestClient
-
-            from pdcheck_factory.ui_step2_review import build_app
-        except ImportError:
-            self.skipTest("fastapi not installed (pip install -e '.[ui]')")
-
-        with tempfile.TemporaryDirectory() as td:
-            output_dir = Path(td) / "out"
-            study_id = "missing-study"
-            app = build_app(study_id=study_id, output_dir=output_dir)
-            client = TestClient(app)
-            r = client.get("/")
-            self.assertEqual(r.status_code, 404)
-
-
 if __name__ == "__main__":
     unittest.main()

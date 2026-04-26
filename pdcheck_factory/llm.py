@@ -54,6 +54,10 @@ class AcrfSectionSummaryOutput(_StrictModel):
     datasets: List[AcrfDatasetSummary] = Field(default_factory=list)
 
 
+class PseudoLogicOutput(_StrictModel):
+    pseudo_logic: str = Field(min_length=1)
+
+
 def _azure_client() -> AzureOpenAI:
     endpoint = blob_io.require_env("AZURE_OPENAI_ENDPOINT")
     api_key = os.getenv("AZURE_OPENAI_API_KEY")
@@ -659,3 +663,38 @@ def summarize_acrf_section(
         response_model=AcrfSectionSummaryOutput,
         validator=_v,
     )
+
+
+def generate_pseudo_logic_structured(
+    *,
+    system: str,
+    user: str,
+    max_repairs: int = 2,
+) -> str:
+    """
+    Generate pseudo logic as strict JSON to avoid brittle text-block parsing.
+    Returns one non-empty pseudo logic string.
+    """
+
+    structured_system = (
+        f"{system}\n\n"
+        "Return strict JSON with exactly one key:\n"
+        '{"pseudo_logic": "<short pseudo query / conditional algorithm>"}\n'
+        "Do not return markdown fences, prose, or extra keys."
+    )
+
+    def _v(d: Dict[str, Any]) -> List[str]:
+        errs: List[str] = []
+        pseudo = str(d.get("pseudo_logic", "")).strip()
+        if not pseudo:
+            errs.append("pseudo_logic must be a non-empty string.")
+        return errs
+
+    out = chat_json(
+        system=structured_system,
+        user=user,
+        response_model=PseudoLogicOutput,
+        validator=_v,
+        max_repairs=max_repairs,
+    )
+    return str(out.get("pseudo_logic", "")).strip()
