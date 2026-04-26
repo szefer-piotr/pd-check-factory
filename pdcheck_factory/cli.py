@@ -13,7 +13,7 @@ from typing import Dict, List, Literal, Optional, Tuple
 import typer
 from dotenv import load_dotenv
 
-from pdcheck_factory import blob_io, di_layout, opendataloader_ocr, paths
+from pdcheck_factory import blob_io, di_layout, opendataloader_ocr, paths, pipeline_v2
 from pdcheck_factory import llm as llm_mod
 from pdcheck_factory import step2_merge
 from pdcheck_factory import step2_review
@@ -34,12 +34,7 @@ sections_app = typer.Typer(help="List, preview, or extract sections.")
 protocol_app.add_typer(sections_app, name="sections")
 acrf_app = typer.Typer(help="Tools for aCRF markdown processing.")
 ui_app = typer.Typer(help="Local web UIs.", no_args_is_help=True)
-
-_STALE_LEGACY = (
-    "This command targeted the removed v1 pipeline (rules KB → PD candidates → logic drafts → pd_draft_specs). "
-    "Use Step 1/2 instead: `pdcheck protocol segment`, `pdcheck protocol sections extract` (or `pdcheck rules`), "
-    "then `pdcheck step2-dedup` and `pdcheck step2-export-review` / `step2-apply-review`."
-)
+v2_app = typer.Typer(help="Pipeline V2 runner (paragraph anchors, staged reviews).", no_args_is_help=True)
 
 _TOC_ROW = re.compile(
     r"<tr>\s*<td>(.*?)</td>\s*<td>(.*?)</td>\s*</tr>",
@@ -1643,6 +1638,7 @@ def cmd_acrf_summarize(
 app.add_typer(protocol_app, name="protocol")
 app.add_typer(acrf_app, name="acrf")
 app.add_typer(ui_app, name="ui")
+app.add_typer(v2_app, name="v2")
 
 
 @ui_app.command("step2-review")
@@ -1683,68 +1679,50 @@ def cmd_ui_step2_review(
     uvicorn.run(fastapi_app, host=host, port=port)
 
 
-def run_draft_pd(*, study_id: str, output_dir: Path, upload: bool) -> None:
-    raise typer.BadParameter(
-        "draft-pd was removed. Use: "
-        f"`pdcheck protocol segment --study-id ...` then "
-        f"`pdcheck protocol sections extract --study-id ... --all` "
-        "(or `pdcheck rules` for both)."
+@ui_app.command("v2-review")
+def cmd_ui_v2_review(
+    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
+    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8766, "--port", min=1, max=65535),
+) -> None:
+    """Start local web UI for Pipeline V2 review cycles."""
+    try:
+        import uvicorn
+    except ImportError as ex:
+        raise typer.BadParameter('Install UI dependencies: pip install -e ".[ui]"') from ex
+    from pdcheck_factory.ui_v2_review import build_app
+
+    fastapi_app = build_app(study_id=study_id, output_dir=output_dir)
+    uvicorn.run(fastapi_app, host=host, port=port)
+
+
+@v2_app.command("run")
+def cmd_v2_run(
+    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
+    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
+    from_step: int = typer.Option(1, "--from-step", min=1, max=10),
+    to_step: int = typer.Option(10, "--to-step", min=1, max=10),
+    step_range: Optional[str] = typer.Option(
+        None,
+        "--step-range",
+        help="Alternative range syntax like 1..5 or 4..10.",
+    ),
+) -> None:
+    """Run V2 pipeline in a step range (for example, 1..2, 1..5, 4..10)."""
+    _load_env()
+    if step_range:
+        m = re.match(r"^\s*(\d+)\s*\.\.\s*(\d+)\s*$", step_range)
+        if not m:
+            raise typer.BadParameter("Invalid --step-range format. Use N..M (for example 1..5).")
+        from_step = int(m.group(1))
+        to_step = int(m.group(2))
+    pipeline_v2.run_steps(
+        study_id=study_id,
+        output_dir=output_dir,
+        from_step=from_step,
+        to_step=to_step,
     )
-
-
-@app.command("draft-pd")
-def cmd_draft_pd(
-    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
-    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
-    upload: bool = typer.Option(True, "--upload/--no-upload"),
-) -> None:
-    """Removed; use `pdcheck protocol sections extract` after `protocol segment`."""
-    run_draft_pd(study_id=study_id, output_dir=output_dir, upload=upload)
-
-
-def run_merge(*, study_id: str, output_dir: Path, upload: bool) -> None:
-    raise typer.BadParameter(_STALE_LEGACY)
-
-
-@app.command()
-def merge(
-    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
-    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
-    upload: bool = typer.Option(True, "--upload/--no-upload"),
-) -> None:
-    """Removed in Step 1; see `pdcheck merge --help` error text when invoked."""
-    run_merge(study_id=study_id, output_dir=output_dir, upload=upload)
-
-
-@app.command("export-review")
-def cmd_export_review(
-    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
-    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
-    upload: bool = typer.Option(True, "--upload/--no-upload"),
-) -> None:
-    """Removed v1 command; use `pdcheck step2-export-review`."""
-    raise typer.BadParameter(_STALE_LEGACY)
-
-
-@app.command("apply-review")
-def cmd_apply_review(
-    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
-    workbook: Path = typer.Option(..., "--workbook", "-w", help="Edited XLSX path"),
-    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
-    upload: bool = typer.Option(True, "--upload/--no-upload"),
-) -> None:
-    """Removed v1 command; use `pdcheck step2-apply-review`."""
-    raise typer.BadParameter(_STALE_LEGACY)
-
-
-@app.command("emit-pseudo")
-def cmd_emit_pseudo(
-    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
-    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
-    upload: bool = typer.Option(True, "--upload/--no-upload"),
-) -> None:
-    """Removed v1 pseudo-logic bundle command."""
-    raise typer.BadParameter(_STALE_LEGACY)
 
 
 @app.command("run-all")

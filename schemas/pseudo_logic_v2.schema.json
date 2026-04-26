@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pd-check-factory/schemas/pseudo_logic_v2.schema.json",
+  "title": "Pseudo logic V2",
+  "type": "object",
+  "required": ["schema_version", "study_id", "generated_at", "items"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "study_id": { "type": "string", "minLength": 1 },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["deviation_id", "rule_id", "pseudo_logic"],
+        "properties": {
+          "deviation_id": { "type": "string", "minLength": 1 },
+          "rule_id": { "type": "string", "minLength": 1 },
+          "pseudo_logic": { "type": "string", "minLength": 1 },
+          "status": { "type": "string", "enum": ["pending", "accepted", "to_review", "rejected"] },
+          "dm_comment": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

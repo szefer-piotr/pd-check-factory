@@ -8,7 +8,7 @@ from pdcheck_factory.step2_merge import merge_step1_outputs
 
 def _step1_obj(section_id: str, path: list[str], title: str, req: str, scenario: str) -> dict:
     return {
-        "schema_version": "2.0.1",
+        "schema_version": "3.0.0",
         "study_id": "study-x",
         "generated_at": "2026-01-01T00:00:00+00:00",
         "section_id": section_id,

@@ -153,3 +153,99 @@ def local_protocol_sections_step2_validation_audit(
 
 def local_dm_review_workbook(study_id: str, output_dir: Path) -> Path:
     return local_study_root(study_id, output_dir) / "review" / "dm_review_roundtrip.xlsx"
+
+
+def local_pipeline_v2_dir(study_id: str, output_dir: Path) -> Path:
+    return local_study_root(study_id, output_dir) / "pipeline"
+
+
+def local_protocol_index_dir(study_id: str, output_dir: Path) -> Path:
+    return local_pipeline_v2_dir(study_id, output_dir) / "protocol_index"
+
+
+def local_protocol_paragraphs_md(study_id: str, output_dir: Path) -> Path:
+    return local_protocol_index_dir(study_id, output_dir) / "full_protocol_paragraphs.md"
+
+
+def local_protocol_paragraph_index_json(study_id: str, output_dir: Path) -> Path:
+    return local_protocol_index_dir(study_id, output_dir) / "paragraph_index.json"
+
+
+def local_acrf_summary_text_dir(study_id: str, output_dir: Path) -> Path:
+    return local_pipeline_v2_dir(study_id, output_dir) / "acrf_summary"
+
+
+def local_acrf_summary_text_merged(study_id: str, output_dir: Path) -> Path:
+    return local_acrf_summary_text_dir(study_id, output_dir) / "acrf_summary_text_merged.json"
+
+
+def local_rules_dir(study_id: str, output_dir: Path) -> Path:
+    return local_pipeline_v2_dir(study_id, output_dir) / "rules"
+
+
+def local_rules_raw_txt(study_id: str, output_dir: Path) -> Path:
+    return local_rules_dir(study_id, output_dir) / "rules_raw.txt"
+
+
+def local_rules_parsed_json(study_id: str, output_dir: Path) -> Path:
+    return local_rules_dir(study_id, output_dir) / "rules_parsed.json"
+
+
+def local_deviations_dir(study_id: str, output_dir: Path) -> Path:
+    return local_pipeline_v2_dir(study_id, output_dir) / "deviations"
+
+
+def local_deviations_raw_txt(study_id: str, output_dir: Path) -> Path:
+    return local_deviations_dir(study_id, output_dir) / "deviations_raw.txt"
+
+
+def local_deviations_parsed_json(study_id: str, output_dir: Path) -> Path:
+    return local_deviations_dir(study_id, output_dir) / "deviations_parsed.json"
+
+
+def local_review_dir(study_id: str, output_dir: Path) -> Path:
+    return local_pipeline_v2_dir(study_id, output_dir) / "review"
+
+
+def local_deviations_review_state(study_id: str, output_dir: Path) -> Path:
+    return local_review_dir(study_id, output_dir) / "deviations_review_state.json"
+
+
+def local_deviations_validated_json(study_id: str, output_dir: Path) -> Path:
+    return local_review_dir(study_id, output_dir) / "deviations_validated.json"
+
+
+def local_deviations_review_audit_json(study_id: str, output_dir: Path) -> Path:
+    return local_review_dir(study_id, output_dir) / "deviations_review_audit.json"
+
+
+def local_pseudo_logic_dir(study_id: str, output_dir: Path) -> Path:
+    return local_pipeline_v2_dir(study_id, output_dir) / "pseudo_logic"
+
+
+def local_pseudo_logic_raw_txt(study_id: str, output_dir: Path) -> Path:
+    return local_pseudo_logic_dir(study_id, output_dir) / "pseudo_logic_raw.txt"
+
+
+def local_pseudo_logic_validated_json(study_id: str, output_dir: Path) -> Path:
+    return local_pseudo_logic_dir(study_id, output_dir) / "pseudo_logic_validated.json"
+
+
+def local_pseudo_logic_review_state(study_id: str, output_dir: Path) -> Path:
+    return local_review_dir(study_id, output_dir) / "pseudo_logic_review_state.json"
+
+
+def local_pseudo_logic_review_audit_json(study_id: str, output_dir: Path) -> Path:
+    return local_review_dir(study_id, output_dir) / "pseudo_logic_review_audit.json"
+
+
+def local_final_dir(study_id: str, output_dir: Path) -> Path:
+    return local_pipeline_v2_dir(study_id, output_dir) / "final"
+
+
+def local_final_deviations_json(study_id: str, output_dir: Path) -> Path:
+    return local_final_dir(study_id, output_dir) / "final_deviations.json"
+
+
+def local_final_deviations_xlsx(study_id: str, output_dir: Path) -> Path:
+    return local_final_dir(study_id, output_dir) / "final_deviations.xlsx"

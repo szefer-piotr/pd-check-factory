@@ -2,7 +2,7 @@
 
 Single **Python** application to extract text and tables from clinical trial **protocol** and **annotated CRF (aCRF)** PDFs with **Azure AI Document Intelligence**, segment the protocol Markdown into sections with **numbered sentences**, run **Step 1 Azure OpenAI extraction** (atomic protocol rules plus per-rule nested candidate deviations and short violation examples per section), run **Step 2 semantic merge/dedup**, support **DM Excel validation round-trip**, and optionally upload artifacts to Blob.
 
-**Current scope:** Step 1 extraction, Step 2 merge/dedup, and DM validation round-trip (`step2-export-review`, `step2-apply-review`) for protocol deviations.
+**Current scope:** Legacy Step 1/Step 2 flow plus **Pipeline V2** (paragraph-anchored full-protocol extraction, staged review loops, and final XLSX).
 
 There is no Azure Functions, Event Grid, or separate review UI in this MVP—only Blob storage, DI, and OpenAI.
 
@@ -62,6 +62,39 @@ Local cache mirrors the same structure under `output/<study_id>/`.
 
 ## Pipeline Commands
 
+### Pipeline V2 (recommended)
+
+Pipeline V2 uses:
+- protocol input from `output/<study_id>/extractions/protocol/opendataloader/rendered/source.md`
+- paragraph-level references (`p1`, `p2`, ...)
+- text-block prompts with strict separators
+- local UI review loops for deviations and pseudo-logic
+
+Run a step range:
+
+```bash
+pdcheck v2 run --study-id MY-STUDY --from-step 1 --to-step 2
+pdcheck v2 run --study-id MY-STUDY --from-step 1 --to-step 5
+pdcheck v2 run --study-id MY-STUDY --from-step 4 --to-step 10
+```
+
+Pipeline V2 steps:
+1. aCRF plain-text summary (dataset/columns/value hints)
+2. protocol paragraph indexing
+3. whole-protocol rule extraction with coverage forcing
+4. per-rule deviation extraction with aCRF support context
+5. structured deviation artifact creation
+6-7. deviation review/revision cycle in UI
+8. pseudo-logic generation for accepted deviations
+9. pseudo-logic review/revision cycle in UI
+10. final JSON + XLSX production
+
+Launch V2 review UI:
+
+```bash
+pdcheck ui v2-review --study-id MY-STUDY --output-dir output
+```
+
 1. **Upload** `protocol.pdf` and `acrf.pdf` to the raw paths above (AzCopy, Portal, or SDK).
 2. **Extract** (DI Layout + OpenDataLoader OCR comparison markdown):
   ```bash
@@ -119,6 +152,7 @@ Local cache mirrors the same structure under `output/<study_id>/`.
    pdcheck protocol sections extract --study-id MY-STUDY --all
    pdcheck protocol sections extract --study-id MY-STUDY --section-id sec:abc --skip-regex '^Appendix'
   ```
+  **Step 1 (text-first):** each section runs staged plain-text LLM calls (rules → per-rule deviations → programmability with merged aCRF summary by default → pseudo-SQL for programmable cases), then parses blocks into `pipeline/.../step1/*.json` matching `schema_version` **3.0.0**. Step 2 merge/dedup and review UI consume the same merged JSON shape as before (`step2_merged.json`).
   Use `--no-acrf` to omit aCRF context from prompts. Use `--no-use-acrf-summary` to disable merged summary injection even when `pipeline/<study_id>/acrf_summary/acrf_summary_merged.json` exists. By default, merged aCRF summary is attached first when available, then raw aCRF text is used as fallback.
   **Overwrite (default on):** `--overwrite` (default) deletes existing local Step 1 JSON under `pipeline/<study_id>/protocol_sections/step1/` before this run; use `--no-overwrite` to keep orphan files when extracting a subset.
 7. **Rules** (shortcut: **segment + extract all sections**):
@@ -202,7 +236,7 @@ Section bodies are split into sentences with **stdlib heuristics** (including ke
 
 ## JSON schemas
 
-- `schemas/protocol_section_step1.schema.json` — Step 1 output per section (`schema_version` **2.0.1**)
+- `schemas/protocol_section_step1.schema.json` — Step 1 output per section (`schema_version` **3.0.0**, text-first multi-call pipeline; same rule/deviation object shape for Step 2 merge)
 - `schemas/acrf_section_summary.schema.json` — aCRF summary per TOC section (`schema_version` **1.0.0**)
 - `schemas/acrf_section_summaries_merged.schema.json` — merged aCRF summaries (`schema_version` **1.0.0**)
 - `schemas/protocol_sections_step2_merged.schema.json` — Step 2 merged output (`schema_version` **2.1.1**)

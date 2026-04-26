@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any, Callable, Dict, List, Literal, Optional, Type
 
 from openai import AzureOpenAI
 from pydantic import BaseModel, ConfigDict, Field
 
-from pdcheck_factory import blob_io
+from pdcheck_factory import blob_io, text_parse
 from pdcheck_factory.json_util import load_schema, validate
 from pdcheck_factory.prompt_loader import load_prompt
 from pdcheck_factory.protocol_markdown import format_section_for_prompt, validate_step1_output
@@ -22,50 +23,6 @@ ACRF_SECTION_PROMPT_MAX_CHARS = 120000
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
-
-
-class Step1Deviation(_StrictModel):
-    deviation_id: str = Field(min_length=1)
-    scenario_description: str = Field(min_length=1)
-    example_violation_narrative: str = Field(min_length=1)
-    sentence_refs: List[str] = Field(min_length=1)
-    programmable: bool
-    pseudo_sql_logic: str = Field(min_length=1)
-
-
-class Step1Rule(_StrictModel):
-    rule_id: str = Field(min_length=1)
-    title: str = Field(min_length=1)
-    atomic_requirement: str = Field(min_length=1)
-    sentence_refs: List[str] = Field(min_length=1)
-    candidate_deviations: List[Step1Deviation] = Field(min_length=1)
-
-
-class ProtocolSectionStep1Output(_StrictModel):
-    schema_version: Literal["2.0.1"]
-    study_id: str = Field(min_length=1)
-    generated_at: str
-    section_id: str = Field(min_length=1)
-    section_path: List[str]
-    rules: List[Step1Rule]
-
-
-class Step2DedupJudgement(_StrictModel):
-    is_duplicate: bool
-    confidence: float = Field(ge=0.0, le=1.0)
-    rationale: str = Field(min_length=1)
-
-
-class Step2RevalidatedDeviation(_StrictModel):
-    scenario_description: str = Field(min_length=1)
-    example_violation_narrative: str = Field(min_length=1)
-    sentence_refs: List[str] = Field(min_length=1)
-    programmable: bool
-    pseudo_sql_logic: str = Field(min_length=1)
-
-
-class Step2RevalidatedDeviationResponse(_StrictModel):
-    deviations: List[Step2RevalidatedDeviation] = Field(min_length=1)
 
 
 class AcrfColumnValueRange(_StrictModel):
@@ -114,6 +71,60 @@ def _azure_client() -> AzureOpenAI:
 
 def deployment_name() -> str:
     return blob_io.require_env("AZURE_OPENAI_DEPLOYMENT")
+
+
+STEP1_TEXT_SCHEMA_VERSION = "3.0.0"
+
+
+def _log_chat_usage(resp: Any, deployment: str, label: str) -> None:
+    usage = getattr(resp, "usage", None)
+    prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
+    completion_tokens = getattr(usage, "completion_tokens", None) if usage else None
+    total_tokens = getattr(usage, "total_tokens", None) if usage else None
+    model_name = getattr(resp, "model", None)
+    print(
+        "[llm-text] "
+        f"label={label!r} deployment={deployment!r} model={model_name!r} "
+        f"prompt_tokens={prompt_tokens} completion_tokens={completion_tokens} "
+        f"total_tokens={total_tokens}"
+    )
+
+
+def chat_text_repairs(
+    *,
+    system: str,
+    user: str,
+    validate_reply: Callable[[str], Optional[str]],
+    max_repairs: int = 2,
+    label: str = "text",
+) -> str:
+    """Plain-text chat completion with optional format repair turns."""
+    client = _azure_client()
+    deployment = deployment_name()
+    repair_tmpl = load_prompt("repair_text_user")
+    messages: List[Dict[str, str]] = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ]
+    last = ""
+    for attempt in range(max_repairs + 1):
+        resp = client.chat.completions.create(
+            model=deployment,
+            messages=messages,
+            temperature=0.0,
+        )
+        _log_chat_usage(resp, deployment, label)
+        last = (resp.choices[0].message.content or "").strip()
+        err = validate_reply(last)
+        if err is None:
+            return last
+        if attempt >= max_repairs:
+            raise ValueError(err)
+        messages.append({"role": "assistant", "content": last})
+        messages.append(
+            {"role": "user", "content": repair_tmpl.replace("__ERROR__", err)}
+        )
+    raise RuntimeError("chat_text_repairs exhausted retries")
 
 
 def chat_json(
@@ -200,7 +211,7 @@ def _empty_step1(
     now: str,
 ) -> Dict[str, Any]:
     return {
-        "schema_version": "2.0.1",
+        "schema_version": STEP1_TEXT_SCHEMA_VERSION,
         "study_id": study_id,
         "generated_at": now,
         "section_id": section["section_id"],
@@ -219,7 +230,7 @@ def extract_protocol_section_step1(
     section_prompt_max_chars: int = STEP1_SECTION_PROMPT_MAX_CHARS,
 ) -> Dict[str, Any]:
     """
-    Step 1 LLM: atomic rules + candidate deviations + examples for one manifest section.
+    Step 1 text pipeline: rules block → per-rule deviations → programmability → pseudo-SQL.
     """
     schema = load_schema("protocol_section_step1.schema.json")
     now = datetime.now(timezone.utc).isoformat()
@@ -228,6 +239,8 @@ def extract_protocol_section_step1(
     if not sentences:
         return _empty_step1(study_id=study_id, section=section, now=now)
 
+    valid_ids: set[str] = {str(s["id"]) for s in sentences if s.get("id")}
+
     numbered = format_section_for_prompt(section)
     if len(numbered) > section_prompt_max_chars:
         numbered = (
@@ -235,47 +248,204 @@ def extract_protocol_section_step1(
             + "\n\n[TRUNCATED: section text exceeded character budget]\n"
         )
 
-    system = load_prompt("section_step1_system")
     section_path_json = json.dumps(section["section_path"], ensure_ascii=False)
-    user = load_prompt("section_step1_user").format(
+
+    acrf_excerpt = ""
+    if acrf_markdown:
+        frag = acrf_markdown.strip()
+        if len(frag) > acrf_max_chars:
+            frag = frag[:acrf_max_chars] + "\n\n[TRUNCATED aCRF]\n"
+        acrf_excerpt = frag
+
+    summary_block = (acrf_summary_context or "").strip() or (
+        "(No merged aCRF summary JSON available; infer conservatively from excerpt only.)"
+    )
+
+    def _validate_rules_text(t: str) -> Optional[str]:
+        if not (t or "").strip():
+            return "Empty model response."
+        has_rule_blocks = text_parse.BEGIN_RULE in t
+        if not has_rule_blocks and len((t or "").strip()) > 30:
+            return (
+                "Response must use <<<BEGIN_RULE>>> / <<<END_RULE>>> blocks as "
+                "specified in the system message."
+            )
+        parsed = text_parse.parse_rule_blocks(t)
+        if not parsed and has_rule_blocks:
+            return (
+                "Each rule block needs non-empty TITLE:, ATOMIC_REQUIREMENT:, "
+                "and SENTENCE_REFS:."
+            )
+        return None
+
+    system_rules = load_prompt("section_text_rules_system")
+    user_rules = load_prompt("section_text_rules_user").format(
         study_id=study_id,
         now=now,
         section_id=section["section_id"],
         section_path_json=section_path_json,
         numbered_section=numbered,
     )
-    if acrf_summary_context:
-        user += (
-            "\n\naCRF structured summary context "
-            "(prioritize this over raw aCRF text when both are available):\n---\n"
-        )
-        user += acrf_summary_context.strip()
-        user += "\n---\n"
-    if acrf_markdown:
-        frag = acrf_markdown.strip()
-        if len(frag) > acrf_max_chars:
-            frag = frag[:acrf_max_chars] + "\n\n[TRUNCATED aCRF]\n"
-        user += "\n\nOptional annotated CRF context (do not name specific fields):\n---\n"
-        user += frag
-        user += "\n---\n"
-
-    def _v(d: Dict[str, Any]) -> List[str]:
-        d.setdefault("generated_at", now)
-        d.setdefault("study_id", study_id)
-        d.setdefault("schema_version", "2.0.1")
-        d["section_id"] = section["section_id"]
-        d["section_path"] = list(section["section_path"])
-        errs = validate(d, schema)
-        if errs:
-            return errs
-        return validate_step1_output(d, section)
-
-    return chat_json(
-        system=system,
-        user=user,
-        response_model=ProtocolSectionStep1Output,
-        validator=_v,
+    rules_text = chat_text_repairs(
+        system=system_rules,
+        user=user_rules,
+        validate_reply=_validate_rules_text,
+        max_repairs=2,
+        label="step1-rules",
     )
+    raw_rules = text_parse.parse_rule_blocks(rules_text)
+    filtered_rules: List[Dict[str, Any]] = []
+    for rr in raw_rules:
+        kept, _dropped = text_parse.filter_sentence_refs(
+            list(rr.get("sentence_refs", [])), valid_ids
+        )
+        if not kept:
+            continue
+        filtered_rules.append(
+            {
+                "title": rr["title"],
+                "atomic_requirement": rr["atomic_requirement"],
+                "sentence_refs": kept,
+            }
+        )
+
+    system_dev = load_prompt("section_text_deviations_system")
+    out_rules: List[Dict[str, Any]] = []
+    for ri, rule in enumerate(filtered_rules, start=1):
+        rule_id = f"rule-{ri:03d}"
+        refs_csv = ", ".join(rule["sentence_refs"])
+
+        def _validate_dev_text(t: str) -> Optional[str]:
+            if not (t or "").strip():
+                return "Empty model response."
+            if text_parse.BEGIN_DEVIATION not in t:
+                return (
+                    "Response must contain at least one "
+                    "<<<BEGIN_DEVIATION>>> ... <<<END_DEVIATION>>> block."
+                )
+            devs = text_parse.parse_deviation_blocks(t)
+            if not devs:
+                return (
+                    "Each deviation block needs SCENARIO:, EXAMPLE:, and SENTENCE_REFS: "
+                    "with non-empty values."
+                )
+            return None
+
+        user_dev = load_prompt("section_text_deviations_user").format(
+            study_id=study_id,
+            section_id=section["section_id"],
+            numbered_section=numbered,
+            rule_title=rule["title"],
+            rule_requirement=rule["atomic_requirement"],
+            rule_sentence_refs=refs_csv,
+        )
+        dev_text = chat_text_repairs(
+            system=system_dev,
+            user=user_dev,
+            validate_reply=_validate_dev_text,
+            max_repairs=2,
+            label=f"step1-deviations-{rule_id}",
+        )
+        raw_devs = text_parse.parse_deviation_blocks(dev_text)
+        candidate_deviations: List[Dict[str, Any]] = []
+        for dj, dv in enumerate(raw_devs, start=1):
+            kept_d, _ = text_parse.filter_sentence_refs(
+                list(dv.get("sentence_refs", [])), valid_ids
+            )
+            if not kept_d:
+                continue
+            scenario = dv["scenario_description"]
+            example = dv["example_violation_narrative"]
+            dev_id = f"dev-{ri:03d}-{dj:02d}"
+
+            def _validate_prog_text(t: str) -> Optional[str]:
+                if not (t or "").strip():
+                    return "Empty programmability response."
+                if not re.search(r"PROGRAMMABLE:\s*(yes|no)\b", t, re.IGNORECASE):
+                    return "Must include a line: PROGRAMMABLE: yes  or  PROGRAMMABLE: no"
+                return None
+
+            system_prog = load_prompt("section_text_programmability_system")
+            user_prog = load_prompt("section_text_programmability_user").format(
+                study_id=study_id,
+                section_id=section["section_id"],
+                scenario=scenario,
+                example=example,
+                sentence_refs=", ".join(kept_d),
+                acrf_summary=summary_block,
+                acrf_excerpt=acrf_excerpt or "(none)",
+            )
+            prog_text = chat_text_repairs(
+                system=system_prog,
+                user=user_prog,
+                validate_reply=_validate_prog_text,
+                max_repairs=1,
+                label=f"step1-prog-{dev_id}",
+            )
+            programmable, _rationale = text_parse.parse_programmability(prog_text)
+            pseudo_sql = "SELECT 1 WHERE 1=0 -- not programmable"
+            if programmable:
+                def _validate_pseudo_text(t: str) -> Optional[str]:
+                    body = text_parse.parse_pseudo_sql_block(t)
+                    if not body.strip():
+                        return "Pseudo-SQL block is empty."
+                    return None
+
+                system_ps = load_prompt("section_text_pseudo_logic_system")
+                user_ps = load_prompt("section_text_pseudo_logic_user").format(
+                    study_id=study_id,
+                    scenario=scenario,
+                    example=example,
+                    rationale=_rationale,
+                    acrf_summary=summary_block,
+                )
+                ps_text = chat_text_repairs(
+                    system=system_ps,
+                    user=user_ps,
+                    validate_reply=_validate_pseudo_text,
+                    max_repairs=1,
+                    label=f"step1-pseudo-{dev_id}",
+                )
+                pseudo_sql = text_parse.parse_pseudo_sql_block(ps_text)
+
+            candidate_deviations.append(
+                {
+                    "deviation_id": dev_id,
+                    "scenario_description": scenario,
+                    "example_violation_narrative": example,
+                    "sentence_refs": kept_d,
+                    "programmable": programmable,
+                    "pseudo_sql_logic": pseudo_sql,
+                }
+            )
+
+        if not candidate_deviations:
+            continue
+        out_rules.append(
+            {
+                "rule_id": rule_id,
+                "title": rule["title"],
+                "atomic_requirement": rule["atomic_requirement"],
+                "sentence_refs": list(rule["sentence_refs"]),
+                "candidate_deviations": candidate_deviations,
+            }
+        )
+
+    data: Dict[str, Any] = {
+        "schema_version": STEP1_TEXT_SCHEMA_VERSION,
+        "study_id": study_id,
+        "generated_at": now,
+        "section_id": section["section_id"],
+        "section_path": list(section["section_path"]),
+        "rules": out_rules,
+    }
+    errs = validate(data, schema)
+    if errs:
+        raise ValueError("Step 1 output failed schema validation: " + "; ".join(errs[:15]))
+    sem = validate_step1_output(data, section)
+    if sem:
+        raise ValueError("Step 1 semantic validation failed: " + "; ".join(sem[:15]))
+    return data
 
 
 def _validate_dedup_judgement(d: Dict[str, Any]) -> List[str]:
@@ -298,24 +468,37 @@ def judge_step2_rule_duplicate(
     requirement_b: str,
     acrf_summary_context: Optional[str] = None,
 ) -> Dict[str, Any]:
-    system = load_prompt("step2_rule_dedup_system")
-    user = load_prompt("step2_rule_dedup_user").format(
+    acrf_block = ""
+    if acrf_summary_context and acrf_summary_context.strip():
+        acrf_block = (
+            "aCRF structured summary context:\n---\n"
+            + acrf_summary_context.strip()
+            + "\n---\n"
+        )
+    system = load_prompt("step2_rule_dedup_text_system")
+    user = load_prompt("step2_rule_dedup_text_user").format(
         title_a=title_a,
         requirement_a=requirement_a,
         title_b=title_b,
         requirement_b=requirement_b,
+        acrf_block=acrf_block or "(none)\n",
     )
-    if acrf_summary_context:
-        user += "\n\naCRF structured summary context:\n---\n"
-        user += acrf_summary_context.strip()
-        user += "\n---\n"
-    return chat_json(
+
+    def _v(t: str) -> Optional[str]:
+        if not t.strip():
+            return "Empty response."
+        d = text_parse.parse_dedup_judgement(t)
+        errs = _validate_dedup_judgement(d)
+        return errs[0] if errs else None
+
+    text = chat_text_repairs(
         system=system,
         user=user,
-        response_model=Step2DedupJudgement,
-        validator=_validate_dedup_judgement,
+        validate_reply=_v,
         max_repairs=1,
+        label="step2-rule-dedup",
     )
+    return text_parse.parse_dedup_judgement(text)
 
 
 def judge_step2_deviation_duplicate(
@@ -326,54 +509,37 @@ def judge_step2_deviation_duplicate(
     example_b: str,
     acrf_summary_context: Optional[str] = None,
 ) -> Dict[str, Any]:
-    system = load_prompt("step2_deviation_dedup_system")
-    user = load_prompt("step2_deviation_dedup_user").format(
+    acrf_block = ""
+    if acrf_summary_context and acrf_summary_context.strip():
+        acrf_block = (
+            "aCRF structured summary context:\n---\n"
+            + acrf_summary_context.strip()
+            + "\n---\n"
+        )
+    system = load_prompt("step2_deviation_dedup_text_system")
+    user = load_prompt("step2_deviation_dedup_text_user").format(
         scenario_a=scenario_a,
         example_a=example_a,
         scenario_b=scenario_b,
         example_b=example_b,
+        acrf_block=acrf_block or "(none)\n",
     )
-    if acrf_summary_context:
-        user += "\n\naCRF structured summary context:\n---\n"
-        user += acrf_summary_context.strip()
-        user += "\n---\n"
-    return chat_json(
+
+    def _v(t: str) -> Optional[str]:
+        if not t.strip():
+            return "Empty response."
+        d = text_parse.parse_dedup_judgement(t)
+        errs = _validate_dedup_judgement(d)
+        return errs[0] if errs else None
+
+    text = chat_text_repairs(
         system=system,
         user=user,
-        response_model=Step2DedupJudgement,
-        validator=_validate_dedup_judgement,
+        validate_reply=_v,
         max_repairs=1,
+        label="step2-deviation-dedup",
     )
-
-
-def _validate_step2_revalidated_deviation(d: Dict[str, Any]) -> List[str]:
-    errs: List[str] = []
-    deviations = d.get("deviations")
-    if not isinstance(deviations, list) or not deviations:
-        return ["deviations must be a non-empty list."]
-    for idx, dev in enumerate(deviations):
-        if not isinstance(dev, dict):
-            errs.append(f"deviations[{idx}] must be an object.")
-            continue
-        for key in ("scenario_description", "example_violation_narrative"):
-            value = dev.get(key)
-            if not isinstance(value, str) or not value.strip():
-                errs.append(f"deviations[{idx}].{key} must be a non-empty string.")
-        refs = dev.get("sentence_refs")
-        if not isinstance(refs, list) or not refs:
-            errs.append(f"deviations[{idx}].sentence_refs must be a non-empty list.")
-        else:
-            bad = [r for r in refs if not isinstance(r, str) or not r.strip()]
-            if bad:
-                errs.append(
-                    f"deviations[{idx}].sentence_refs must contain non-empty strings."
-                )
-        if not isinstance(dev.get("programmable"), bool):
-            errs.append(f"deviations[{idx}].programmable must be a boolean.")
-        psql = dev.get("pseudo_sql_logic")
-        if not isinstance(psql, str) or not psql.strip():
-            errs.append(f"deviations[{idx}].pseudo_sql_logic must be a non-empty string.")
-    return errs
+    return text_parse.parse_dedup_judgement(text)
 
 
 def revalidate_deviation_with_dm_feedback(
@@ -388,26 +554,46 @@ def revalidate_deviation_with_dm_feedback(
 ) -> List[Dict[str, Any]]:
     """Reconsider one Step 2 deviation using DM comments and protocol context."""
     now = datetime.now(timezone.utc).isoformat()
-    system = load_prompt("step2_revalidate_deviation_system")
-    user = load_prompt("step2_revalidate_deviation_user").format(
+    pc = protocol_context.strip()
+    rule_text = json.dumps(rule, ensure_ascii=False, indent=2)
+    deviation_text = json.dumps(deviation, ensure_ascii=False, indent=2)
+    system = load_prompt("step2_revalidate_text_system")
+    user = load_prompt("step2_revalidate_text_user").format(
         study_id=study_id,
         now=now,
         context_mode=context_mode,
-        rule_json=json.dumps(rule, ensure_ascii=False, indent=2),
-        deviation_json=json.dumps(deviation, ensure_ascii=False, indent=2),
+        rule_text=rule_text,
+        deviation_text=deviation_text,
         dm_comments=dm_comments.strip(),
-        protocol_context=protocol_context.strip(),
+        protocol_context=pc,
         acrf_summary_context=(acrf_summary_context or "").strip(),
     )
-    out = chat_json(
+
+    def _v(t: str) -> Optional[str]:
+        if not t.strip():
+            return "Empty response."
+        items = text_parse.parse_revalidated_deviation_blocks(t)
+        if not items:
+            return (
+                "No valid deviation blocks. Each block needs SCENARIO, EXAMPLE, "
+                "SENTENCE_REFS, PROGRAMMABLE (yes|no), and PSEUDO_SQL."
+            )
+        for it in items:
+            for ref in it.get("sentence_refs", []):
+                if ref not in pc:
+                    return f"Sentence ref {ref!r} must appear verbatim in protocol context."
+        return None
+
+    text = chat_text_repairs(
         system=system,
         user=user,
-        response_model=Step2RevalidatedDeviationResponse,
-        validator=_validate_step2_revalidated_deviation,
+        validate_reply=_v,
         max_repairs=1,
+        label="step2-revalidate",
     )
+    parsed = text_parse.parse_revalidated_deviation_blocks(text)
     result: List[Dict[str, Any]] = []
-    for idx, item in enumerate(out.get("deviations", [])):
+    for idx, item in enumerate(parsed):
         base_id = deviation.get("deviation_id", "dev")
         suffix = "" if idx == 0 else f"-r{idx + 1}"
         psql = (item.get("pseudo_sql_logic") or "").strip()

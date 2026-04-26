@@ -14,7 +14,7 @@
   "properties": {
     "schema_version": {
       "type": "string",
-      "const": "2.0.1"
+      "const": "3.0.0"
     },
     "study_id": {
       "type": "string",

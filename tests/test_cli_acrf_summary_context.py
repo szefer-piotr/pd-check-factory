@@ -50,7 +50,7 @@ class CliAcrfSummaryContextTests(unittest.TestCase):
             ), patch(
                 "pdcheck_factory.llm.extract_protocol_section_step1",
                 return_value={
-                    "schema_version": "2.0.1",
+                    "schema_version": "3.0.0",
                     "study_id": study_id,
                     "generated_at": "2026-01-01T00:00:00+00:00",
                     "section_id": "sec:abc",

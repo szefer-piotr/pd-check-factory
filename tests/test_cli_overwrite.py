@@ -13,7 +13,7 @@ from pdcheck_factory.protocol_markdown import write_manifest
 
 def _minimal_step1_section(study_id: str, section_id: str) -> dict:
     return {
-        "schema_version": "2.0.1",
+        "schema_version": "3.0.0",
         "study_id": study_id,
         "generated_at": "2026-01-01T00:00:00+00:00",
         "section_id": section_id,
