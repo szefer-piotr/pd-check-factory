@@ -623,6 +623,51 @@ def apply_deviation_review_updates(
     return state_obj, audit
 
 
+def refine_single_deviation_with_comment(
+    *,
+    study_id: str,
+    output_dir: Path,
+    row: Dict[str, Any],
+    dm_comment: str,
+    run_revision_cycle: bool = True,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """
+    Refine one deviation row using DM comment and return (updated_row, audit).
+    """
+    updated_row = dict(row)
+    updated_row["dm_comment"] = dm_comment
+    status = str(updated_row.get("status", "pending")).strip() or "pending"
+    updated_row["status"] = status
+
+    revised = False
+    if run_revision_cycle and dm_comment.strip():
+        protocol_text = _protocol_paragraph_text(study_id, output_dir)
+        acrf_summary_text = _acrf_summary_text(study_id, output_dir)
+        revised_text, revised_refs = revise_text_with_comment(
+            study_id=study_id,
+            item_type="deviations",
+            original_text=str(updated_row.get("text", "")),
+            paragraph_refs=list(updated_row.get("paragraph_refs", [])),
+            dm_comment=dm_comment,
+            protocol_paragraphs=protocol_text,
+            acrf_summary=acrf_summary_text,
+        )
+        updated_row["text"] = revised_text
+        if revised_refs:
+            updated_row["paragraph_refs"] = revised_refs
+        revised = True
+
+    audit = {
+        "study_id": study_id,
+        "review_type": "deviations",
+        "deviation_id": str(updated_row.get("deviation_id", "")),
+        "updated_rows": 1,
+        "revised_rows": 1 if revised else 0,
+        "run_revision_cycle": run_revision_cycle,
+    }
+    return updated_row, audit
+
+
 def run_steps(study_id: str, output_dir: Path, from_step: int, to_step: int) -> None:
     if from_step < 1 or to_step > 10 or from_step > to_step:
         raise ValueError("Invalid step range. Use 1..10 with from_step <= to_step.")

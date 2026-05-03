@@ -1649,6 +1649,16 @@ def cmd_ui_review(
     output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
     host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(8766, "--port", min=1, max=65535),
+    data_mode: Literal["real", "test", "mixed"] = typer.Option(
+        "real",
+        "--data-mode",
+        help="UI data mode: real LLM pipeline, synthetic test data, or mixed fallback.",
+    ),
+    fixtures_dir: Path = typer.Option(
+        Path("tests/fixtures/ui_v2"),
+        "--fixtures-dir",
+        help="Path to synthetic UI fixture directory used in test/mixed modes.",
+    ),
 ) -> None:
     """Start local Streamlit UI for Pipeline V2 review cycles."""
     try:
@@ -1671,6 +1681,10 @@ def cmd_ui_review(
         study_id,
         "--output-dir",
         str(output_dir),
+        "--data-mode",
+        data_mode,
+        "--fixtures-dir",
+        str(fixtures_dir),
     ]
     raise SystemExit(subprocess.call(cmd))
 

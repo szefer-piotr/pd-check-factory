@@ -1,0 +1,18 @@
+{
+  "schema_version": "1.0.0",
+  "study_id": "fixture-study",
+  "generated_at": "2026-01-01T00:00:00+00:00",
+  "deviations": [
+    {
+      "deviation_id": "dev-0001",
+      "rule_id": "rule-001",
+      "text": "Visit date occurs outside the allowed Week 4 window.",
+      "paragraph_refs": [
+        "p2"
+      ],
+      "data_support_note": "Synthetic note",
+      "status": "pending",
+      "dm_comment": ""
+    }
+  ]
+}

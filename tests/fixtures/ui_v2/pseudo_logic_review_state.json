@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0.0",
+  "study_id": "fixture-study",
+  "generated_at": "2026-01-01T00:00:00+00:00",
+  "items": [
+    {
+      "deviation_id": "dev-0001",
+      "rule_id": "rule-001",
+      "rule_title": "Visit window timing",
+      "pseudo_logic": "SELECT USUBJID FROM VS WHERE ABS(VISITDY-28) > 2",
+      "programmable": true,
+      "programmability_note": "Visit day is available in VS.",
+      "status": "accepted",
+      "dm_comment": ""
+    }
+  ]
+}

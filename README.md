@@ -95,26 +95,47 @@ Launch V2 review UI (Streamlit):
 pdcheck ui review --study-id MY-STUDY --output-dir output
 ```
 
-V2 UI quickstart:
+V2 UI full tutorial (start to final XLSX):
 
 1. Install UI dependencies:
    ```bash
    pip install -e ".[ui]"
    ```
-2. Generate required V2 inputs through step 4:
-   ```bash
-   pdcheck v2 run --study-id MY-STUDY --from-step 1 --to-step 4
-   ```
+2. Ensure your `.env` is configured (Storage, DI, and Azure OpenAI values). The UI preflight checks these.
 3. Start the UI:
    ```bash
    pdcheck ui review --study-id MY-STUDY --output-dir output
    ```
 4. Open the Streamlit URL shown in terminal (default `http://127.0.0.1:8766`).
-5. In the UI:
-   - update `status` / `DM comment`,
-   - use rule/paragraph tooltip previews for context,
-   - click **Generate Logic** per row or **Generate Logic for All deviations**.
-6. Click **Apply review updates** to persist review changes and optional revision-cycle edits.
+5. In **Preflight checks**:
+   - confirm required environment variables are present,
+   - confirm stage statuses are not blocked by missing prerequisites.
+6. In **Run pipeline stages**, run buttons in this order:
+   1. **Run extract**  
+      Runs DI/OpenDataLoader extraction and writes source markdown artifacts.
+   2. **Run acrf split-toc**  
+      Splits aCRF markdown into TOC section files under `sections_toc/`.
+   3. **Run v2 steps 1-5**  
+      Builds aCRF summary, protocol paragraph index, rules, and deviation review state.
+   4. **Deviation review (steps 6-7)**  
+      - update per-row `status` (`pending`, `accepted`, `to_review`, `rejected`),
+      - open **Refine** and click **Send** to apply targeted LLM revisions from DM comments,
+      - use **Generate Logic for All deviations** when ready to prepare pseudo-logic inputs.
+   5. **Run v2 step 8**  
+      Generates pseudo-logic candidates from accepted deviations.
+   6. **Pseudo logic review (step 9)**  
+      Review pseudo rows and update pseudo `status` values.
+   7. **Run step 10 finalize**  
+      Produces final JSON + XLSX outputs.
+7. Download/use final artifacts from:
+   - `output/<study_id>/pipeline/final/final_deviations.json`
+   - `output/<study_id>/pipeline/final/final_deviations.xlsx`
+
+Operational notes:
+- Stage cards show `blocked`, `ready`, or `complete`; blocked cards list missing inputs.
+- Each stage action shows inline logs/errors.
+- Review edits persist immediately (no global apply button required).
+- You can safely resume later by relaunching the UI for the same `study_id`; it reloads saved artifacts from `output/`.
 
 Expected files used/written by the V2 UI:
 - Input: `output/<study_id>/pipeline/review/deviations_review_state.json`
@@ -123,8 +144,12 @@ Expected files used/written by the V2 UI:
 - Output: `output/<study_id>/pipeline/review/deviations_review_state.json`
 - Output: `output/<study_id>/pipeline/review/deviations_validated.json`
 - Output: `output/<study_id>/pipeline/review/deviations_review_audit.json`
+- Output: `output/<study_id>/pipeline/review/deviation_chat_state.json`
 - Output: `output/<study_id>/pipeline/review/pseudo_logic_review_state.json`
 - Output: `output/<study_id>/pipeline/pseudo_logic/pseudo_logic_validated.json`
+- Output: `output/<study_id>/pipeline/review/pseudo_logic_review_audit.json`
+- Output: `output/<study_id>/pipeline/final/final_deviations.json`
+- Output: `output/<study_id>/pipeline/final/final_deviations.xlsx`
 
 1. **Upload** `protocol.pdf` and `acrf.pdf` to the raw paths above (AzCopy, Portal, or SDK).
 2. **Extract** (DI Layout + OpenDataLoader OCR comparison markdown):
@@ -228,14 +253,14 @@ Expected files used/written by the V2 UI:
   - `--use-acrf-summary/--no-use-acrf-summary` (default enabled)
   - `--strict` (fail when unresolved `to_review` rows remain)
   - `--no-upload`
-11. **Pipeline V2 review UI (optional, Streamlit)** — review deviations and pseudo-logic directly from V2 artifacts, use rule/protocol reference tooltips, update statuses/comments, and run the same revision-cycle behavior without Excel:
+11. **Pipeline V2 review UI (optional, Streamlit)** — review deviations and pseudo-logic directly from V2 artifacts in a compact one-line grid, use tooltip/popover details for references and pseudo logic, and refine one deviation at a time via in-row chat popover:
 
    ```bash
    pip install -e ".[ui]"
    pdcheck ui review --study-id MY-STUDY --output-dir output
    ```
 
-   Then open `http://127.0.0.1:8766/` (default). Use **Apply review updates** to persist status/comment edits and optional revision-cycle updates for rows marked `to_review`. Use **Generate Logic** per row or **Generate Logic for All deviations** to manage pseudo-logic artifacts.
+   Then open `http://127.0.0.1:8766/` (default). Status changes persist immediately per row. Use **Refine** popover and click **Send** to run one targeted LLM revision from the DM comment thread for that deviation; chat history persists in `deviation_chat_state.json`. Use **Generate Logic** per row or **Generate Logic for All deviations** to manage pseudo-logic artifacts.
 
 **Removed CLI stubs:** `draft-pd`, `merge`, `export-review`, `apply-review`, and `emit-pseudo` invoke Typer but only raise an error pointing at the Step 1/2 commands above (the old rules-KB → PD-candidate pipeline code and schemas were removed).
 

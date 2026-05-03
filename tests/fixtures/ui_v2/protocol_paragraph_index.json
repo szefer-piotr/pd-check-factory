@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0.0",
+  "study_id": "fixture-study",
+  "generated_at": "2026-01-01T00:00:00+00:00",
+  "paragraphs": [
+    {
+      "paragraph_id": "p1",
+      "text": "Blood pressure must be collected at Baseline and Week 4.",
+      "char_start": 0,
+      "char_end": 60
+    },
+    {
+      "paragraph_id": "p2",
+      "text": "Week 4 visit window is Day 28 plus or minus 2 days.",
+      "char_start": 61,
+      "char_end": 118
+    }
+  ]
+}

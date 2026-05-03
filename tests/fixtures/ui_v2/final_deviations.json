@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0.0",
+  "study_id": "fixture-study",
+  "generated_at": "2026-01-01T00:00:00+00:00",
+  "items": [
+    {
+      "rule_id": "rule-001",
+      "deviation_id": "dev-0001",
+      "rule_title": "Visit window timing",
+      "deviation_text": "Visit date occurs outside the allowed Week 4 window.",
+      "paragraph_refs": [
+        "p2"
+      ],
+      "pseudo_logic": "SELECT USUBJID FROM VS WHERE ABS(VISITDY-28) > 2"
+    }
+  ]
+}

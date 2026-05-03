@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0.0",
+  "study_id": "fixture-study",
+  "generated_at": "2026-01-01T00:00:00+00:00",
+  "rules": [
+    {
+      "rule_id": "rule-001",
+      "title": "Visit window timing",
+      "text": "Week 4 visit must occur in the Day 28 plus or minus 2 day window.",
+      "paragraph_refs": [
+        "p2"
+      ],
+      "coverage_note": "Synthetic fixture rule"
+    }
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0.0",
+  "study_id": "fixture-study",
+  "generated_at": "2026-01-01T00:00:00+00:00",
+  "datasets": [
+    {
+      "dataset_name": "VS",
+      "columns": [
+        {
+          "column_name": "VISIT",
+          "column_type": "string",
+          "allowed_values": [
+            "Baseline",
+            "Week 4"
+          ]
+        },
+        {
+          "column_name": "VSDTC",
+          "column_type": "datetime",
+          "allowed_values": []
+        }
+      ]
+    }
+  ]
+}
