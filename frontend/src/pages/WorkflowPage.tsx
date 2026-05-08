@@ -4,6 +4,7 @@ import { Section } from "../components/layout/Section";
 import { Stack } from "../components/layout/Stack";
 import { StepNavigation } from "../components/workflow/StepNavigation";
 import { Step1ExecutionPanel } from "../components/workflow/Step1ExecutionPanel";
+import { Step7ReviewPanel } from "../components/workflow/Step7ReviewPanel";
 import { DEFAULT_STEP_ID, PIPELINE_STEPS } from "../data/pipelineSteps";
 import { useStudyDashboard } from "../hooks/useStudyDashboard";
 import { fetchStepPreview, fetchStepStatuses, runStep, type StepStatus } from "../services/stepApi";
@@ -30,6 +31,7 @@ export function WorkflowPage(): JSX.Element {
   const [stepRunError, setStepRunError] = useState("");
   const [isRunningStep, setIsRunningStep] = useState(false);
   const [serverPreviewItems, setServerPreviewItems] = useState<Array<{ title: string; body: string; highlight?: boolean }>>([]);
+  const [isNavCollapsed, setIsNavCollapsed] = useState(false);
 
   useEffect(() => {
     const onHashChange = (): void => {
@@ -90,12 +92,16 @@ export function WorkflowPage(): JSX.Element {
     () => ({ ...activeStep, previewItems: serverPreviewItems.length > 0 ? serverPreviewItems : activeStep.previewItems }),
     [activeStep, serverPreviewItems]
   );
+  const canCollapseNav = activeStep.id === "review-and-finalize";
 
   function handleSelectStep(stepId: string): void {
     setActiveStepId(stepId);
     window.location.hash = `/${stepId}`;
     setStepRunMessage("");
     setStepRunError("");
+    if (stepId !== "review-and-finalize") {
+      setIsNavCollapsed(false);
+    }
   }
 
   function moveToNextStep(): void {
@@ -155,13 +161,29 @@ export function WorkflowPage(): JSX.Element {
           </div>
         </Section>
 
-        <div className="workflow-layout">
-          <StepNavigation steps={PIPELINE_STEPS} activeStepId={activeStep.id} statuses={stepStatuses} onSelectStep={handleSelectStep} />
+        <div
+          className={`workflow-layout ${canCollapseNav ? "workflow-layout-step7" : ""} ${canCollapseNav && isNavCollapsed ? "workflow-layout-collapsed" : ""}`}
+        >
+          {canCollapseNav ? (
+            <button
+              className="button button-secondary workflow-nav-toggle"
+              type="button"
+              aria-label={isNavCollapsed ? "Show steps panel" : "Hide steps panel"}
+              onClick={() => setIsNavCollapsed((current) => !current)}
+            >
+              {isNavCollapsed ? ">" : "<"}
+            </button>
+          ) : null}
+          <aside className={`workflow-nav-shell ${canCollapseNav && isNavCollapsed ? "workflow-nav-shell-collapsed" : ""}`} aria-label="Steps panel">
+            <StepNavigation steps={PIPELINE_STEPS} activeStepId={activeStep.id} statuses={stepStatuses} onSelectStep={handleSelectStep} />
+          </aside>
           <div className="workflow-content">
             <StepDetailPage step={activeStepWithPreview} />
 
             {activeStep.id === "extract-inputs" ? (
               <Step1ExecutionPanel studyId={studyId} onMoveNext={moveToNextStep} onStatusesChange={setStepStatuses} />
+            ) : activeStep.id === "review-and-finalize" ? (
+              <Step7ReviewPanel studyId={studyId} onStepStatusesChange={setStepStatuses} />
             ) : (
               <section className="step1-panel" aria-label="Step execution">
                 <h3>Run {activeStep.title}</h3>

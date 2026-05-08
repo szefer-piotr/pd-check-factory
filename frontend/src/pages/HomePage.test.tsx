@@ -44,6 +44,96 @@ vi.mock("../services/stepApi", () => ({
       "review-and-finalize": "pending"
     }
   })),
+  fetchStep7Deviations: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    columns: ["rule_id", "deviation_id", "rule_title", "deviation_text", "paragraph_refs", "pseudo_logic"],
+    rows: [
+      {
+        rule_id: "rule-001",
+        deviation_id: "dev-0001",
+        rule_title: "Visit window timing",
+        deviation_text: "Visit date outside window",
+        paragraph_refs: ["p2"],
+        paragraph_refs_text: "p2",
+        pseudo_logic: "SELECT 1",
+        status: "to_review",
+        dm_comment: "",
+        programmable: true,
+        programmability_note: "ok"
+      }
+    ],
+    stepStatuses: {
+      "extract-inputs": "done",
+      "index-protocol": "done",
+      "acrf-split-toc": "done",
+      "acrf-summary-text": "done",
+      "extract-rules": "done",
+      "extract-deviations": "done",
+      "review-and-finalize": "pending"
+    }
+  })),
+  fetchStep7DeviationChat: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    deviationId: "dev-0001",
+    messages: [{ role: "dm", text: "please revise", ts: "2026-01-01T00:00:00Z" }]
+  })),
+  refineStep7Deviation: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    deviationId: "dev-0001",
+    row: {
+      rule_id: "rule-001",
+      deviation_id: "dev-0001",
+      rule_title: "Visit window timing",
+      deviation_text: "Visit date outside window refined",
+      paragraph_refs: ["p2"],
+      paragraph_refs_text: "p2",
+      pseudo_logic: "SELECT 1",
+      status: "to_review",
+      dm_comment: "please revise",
+      programmable: true,
+      programmability_note: "ok"
+    },
+    messages: [
+      { role: "dm", text: "please revise", ts: "2026-01-01T00:00:00Z" },
+      { role: "assistant", text: "Updated deviation from your message.", ts: "2026-01-01T00:00:02Z" }
+    ],
+    audit: {},
+    stepStatuses: {
+      "extract-inputs": "done",
+      "index-protocol": "done",
+      "acrf-split-toc": "done",
+      "acrf-summary-text": "done",
+      "extract-rules": "done",
+      "extract-deviations": "done",
+      "review-and-finalize": "pending"
+    }
+  })),
+  updateStep7DeviationStatus: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    deviationId: "dev-0001",
+    row: {
+      rule_id: "rule-001",
+      deviation_id: "dev-0001",
+      rule_title: "Visit window timing",
+      deviation_text: "Visit date outside window",
+      paragraph_refs: ["p2"],
+      paragraph_refs_text: "p2",
+      pseudo_logic: "SELECT 1",
+      status: "accepted",
+      dm_comment: "",
+      programmable: true,
+      programmability_note: "ok"
+    },
+    stepStatuses: {
+      "extract-inputs": "done",
+      "index-protocol": "done",
+      "acrf-split-toc": "done",
+      "acrf-summary-text": "done",
+      "extract-rules": "done",
+      "extract-deviations": "done",
+      "review-and-finalize": "pending"
+    }
+  })),
   uploadStep1Files: vi.fn(),
   runStep1Extraction: vi.fn(),
   fetchStep1Preview: vi.fn()
@@ -54,7 +144,7 @@ describe("Workflow pipeline pages", () => {
     render(<App />);
 
     expect(await screen.findByText("PD Check Pipeline Pages")).toBeInTheDocument();
-    expect(screen.getByText("Step 1 - Extract Inputs")).toBeInTheDocument();
+    expect(screen.getAllByText("Step 1 - Extract Inputs").length).toBeGreaterThan(0);
     expect(screen.getByText("Input Sources")).toBeInTheDocument();
     expect(screen.getByText("Outputs Passed to Next Step")).toBeInTheDocument();
     expect(screen.getByText("Preview Results")).toBeInTheDocument();
@@ -65,9 +155,28 @@ describe("Workflow pipeline pages", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: /Step 5 - Rule Extractions/i }));
-    expect(await screen.findByText("Generate atomic protocol rules with traceable references.")).toBeInTheDocument();
+    expect((await screen.findAllByText("Generate atomic protocol rules with traceable references.")).length).toBeGreaterThan(0);
 
     await user.click(screen.getByRole("button", { name: "Run this step" }));
     expect(await screen.findByText("Extracted 10 rules.")).toBeInTheDocument();
+  });
+
+  it("renders step 7 excel-like table and refinement loop", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /Step 7 - Review and Finalize/i }));
+    expect(await screen.findByText("Step 7 Deviation Review Grid")).toBeInTheDocument();
+    expect(screen.getByText("rule_id")).toBeInTheDocument();
+    expect(screen.getByText("pseudo_logic")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Open" }));
+    expect(await screen.findByText("Refinement Loop: dev-0001")).toBeInTheDocument();
+
+    const input = screen.getByPlaceholderText("Add DM instruction for this deviation...");
+    await user.clear(input);
+    await user.type(input, "please revise");
+    await user.click(screen.getByRole("button", { name: "Send (refine)" }));
+    expect(await screen.findByText("Updated deviation from your message.")).toBeInTheDocument();
   });
 });

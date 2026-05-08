@@ -69,6 +69,55 @@ export interface StepRunResponse {
   stepStatuses: Record<string, StepStatus>;
 }
 
+export interface Step7DeviationRow {
+  rule_id: string;
+  deviation_id: string;
+  rule_title: string;
+  deviation_text: string;
+  paragraph_refs: string[];
+  paragraph_refs_text: string;
+  pseudo_logic: string;
+  status: "pending" | "to_review" | "accepted" | "rejected";
+  dm_comment: string;
+  programmable: boolean | null;
+  programmability_note: string;
+}
+
+export interface Step7DeviationsResponse {
+  studyId: string;
+  columns: string[];
+  rows: Step7DeviationRow[];
+  stepStatuses: Record<string, StepStatus>;
+}
+
+export interface Step7ChatMessage {
+  role: string;
+  text: string;
+  ts: string;
+}
+
+export interface Step7DeviationChatResponse {
+  studyId: string;
+  deviationId: string;
+  messages: Step7ChatMessage[];
+}
+
+export interface Step7RefineResponse {
+  studyId: string;
+  deviationId: string;
+  row: Step7DeviationRow;
+  messages: Step7ChatMessage[];
+  audit: Record<string, unknown>;
+  stepStatuses: Record<string, StepStatus>;
+}
+
+export interface Step7UpdateResponse {
+  studyId: string;
+  deviationId: string;
+  row: Step7DeviationRow;
+  stepStatuses: Record<string, StepStatus>;
+}
+
 const API_BASE = (import.meta.env.VITE_PD_API_BASE as string | undefined) ?? "http://127.0.0.1:8787";
 
 async function parseApiResponse<T>(response: Response): Promise<T> {
@@ -134,4 +183,50 @@ export async function fetchStepPreview(studyId: string, stepId: string): Promise
     `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/steps/${encodeURIComponent(stepId)}/preview`
   );
   return parseApiResponse<StepPreviewResponse>(response);
+}
+
+export async function fetchStep7Deviations(studyId: string): Promise<Step7DeviationsResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations`);
+  return parseApiResponse<Step7DeviationsResponse>(response);
+}
+
+export async function fetchStep7DeviationChat(studyId: string, deviationId: string): Promise<Step7DeviationChatResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/${encodeURIComponent(deviationId)}/chat`
+  );
+  return parseApiResponse<Step7DeviationChatResponse>(response);
+}
+
+export async function refineStep7Deviation(
+  studyId: string,
+  deviationId: string,
+  message: string,
+  runRevisionCycle = true
+): Promise<Step7RefineResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/${encodeURIComponent(deviationId)}/refine`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ message, runRevisionCycle })
+    }
+  );
+  return parseApiResponse<Step7RefineResponse>(response);
+}
+
+export async function updateStep7DeviationStatus(
+  studyId: string,
+  deviationId: string,
+  status: Step7DeviationRow["status"],
+  dmComment?: string
+): Promise<Step7UpdateResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/${encodeURIComponent(deviationId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status, dmComment })
+    }
+  );
+  return parseApiResponse<Step7UpdateResponse>(response);
 }

@@ -106,3 +106,76 @@ def test_status_progression_and_dependency_guard(tmp_path: Path, monkeypatch: py
     assert all(called.values())
     final_status = {row["stepId"]: row["status"] for row in service.get_status(study_id)["steps"]}
     assert final_status["review-and-finalize"] == "done"
+
+
+def test_step7_deviations_chat_and_refine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "MY-STUDY"
+    rule_path = tmp_path / study_id / "pipeline" / "rules" / "rules_parsed.json"
+    review_path = tmp_path / study_id / "pipeline" / "review" / "deviations_review_state.json"
+    pseudo_path = tmp_path / study_id / "pipeline" / "review" / "pseudo_logic_review_state.json"
+    _touch(
+        rule_path,
+        '{"rules":[{"rule_id":"rule-001","title":"Visit window timing"}]}',
+    )
+    _touch(
+        review_path,
+        (
+            '{"schema_version":"1.0.0","study_id":"MY-STUDY","deviations":['
+            '{"deviation_id":"dev-0001","rule_id":"rule-001","text":"Original","paragraph_refs":["p1"],'
+            '"status":"to_review","dm_comment":""}]}'
+        ),
+    )
+    _touch(
+        pseudo_path,
+        (
+            '{"schema_version":"1.0.0","study_id":"MY-STUDY","items":['
+            '{"deviation_id":"dev-0001","rule_id":"rule-001","pseudo_logic":"SELECT 1",'
+            '"programmable":true,"programmability_note":"ok"}]}'
+        ),
+    )
+
+    from pdcheck_factory import pipeline_v2
+
+    def fake_refine(*, study_id: str, output_dir: Path, row: dict, dm_comment: str, run_revision_cycle: bool):
+        updated = dict(row)
+        updated["text"] = f"{row.get('text')} :: refined"
+        updated["dm_comment"] = dm_comment
+        return updated, {
+            "study_id": study_id,
+            "review_type": "deviations",
+            "deviation_id": row.get("deviation_id"),
+            "updated_rows": 1,
+            "revised_rows": 1,
+            "run_revision_cycle": run_revision_cycle,
+        }
+
+    monkeypatch.setattr(pipeline_v2, "refine_single_deviation_with_comment", fake_refine)
+
+    list_payload = service.get_step7_deviations(study_id)
+    assert list_payload["columns"] == ["rule_id", "deviation_id", "rule_title", "deviation_text", "paragraph_refs", "pseudo_logic"]
+    assert list_payload["rows"][0]["deviation_id"] == "dev-0001"
+    assert list_payload["rows"][0]["rule_title"] == "Visit window timing"
+
+    chat_payload = service.get_step7_deviation_chat(study_id, "dev-0001")
+    assert chat_payload["messages"] == []
+
+    refined = service.refine_step7_deviation(
+        study_id=study_id,
+        deviation_id="dev-0001",
+        dm_comment="please refine",
+        run_revision_cycle=True,
+    )
+    assert "refined" in refined["row"]["deviation_text"]
+    assert len(refined["messages"]) == 2
+    assert refined["messages"][0]["role"] == "dm"
+    assert refined["messages"][1]["role"] == "assistant"
+
+    updated = service.update_step7_deviation(
+        study_id=study_id,
+        deviation_id="dev-0001",
+        status="accepted",
+        dm_comment="approved",
+    )
+    assert updated["row"]["status"] == "accepted"
+    assert updated["row"]["dm_comment"] == "approved"

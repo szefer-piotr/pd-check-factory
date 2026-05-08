@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
 from pdcheck_factory import blob_io, paths, pipeline_v2
+from pdcheck_factory.json_util import read_json, write_json
 
 
 class UiApiError(Exception):
@@ -114,6 +116,101 @@ class UiStepService:
         if not file_path.exists() or not file_path.is_file():
             return ""
         return file_path.read_text(encoding="utf-8")[:max_chars]
+
+    def _load_state(self, study_id: str) -> Dict[str, Any]:
+        path = paths.local_deviations_review_state(study_id, self.output_dir)
+        if not path.is_file():
+            raise UiApiError("NOT_FOUND", f"Missing review state: {path}", 404)
+        return read_json(path)
+
+    def _load_pseudo_state(self, study_id: str) -> Dict[str, Any]:
+        path = paths.local_pseudo_logic_review_state(study_id, self.output_dir)
+        if path.is_file():
+            return read_json(path)
+        return {
+            "schema_version": "1.0.0",
+            "study_id": study_id,
+            "generated_at": "",
+            "items": [],
+        }
+
+    def _chat_state_path(self, study_id: str) -> Path:
+        return paths.local_review_dir(study_id, self.output_dir) / "deviation_chat_state.json"
+
+    def _load_chat_state(self, study_id: str) -> Dict[str, Any]:
+        chat_path = self._chat_state_path(study_id)
+        if chat_path.is_file():
+            return read_json(chat_path)
+        return {
+            "schema_version": "1.0.0",
+            "study_id": study_id,
+            "updated_at": "",
+            "deviations": {},
+        }
+
+    def _save_chat_state(self, study_id: str, chat_obj: Dict[str, Any]) -> None:
+        chat_obj["updated_at"] = datetime.now(timezone.utc).isoformat()
+        write_json(self._chat_state_path(study_id), chat_obj)
+
+    def _append_chat_message(
+        self,
+        chat_obj: Dict[str, Any],
+        deviation_id: str,
+        *,
+        role: str,
+        text: str,
+    ) -> None:
+        dev_key = str(deviation_id)
+        by_dev = dict(chat_obj.get("deviations", {}))
+        cur = dict(by_dev.get(dev_key, {"messages": []}))
+        msgs = list(cur.get("messages", []))
+        msgs.append(
+            {
+                "role": role,
+                "text": text,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        cur["messages"] = msgs[-25:]
+        by_dev[dev_key] = cur
+        chat_obj["deviations"] = by_dev
+
+    def _replace_row(self, state_obj: Dict[str, Any], updated_row: Dict[str, Any]) -> Dict[str, Any]:
+        dev_id = str(updated_row.get("deviation_id", ""))
+        rows = list(state_obj.get("deviations", []))
+        for idx, row in enumerate(rows):
+            if str(row.get("deviation_id", "")) == dev_id:
+                rows[idx] = updated_row
+                break
+        state_obj["deviations"] = rows
+        return state_obj
+
+    def _persist_state(self, study_id: str, state_obj: Dict[str, Any], audit_obj: Dict[str, Any]) -> None:
+        write_json(paths.local_deviations_review_state(study_id, self.output_dir), state_obj)
+        write_json(paths.local_deviations_validated_json(study_id, self.output_dir), state_obj)
+        write_json(paths.local_deviations_review_audit_json(study_id, self.output_dir), audit_obj)
+
+    def _normalized_step7_row(
+        self, row: Dict[str, Any], pseudo_by_dev: Dict[str, Dict[str, Any]], rule_by_id: Dict[str, Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        deviation_id = str(row.get("deviation_id", ""))
+        rule_id = str(row.get("rule_id", ""))
+        pseudo = pseudo_by_dev.get(deviation_id, {})
+        rule = rule_by_id.get(rule_id, {})
+        refs = list(row.get("paragraph_refs", []))
+        return {
+            "rule_id": rule_id,
+            "deviation_id": deviation_id,
+            "rule_title": str(rule.get("title", "")),
+            "deviation_text": str(row.get("text", "")),
+            "paragraph_refs": refs,
+            "paragraph_refs_text": ", ".join(refs),
+            "pseudo_logic": str(pseudo.get("pseudo_logic", "")),
+            "status": str(row.get("status", "pending")),
+            "dm_comment": str(row.get("dm_comment", "")),
+            "programmable": pseudo.get("programmable"),
+            "programmability_note": str(pseudo.get("programmability_note", "")),
+        }
 
     def upload_step1_files(self, study_id: str, protocol_bytes: bytes, acrf_bytes: bytes) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
@@ -337,6 +434,132 @@ class UiStepService:
             "studyId": study_id,
             "stepId": step_id,
             "previews": previews,
+            "stepStatuses": self._step_statuses(study_id),
+        }
+
+    def get_step7_deviations(self, study_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        state_obj = self._load_state(study_id)
+        pseudo_obj = self._load_pseudo_state(study_id)
+        rules_obj = read_json(paths.local_rules_parsed_json(study_id, self.output_dir))
+        pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in pseudo_obj.get("items", [])}
+        rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
+        rows = [self._normalized_step7_row(row, pseudo_by_dev, rule_by_id) for row in state_obj.get("deviations", [])]
+        return {
+            "studyId": study_id,
+            "columns": ["rule_id", "deviation_id", "rule_title", "deviation_text", "paragraph_refs", "pseudo_logic"],
+            "rows": rows,
+            "stepStatuses": self._step_statuses(study_id),
+        }
+
+    def get_step7_deviation_chat(self, study_id: str, deviation_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        dev_id = str(deviation_id).strip()
+        if not dev_id:
+            raise UiApiError("VALIDATION_ERROR", "deviationId is required", 400)
+        chat_obj = self._load_chat_state(study_id)
+        dev_chat = chat_obj.get("deviations", {}).get(dev_id, {})
+        return {
+            "studyId": study_id,
+            "deviationId": dev_id,
+            "messages": list(dev_chat.get("messages", []))[-25:],
+        }
+
+    def refine_step7_deviation(
+        self,
+        *,
+        study_id: str,
+        deviation_id: str,
+        dm_comment: str,
+        run_revision_cycle: bool = True,
+    ) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        dev_id = str(deviation_id).strip()
+        if not dev_id:
+            raise UiApiError("VALIDATION_ERROR", "deviationId is required", 400)
+        comment = str(dm_comment or "")
+
+        state_obj = self._load_state(study_id)
+        rows = list(state_obj.get("deviations", []))
+        row = next((item for item in rows if str(item.get("deviation_id", "")) == dev_id), None)
+        if row is None:
+            raise UiApiError("NOT_FOUND", f"Unknown deviationId '{dev_id}'", 404)
+
+        chat_obj = self._load_chat_state(study_id)
+        self._append_chat_message(chat_obj, dev_id, role="dm", text=comment.strip() or "(empty)")
+        try:
+            revised_row, audit = pipeline_v2.refine_single_deviation_with_comment(
+                study_id=study_id,
+                output_dir=self.output_dir,
+                row=row,
+                dm_comment=comment,
+                run_revision_cycle=run_revision_cycle,
+            )
+            self._append_chat_message(chat_obj, dev_id, role="assistant", text="Updated deviation from your message.")
+        except Exception as exc:
+            self._append_chat_message(chat_obj, dev_id, role="assistant", text=f"Refinement failed: {exc}")
+            self._save_chat_state(study_id, chat_obj)
+            raise UiApiError("REFINE_FAILED", str(exc), 500) from exc
+
+        state_obj = self._replace_row(state_obj, revised_row)
+        self._persist_state(study_id, state_obj, audit)
+        self._save_chat_state(study_id, chat_obj)
+
+        pseudo_obj = self._load_pseudo_state(study_id)
+        rules_obj = read_json(paths.local_rules_parsed_json(study_id, self.output_dir))
+        pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in pseudo_obj.get("items", [])}
+        rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
+
+        return {
+            "studyId": study_id,
+            "deviationId": dev_id,
+            "row": self._normalized_step7_row(revised_row, pseudo_by_dev, rule_by_id),
+            "messages": list(chat_obj.get("deviations", {}).get(dev_id, {}).get("messages", []))[-25:],
+            "audit": audit,
+            "stepStatuses": self._step_statuses(study_id),
+        }
+
+    def update_step7_deviation(
+        self,
+        *,
+        study_id: str,
+        deviation_id: str,
+        status: str,
+        dm_comment: str | None = None,
+    ) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        dev_id = str(deviation_id).strip()
+        next_status = str(status).strip().lower()
+        if next_status not in {"pending", "to_review", "accepted", "rejected"}:
+            raise UiApiError("VALIDATION_ERROR", "Invalid status value", 400)
+
+        state_obj = self._load_state(study_id)
+        row = next((item for item in state_obj.get("deviations", []) if str(item.get("deviation_id", "")) == dev_id), None)
+        if row is None:
+            raise UiApiError("NOT_FOUND", f"Unknown deviationId '{dev_id}'", 404)
+        updated = dict(row)
+        updated["status"] = next_status
+        if dm_comment is not None:
+            updated["dm_comment"] = dm_comment
+        audit = {
+            "study_id": study_id,
+            "review_type": "deviations",
+            "deviation_id": dev_id,
+            "updated_rows": 1,
+            "revised_rows": 0,
+            "run_revision_cycle": False,
+        }
+        state_obj = self._replace_row(state_obj, updated)
+        self._persist_state(study_id, state_obj, audit)
+
+        pseudo_obj = self._load_pseudo_state(study_id)
+        rules_obj = read_json(paths.local_rules_parsed_json(study_id, self.output_dir))
+        pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in pseudo_obj.get("items", [])}
+        rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
+        return {
+            "studyId": study_id,
+            "deviationId": dev_id,
+            "row": self._normalized_step7_row(updated, pseudo_by_dev, rule_by_id),
             "stepStatuses": self._step_statuses(study_id),
         }
 

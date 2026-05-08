@@ -19,3 +19,5 @@ export interface PipelineStepDefinition {
   outputArtifacts: PipelineArtifact[];
   previewItems: PipelinePreviewItem[];
 }
+
+export type Step7ReviewStatus = "pending" | "to_review" | "accepted" | "rejected";

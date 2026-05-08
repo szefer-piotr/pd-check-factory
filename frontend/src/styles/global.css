@@ -114,6 +114,37 @@ body {
   display: grid;
   grid-template-columns: 320px 1fr;
   gap: 1rem;
+  position: relative;
+}
+
+.workflow-layout-collapsed {
+  grid-template-columns: 0 1fr;
+}
+
+.workflow-nav-toggle {
+  position: absolute;
+  top: 0.35rem;
+  left: 304px;
+  z-index: 3;
+  min-width: 32px;
+  padding: 0.35rem 0.55rem;
+}
+
+.workflow-layout-step7.workflow-layout-collapsed .workflow-nav-toggle {
+  left: 0;
+}
+
+.workflow-nav-shell {
+  min-width: 0;
+  overflow: hidden;
+  transition: transform 180ms ease, opacity 180ms ease;
+  transform: translateX(0);
+  opacity: 1;
+}
+
+.workflow-nav-shell-collapsed {
+  transform: translateX(-100%);
+  opacity: 0;
 }
 
 .workflow-content {
@@ -302,6 +333,116 @@ body {
   display: grid;
   gap: 0.7rem;
   grid-template-columns: 1fr 1fr;
+}
+
+.step7-panel {
+  border: 1px solid #e8e8e8;
+  border-radius: 12px;
+  background: #ffffff;
+  padding: 1rem;
+}
+
+.step7-panel h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.step7-grid-wrap {
+  margin-top: 0.85rem;
+  overflow: auto;
+  border: 1px solid #ececec;
+  border-radius: 10px;
+}
+
+.step7-grid {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 980px;
+  font-size: 0.86rem;
+}
+
+.step7-grid th,
+.step7-grid td {
+  border-bottom: 1px solid #efefef;
+  padding: 0.45rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+}
+
+.step7-grid thead th {
+  position: sticky;
+  top: 0;
+  background: #fbfbfb;
+  z-index: 1;
+}
+
+.step7-status {
+  text-transform: uppercase;
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+}
+
+.step7-status-accepted {
+  color: #1f7b2e;
+}
+
+.step7-status-to_review {
+  color: #8a5d08;
+}
+
+.step7-status-rejected {
+  color: #8f1d1d;
+}
+
+.step7-status-pending {
+  color: #4b4b4b;
+}
+
+.step7-chat {
+  margin-top: 0.85rem;
+  border: 1px solid #ececec;
+  border-radius: 10px;
+  padding: 0.75rem;
+  background: #fcfcfc;
+}
+
+.step7-chat h4 {
+  margin: 0 0 0.35rem;
+}
+
+.step7-muted {
+  color: #5f5f5f;
+}
+
+.step7-chat-log {
+  max-height: 220px;
+  overflow: auto;
+  border: 1px solid #e8e8e8;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 0.55rem;
+}
+
+.step7-chat-msg + .step7-chat-msg {
+  margin-top: 0.4rem;
+}
+
+.step7-chat-input {
+  width: 100%;
+  margin-top: 0.6rem;
+  border: 1px solid #cccccc;
+  border-radius: 8px;
+  padding: 0.55rem 0.8rem;
+  font: inherit;
+  min-height: 78px;
+  resize: vertical;
+}
+
+.step7-chat-actions {
+  margin-top: 0.6rem;
+  display: flex;
+  gap: 0.55rem;
+  flex-wrap: wrap;
 }
 
 @media (max-width: 960px) {

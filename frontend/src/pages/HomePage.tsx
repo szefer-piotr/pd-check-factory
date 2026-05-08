@@ -105,7 +105,6 @@ export function HomePage(): JSX.Element {
   async function runAll(): Promise<void> {
     for (const step of steps) {
       if (step.status !== "done") {
-        // eslint-disable-next-line no-await-in-loop
         await runStep(step.id);
       }
     }
