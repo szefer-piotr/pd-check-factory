@@ -20,6 +20,7 @@ from pdcheck_factory import llm as llm_mod
 from pdcheck_factory import step2_merge
 from pdcheck_factory import step2_review
 from pdcheck_factory.json_util import load_schema, read_json, validate, write_json
+from pdcheck_factory.ui_step_api import run_step_api
 from pdcheck_factory.protocol_markdown import (
     build_sections_manifest,
     format_section_for_prompt,
@@ -1697,6 +1698,16 @@ def cmd_ui_review(
         str(fixtures_dir),
     ]
     raise SystemExit(subprocess.call(cmd))
+
+
+@ui_app.command("step-api")
+def cmd_ui_step_api(
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8787, "--port", min=1, max=65535),
+    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
+) -> None:
+    """Start local HTTP API for React step UI (upload + extract + preview)."""
+    run_step_api(host=host, port=port, output_dir=output_dir)
 
 
 @v2_app.command("run")

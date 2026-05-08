@@ -304,3 +304,53 @@ System and user instructions for Azure OpenAI are Markdown files under `[pdcheck
 ## License
 
 See repository owner for license terms.
+
+## React UI (Vite + TypeScript)
+
+A new single-page React dashboard scaffold is available under `frontend/`.
+
+### Frontend structure
+
+- `frontend/src/pages/HomePage.tsx` — single-page dashboard flow.
+- `frontend/src/components/layout/` — shared layout primitives (`Page`, `Section`, `Card`, `Stack`).
+- `frontend/src/components/ui/` — typed presentational UI components.
+- `frontend/src/hooks/useStudyDashboard.ts` — state orchestration for loading/filter/refresh.
+- `frontend/src/services/studyService.ts` — mock data service (replace with real API next).
+- `frontend/src/pages/HomePage.test.tsx` — primary integration path tests.
+
+### Run locally
+
+```bash
+# terminal 1: start step API for upload/extract
+pdcheck ui step-api --host 127.0.0.1 --port 8787 --output-dir output
+
+# terminal 2: run React UI
+cd frontend
+npm install
+npm run dev
+```
+
+### Quality commands
+
+```bash
+npm run lint
+npm run test
+npm run build
+```
+
+### Step API endpoints (React integration)
+
+- `POST /api/v1/studies/{studyId}/step1/upload`
+- `POST /api/v1/studies/{studyId}/step1/extract`
+- `GET /api/v1/studies/{studyId}/step1/preview`
+- `GET /api/v1/studies/{studyId}/steps/status`
+- `POST /api/v1/studies/{studyId}/steps/{stepId}/run`
+- `GET /api/v1/studies/{studyId}/steps/{stepId}/preview`
+
+### Troubleshooting (`Failed to fetch`)
+
+- Verify the Step API process is running and reachable:
+  - `curl "http://127.0.0.1:8787/api/v1/studies/MY-STUDY/steps/status"`
+- Ensure `VITE_PD_API_BASE` points to the API host/port if not using defaults.
+- Check `.env` values required by extraction (`STORAGE_CONNECTION_STRING`, `STORAGE_CONTAINER`, `DI_ENDPOINT`, `DI_KEY`).
+- If running frontend/API in different network contexts, bind API to `0.0.0.0` and use a reachable host IP in `VITE_PD_API_BASE`.
