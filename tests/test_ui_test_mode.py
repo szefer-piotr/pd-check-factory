@@ -100,6 +100,7 @@ class UiTestModeTests(unittest.TestCase):
                     sas_ttl=15,
                     upload=True,
                     skip_acrf=False,
+                    skip_protocol=False,
                     upload_only=False,
                     run_opendataloader_ocr=True,
                     opendataloader_only=False,

@@ -24,7 +24,11 @@
           },
           "data_support_note": { "type": "string" },
           "status": { "type": "string", "enum": ["pending", "accepted", "to_review", "rejected"] },
-          "dm_comment": { "type": "string" }
+          "dm_comment": { "type": "string" },
+          "entry_source": {
+            "type": "string",
+            "enum": ["extracted", "imported"]
+          }
         },
         "additionalProperties": false
       }

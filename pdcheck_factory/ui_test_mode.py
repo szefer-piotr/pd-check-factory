@@ -96,6 +96,7 @@ def run_extract_for_ui(
     sas_ttl: int,
     upload: bool,
     skip_acrf: bool,
+    skip_protocol: bool,
     upload_only: bool,
     run_opendataloader_ocr: bool,
     opendataloader_only: bool,
@@ -103,6 +104,8 @@ def run_extract_for_ui(
 ) -> None:
     """Data prep extract: synthetic files in test mode; real Blob/DI otherwise."""
     if config.mode == "test":
+        if skip_acrf and skip_protocol:
+            raise ValueError("skip_acrf and skip_protocol cannot both be true.")
         if skip_acrf:
             proto_path = (
                 paths.local_extraction_opendataloader(study_id, "protocol", output_dir)
@@ -116,6 +119,10 @@ def run_extract_for_ui(
                 str(p.get("text", "")).strip() for p in paragraphs if str(p.get("text", "")).strip()
             )
             proto_path.write_text((texts or "# Protocol\n\nSynthetic.") + "\n", encoding="utf-8")
+        elif skip_protocol:
+            acrf_path = paths.local_extraction_layout(study_id, "acrf", output_dir) / "rendered" / "source.md"
+            acrf_path.parent.mkdir(parents=True, exist_ok=True)
+            acrf_path.write_text(_SYNTHETIC_ACRF_TEMPLATE, encoding="utf-8")
         else:
             write_synthetic_extraction_outputs(study_id, output_dir, config)
         return
@@ -129,6 +136,7 @@ def run_extract_for_ui(
             sas_ttl=sas_ttl,
             upload=upload,
             skip_acrf=skip_acrf,
+            skip_protocol=skip_protocol,
             upload_only=upload_only,
             run_opendataloader_ocr=run_opendataloader_ocr,
             opendataloader_only=opendataloader_only,
@@ -145,13 +153,29 @@ def run_extract_for_ui(
             sas_ttl=sas_ttl,
             upload=upload,
             skip_acrf=skip_acrf,
+            skip_protocol=skip_protocol,
             upload_only=upload_only,
             run_opendataloader_ocr=run_opendataloader_ocr,
             opendataloader_only=opendataloader_only,
             debug_blob=debug_blob,
         )
     except BaseException:
-        write_synthetic_extraction_outputs(study_id, output_dir, config)
+        if skip_acrf and skip_protocol:
+            raise
+        if skip_acrf:
+            proto_path = (
+                paths.local_extraction_opendataloader(study_id, "protocol", output_dir)
+                / "rendered"
+                / "source.md"
+            )
+            proto_path.parent.mkdir(parents=True, exist_ok=True)
+            proto_path.write_text("# Protocol\n\nSynthetic mixed fallback.\n", encoding="utf-8")
+        elif skip_protocol:
+            acrf_path = paths.local_extraction_layout(study_id, "acrf", output_dir) / "rendered" / "source.md"
+            acrf_path.parent.mkdir(parents=True, exist_ok=True)
+            acrf_path.write_text(_SYNTHETIC_ACRF_TEMPLATE, encoding="utf-8")
+        else:
+            write_synthetic_extraction_outputs(study_id, output_dir, config)
 
 
 def run_split_toc_for_ui(

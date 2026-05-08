@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+
+# Streamlit is an optional UI dependency; stub it for unit tests importing the app module.
+sys.modules.setdefault("streamlit", MagicMock())
 
 from pdcheck_factory import ui_v2_review_streamlit as ui
 
@@ -91,6 +95,9 @@ class UiV2WorkflowTests(unittest.TestCase):
         self.assertFalse(ok)
         self.assertIn("before error", out)
         self.assertIn("kaboom", err)
+
+    def test_status_ui_label_maps_rejected_to_declined(self) -> None:
+        self.assertEqual(ui._status_ui_label("rejected"), "Declined")
 
 
 if __name__ == "__main__":

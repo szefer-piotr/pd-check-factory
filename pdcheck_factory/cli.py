@@ -451,6 +451,7 @@ def run_extract(
     sas_ttl: int,
     upload: bool,
     skip_acrf: bool,
+    skip_protocol: bool,
     upload_only: bool,
     run_opendataloader_ocr: bool,
     opendataloader_only: bool,
@@ -458,6 +459,8 @@ def run_extract(
 ) -> None:
     """Run extraction for protocol (+ optional aCRF) PDFs in Blob."""
     _load_env()
+    if skip_acrf and skip_protocol:
+        raise typer.BadParameter("Cannot use --skip-acrf and --skip-protocol together.")
     if upload_only and not upload:
         raise typer.BadParameter("--upload-only cannot be used with --no-upload.")
     if upload_only and opendataloader_only:
@@ -485,20 +488,21 @@ def run_extract(
                 skip_acrf=skip_acrf,
                 list_local_layout=True,
             )
-        local_proto = paths.local_extraction_layout(study_id, "protocol", output_dir)
-        try:
-            di_layout.upload_existing_layout_to_blob(
-                study_id=study_id,
-                doc_role="protocol",
-                local_layout_base=local_proto,
-                blob_service=bs,
-                container_name=container,
-                debug_blob=debug_blob,
-            )
-        except FileNotFoundError as ex:
-            raise typer.BadParameter(str(ex)) from ex
+        if not skip_protocol:
+            local_proto = paths.local_extraction_layout(study_id, "protocol", output_dir)
+            try:
+                di_layout.upload_existing_layout_to_blob(
+                    study_id=study_id,
+                    doc_role="protocol",
+                    local_layout_base=local_proto,
+                    blob_service=bs,
+                    container_name=container,
+                    debug_blob=debug_blob,
+                )
+            except FileNotFoundError as ex:
+                raise typer.BadParameter(str(ex)) from ex
 
-        if debug_blob:
+        if debug_blob and not skip_protocol:
             _debug_log_extract_blob_state(
                 phase="extract upload-only (after protocol upload)",
                 study_id=study_id,
@@ -542,21 +546,22 @@ def run_extract(
         return
 
     if opendataloader_only:
-        if not blob_io.blob_exists(
-            blob_service=bs, container_name=container, blob_path=protocol_resolved
-        ):
-            raise typer.BadParameter(
-                f"Protocol blob not found: {protocol_resolved} (container {container})"
+        if not skip_protocol:
+            if not blob_io.blob_exists(
+                blob_service=bs, container_name=container, blob_path=protocol_resolved
+            ):
+                raise typer.BadParameter(
+                    f"Protocol blob not found: {protocol_resolved} (container {container})"
+                )
+            opendataloader_ocr.run_ocr_for_blob(
+                doc_role="protocol",
+                source_blob_path=protocol_resolved,
+                local_output_base=paths.local_extraction_opendataloader(
+                    study_id, "protocol", output_dir
+                ),
+                blob_service=bs,
+                container_name=container,
             )
-        opendataloader_ocr.run_ocr_for_blob(
-            doc_role="protocol",
-            source_blob_path=protocol_resolved,
-            local_output_base=paths.local_extraction_opendataloader(
-                study_id, "protocol", output_dir
-            ),
-            blob_service=bs,
-            container_name=container,
-        )
         if skip_acrf:
             return
         if not blob_io.blob_exists(
@@ -593,52 +598,53 @@ def run_extract(
             list_local_layout=True,
         )
 
-    if not blob_io.blob_exists(
-        blob_service=bs, container_name=container, blob_path=protocol_resolved
-    ):
-        raise typer.BadParameter(
-            f"Protocol blob not found: {protocol_resolved} (container {container})"
-        )
+    if not skip_protocol:
+        if not blob_io.blob_exists(
+            blob_service=bs, container_name=container, blob_path=protocol_resolved
+        ):
+            raise typer.BadParameter(
+                f"Protocol blob not found: {protocol_resolved} (container {container})"
+            )
 
-    local_proto = paths.local_extraction_layout(study_id, "protocol", output_dir)
-    di_layout.run_layout_for_blob(
-        study_id=study_id,
-        doc_role="protocol",
-        source_blob_path=protocol_resolved,
-        local_layout_base=local_proto,
-        blob_service=bs,
-        container_name=container,
-        storage_connection_string=cs,
-        di_endpoint=di_endpoint,
-        di_key=di_key,
-        model_id=model_id,
-        sas_ttl_minutes=sas_ttl,
-        upload_to_blob=upload,
-        debug_blob=debug_blob,
-    )
-    if run_opendataloader_ocr:
-        opendataloader_ocr.run_ocr_for_blob(
+        local_proto = paths.local_extraction_layout(study_id, "protocol", output_dir)
+        di_layout.run_layout_for_blob(
+            study_id=study_id,
             doc_role="protocol",
             source_blob_path=protocol_resolved,
-            local_output_base=paths.local_extraction_opendataloader(
-                study_id, "protocol", output_dir
-            ),
+            local_layout_base=local_proto,
             blob_service=bs,
             container_name=container,
+            storage_connection_string=cs,
+            di_endpoint=di_endpoint,
+            di_key=di_key,
+            model_id=model_id,
+            sas_ttl_minutes=sas_ttl,
+            upload_to_blob=upload,
+            debug_blob=debug_blob,
         )
+        if run_opendataloader_ocr:
+            opendataloader_ocr.run_ocr_for_blob(
+                doc_role="protocol",
+                source_blob_path=protocol_resolved,
+                local_output_base=paths.local_extraction_opendataloader(
+                    study_id, "protocol", output_dir
+                ),
+                blob_service=bs,
+                container_name=container,
+            )
 
-    if debug_blob:
-        _debug_log_extract_blob_state(
-            phase="extract (after protocol)",
-            study_id=study_id,
-            output_dir=output_dir,
-            blob_service=bs,
-            container_name=container,
-            protocol_blob=protocol_resolved,
-            acrf_blob=acrf_resolved,
-            skip_acrf=skip_acrf,
-            list_local_layout=True,
-        )
+        if debug_blob:
+            _debug_log_extract_blob_state(
+                phase="extract (after protocol)",
+                study_id=study_id,
+                output_dir=output_dir,
+                blob_service=bs,
+                container_name=container,
+                protocol_blob=protocol_resolved,
+                acrf_blob=acrf_resolved,
+                skip_acrf=skip_acrf,
+                list_local_layout=True,
+            )
 
     if skip_acrf:
         return
@@ -714,6 +720,9 @@ def extract(
     skip_acrf: bool = typer.Option(
         False, "--skip-acrf", help="Only extract protocol (aCRF Run skipped)."
     ),
+    skip_protocol: bool = typer.Option(
+        False, "--skip-protocol", help="Only extract aCRF (protocol run skipped)."
+    ),
     upload_only: bool = typer.Option(
         False,
         "--upload-only",
@@ -745,6 +754,7 @@ def extract(
         sas_ttl=sas_ttl,
         upload=upload,
         skip_acrf=skip_acrf,
+        skip_protocol=skip_protocol,
         upload_only=upload_only,
         run_opendataloader_ocr=run_opendataloader_ocr,
         opendataloader_only=opendataloader_only,
@@ -1746,6 +1756,7 @@ def cmd_run_all(
         sas_ttl=int(os.getenv("DI_SAS_TTL_MINUTES", "15")),
         upload=upload,
         skip_acrf=False,
+        skip_protocol=False,
         upload_only=False,
         run_opendataloader_ocr=True,
         opendataloader_only=False,
