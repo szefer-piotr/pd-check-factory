@@ -145,9 +145,8 @@ describe("Workflow pipeline pages", () => {
 
     expect(await screen.findByText("PD Check Pipeline Pages")).toBeInTheDocument();
     expect(screen.getAllByText("Step 1 - Extract Inputs").length).toBeGreaterThan(0);
-    expect(screen.getByText("Input Sources")).toBeInTheDocument();
-    expect(screen.getByText("Outputs Passed to Next Step")).toBeInTheDocument();
-    expect(screen.getByText("Preview Results")).toBeInTheDocument();
+    expect(screen.getAllByText("Collect protocol and aCRF files and produce normalized source markdown.").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Perform extraction" })).toBeInTheDocument();
   });
 
   it("switches to rule extraction page and runs backend step", async () => {

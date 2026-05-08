@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import {
   fetchStep7DeviationChat,
   fetchStep7Deviations,
@@ -53,11 +53,6 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
     }
     void loadRows();
   }, [studyId, onStepStatusesChange]);
-
-  const expandedRow = useMemo(
-    () => rows.find((row) => row.deviation_id === expandedId) ?? null,
-    [rows, expandedId]
-  );
 
   async function toggleExpanded(deviationId: string): Promise<void> {
     if (expandedId === deviationId) {
@@ -126,71 +121,88 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
             </thead>
             <tbody>
               {rows.map((row) => (
-                <tr key={row.deviation_id}>
-                  <td>
-                    <button
-                      className="button button-link"
-                      type="button"
-                      onClick={() => void toggleExpanded(row.deviation_id)}
-                      aria-expanded={expandedId === row.deviation_id}
-                    >
-                      {expandedId === row.deviation_id ? "Hide" : "Open"}
-                    </button>
-                  </td>
-                  <td>{row.rule_id}</td>
-                  <td>{row.deviation_id}</td>
-                  <td>{row.rule_title}</td>
-                  <td>{row.deviation_text}</td>
-                  <td>{row.paragraph_refs_text}</td>
-                  <td>{row.pseudo_logic}</td>
-                  <td>
-                    <span className={`step7-status step7-status-${row.status}`}>{row.status}</span>
-                  </td>
-                </tr>
+                <Fragment key={row.deviation_id}>
+                  <tr>
+                    <td>
+                      <button
+                        className="button button-link"
+                        type="button"
+                        onClick={() => void toggleExpanded(row.deviation_id)}
+                        aria-expanded={expandedId === row.deviation_id}
+                      >
+                        {expandedId === row.deviation_id ? "Hide" : "Open"}
+                      </button>
+                    </td>
+                    <td>{row.rule_id}</td>
+                    <td>{row.deviation_id}</td>
+                    <td>{row.rule_title}</td>
+                    <td>{row.deviation_text}</td>
+                    <td>{row.paragraph_refs_text}</td>
+                    <td>{row.pseudo_logic}</td>
+                    <td>
+                      <span className={`step7-status step7-status-${row.status}`}>{row.status}</span>
+                    </td>
+                  </tr>
+                  {expandedId === row.deviation_id ? (
+                    <tr className="step7-expanded-row">
+                      <td colSpan={8}>
+                        <div className="step7-chat" aria-live="polite">
+                          <h4>Refinement Loop: {row.deviation_id}</h4>
+                          <p className="step7-muted">{row.deviation_text}</p>
+                          <div className="step7-chat-log">
+                            {(chatByDeviation[row.deviation_id] ?? []).map((message, index) => (
+                              <div className="step7-chat-msg" key={`${message.ts}-${index}`}>
+                                <strong>{message.role}:</strong> {message.text}
+                              </div>
+                            ))}
+                          </div>
+                          <textarea
+                            className="step7-chat-input"
+                            value={chatInputByDeviation[row.deviation_id] ?? ""}
+                            onChange={(event) =>
+                              setChatInputByDeviation((previous) => ({ ...previous, [row.deviation_id]: event.target.value }))
+                            }
+                            placeholder="Add DM instruction for this deviation..."
+                          />
+                          <div className="step7-chat-actions">
+                            <button
+                              className="button"
+                              type="button"
+                              onClick={() => void handleRefine(row.deviation_id)}
+                              disabled={pendingRefineId === row.deviation_id}
+                            >
+                              {pendingRefineId === row.deviation_id ? "Refining..." : "Send (refine)"}
+                            </button>
+                            <button
+                              className="button button-secondary"
+                              type="button"
+                              onClick={() => void handleStatusUpdate(row.deviation_id, "accepted")}
+                            >
+                              Accept
+                            </button>
+                            <button
+                              className="button button-secondary"
+                              type="button"
+                              onClick={() => void handleStatusUpdate(row.deviation_id, "to_review")}
+                            >
+                              To Review
+                            </button>
+                            <button
+                              className="button button-secondary"
+                              type="button"
+                              onClick={() => void handleStatusUpdate(row.deviation_id, "rejected")}
+                            >
+                              Reject
+                            </button>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
+                </Fragment>
               ))}
             </tbody>
           </table>
-        </div>
-      ) : null}
-
-      {expandedRow ? (
-        <div className="step7-chat" aria-live="polite">
-          <h4>Refinement Loop: {expandedRow.deviation_id}</h4>
-          <p className="step7-muted">{expandedRow.deviation_text}</p>
-          <div className="step7-chat-log">
-            {(chatByDeviation[expandedRow.deviation_id] ?? []).map((message, index) => (
-              <div className="step7-chat-msg" key={`${message.ts}-${index}`}>
-                <strong>{message.role}:</strong> {message.text}
-              </div>
-            ))}
-          </div>
-          <textarea
-            className="step7-chat-input"
-            value={chatInputByDeviation[expandedRow.deviation_id] ?? ""}
-            onChange={(event) =>
-              setChatInputByDeviation((previous) => ({ ...previous, [expandedRow.deviation_id]: event.target.value }))
-            }
-            placeholder="Add DM instruction for this deviation..."
-          />
-          <div className="step7-chat-actions">
-            <button
-              className="button"
-              type="button"
-              onClick={() => void handleRefine(expandedRow.deviation_id)}
-              disabled={pendingRefineId === expandedRow.deviation_id}
-            >
-              {pendingRefineId === expandedRow.deviation_id ? "Refining..." : "Send (refine)"}
-            </button>
-            <button className="button button-secondary" type="button" onClick={() => void handleStatusUpdate(expandedRow.deviation_id, "accepted")}>
-              Accept
-            </button>
-            <button className="button button-secondary" type="button" onClick={() => void handleStatusUpdate(expandedRow.deviation_id, "to_review")}>
-              To Review
-            </button>
-            <button className="button button-secondary" type="button" onClick={() => void handleStatusUpdate(expandedRow.deviation_id, "rejected")}>
-              Reject
-            </button>
-          </div>
         </div>
       ) : null}
     </section>

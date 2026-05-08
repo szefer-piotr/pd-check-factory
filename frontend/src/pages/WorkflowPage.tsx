@@ -178,8 +178,6 @@ export function WorkflowPage(): JSX.Element {
             <StepNavigation steps={PIPELINE_STEPS} activeStepId={activeStep.id} statuses={stepStatuses} onSelectStep={handleSelectStep} />
           </aside>
           <div className="workflow-content">
-            <StepDetailPage step={activeStepWithPreview} />
-
             {activeStep.id === "extract-inputs" ? (
               <Step1ExecutionPanel studyId={studyId} onMoveNext={moveToNextStep} onStatusesChange={setStepStatuses} />
             ) : activeStep.id === "review-and-finalize" ? (
@@ -197,6 +195,7 @@ export function WorkflowPage(): JSX.Element {
                 {stepRunError ? <p className="step1-error">{stepRunError}</p> : null}
               </section>
             )}
+            <StepDetailPage step={activeStepWithPreview} />
           </div>
         </div>
       </Stack>
