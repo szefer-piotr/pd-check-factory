@@ -1,6 +1,17 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "../App";
+import type { StepStatus } from "../services/stepApi";
+
+const DONE_STATUSES: Record<string, StepStatus> = {
+  "extract-inputs": "done",
+  "index-protocol": "done",
+  "acrf-split-toc": "done",
+  "acrf-summary-text": "done",
+  "extract-rules": "done",
+  "extract-deviations": "done",
+  "review-and-finalize": "pending"
+};
 
 vi.mock("../services/stepApi", () => ({
   fetchStepStatuses: vi.fn(async () => ({
@@ -30,20 +41,21 @@ vi.mock("../services/stepApi", () => ({
       "review-and-finalize": "pending"
     }
   })),
-  runStep: vi.fn(async () => ({
-    studyId: "MY-STUDY",
-    stepId: "extract-rules",
-    summary: "Extracted 10 rules.",
-    stepStatuses: {
-      "extract-inputs": "done",
-      "index-protocol": "done",
-      "acrf-split-toc": "done",
-      "acrf-summary-text": "done",
-      "extract-rules": "done",
-      "extract-deviations": "pending",
-      "review-and-finalize": "pending"
-    }
-  })),
+  runStep: vi.fn(async (_studyId: string, stepId: string) => {
+    const summaries: Record<string, string> = {
+      "index-protocol": "Indexed 25 protocol paragraphs.",
+      "acrf-split-toc": "Split aCRF markdown into 12 TOC section files.",
+      "acrf-summary-text": "Merged aCRF summary text with 4 datasets.",
+      "extract-rules": "Extracted 10 rules.",
+      "extract-deviations": "Extracted 3 deviations and initialized review state."
+    };
+    return {
+      studyId: "MY-STUDY",
+      stepId,
+      summary: summaries[stepId] ?? "Step complete.",
+      stepStatuses: DONE_STATUSES
+    };
+  }),
   fetchStep7Deviations: vi.fn(async () => ({
     studyId: "MY-STUDY",
     columns: ["rule_id", "deviation_id", "rule_title", "deviation_text", "paragraph_refs", "pseudo_logic"],
@@ -189,11 +201,51 @@ vi.mock("../services/stepApi", () => ({
     }
   })),
   uploadStep1Files: vi.fn(),
-  runStep1Extraction: vi.fn(),
-  fetchStep1Preview: vi.fn()
+  runStep1Extraction: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    message: "Extraction completed.",
+    extractor: "document_intelligence",
+    stepStatuses: {
+      "extract-inputs": "done",
+      "index-protocol": "pending",
+      "acrf-split-toc": "pending",
+      "acrf-summary-text": "pending",
+      "extract-rules": "pending",
+      "extract-deviations": "pending",
+      "review-and-finalize": "pending"
+    }
+  })),
+  fetchStep1Preview: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    protocolPreview: "Protocol preview",
+    acrfPreview: "aCRF preview",
+    protocolPreviewPath: "output/MY-STUDY/protocol/source.md",
+    acrfPreviewPath: "output/MY-STUDY/acrf/source.md",
+    protocolExists: true,
+    acrfExists: true,
+    extractor: "document_intelligence",
+    stepStatuses: {
+      "extract-inputs": "done",
+      "index-protocol": "pending",
+      "acrf-split-toc": "pending",
+      "acrf-summary-text": "pending",
+      "extract-rules": "pending",
+      "extract-deviations": "pending",
+      "review-and-finalize": "pending"
+    }
+  }))
 }));
 
 describe("Workflow pipeline pages", () => {
+  beforeEach(async () => {
+    window.location.hash = "";
+    const stepApi = await import("../services/stepApi");
+    vi.mocked(stepApi.runStep).mockClear();
+    vi.mocked(stepApi.fetchStep7Deviations).mockClear();
+    vi.mocked(stepApi.runStep1Extraction).mockClear();
+    vi.mocked(stepApi.fetchStep1Preview).mockClear();
+  });
+
   it("renders step navigation and default step details", async () => {
     render(<App />);
 
@@ -296,5 +348,50 @@ describe("Workflow pipeline pages", () => {
     expect(await screen.findByText("SELECT bulk FROM dm")).toBeInTheDocument();
     expect(screen.getByText(/Generated pseudo logic for 1 accepted deviation/i)).toBeInTheDocument();
     expect(stepApi.generateStep7PseudoLogicAll).toHaveBeenCalledWith("MY-STUDY");
+  });
+
+  it("runs backend steps in order and opens the DM revision grid", async () => {
+    const stepApi = await import("../services/stepApi");
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Perform extraction" }));
+    expect(await screen.findByText(/Extraction completed/i)).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Run to DM revision" }));
+
+    await waitFor(() => {
+      expect(stepApi.runStep).toHaveBeenCalledTimes(5);
+    });
+    expect(vi.mocked(stepApi.runStep).mock.calls.map(([, stepId]) => stepId)).toEqual([
+      "index-protocol",
+      "acrf-split-toc",
+      "acrf-summary-text",
+      "extract-rules",
+      "extract-deviations"
+    ]);
+    expect(await screen.findByText("Step 7 Deviation Review Grid")).toBeInTheDocument();
+    expect(screen.getByText("Step 7 DM revision grid is ready.")).toBeInTheDocument();
+  });
+
+  it("stops the automated run when a backend step fails", async () => {
+    const stepApi = await import("../services/stepApi");
+    vi.mocked(stepApi.runStep).mockImplementationOnce(async (_studyId: string, stepId: string) => ({
+      studyId: "MY-STUDY",
+      stepId,
+      summary: "Indexed 25 protocol paragraphs.",
+      stepStatuses: DONE_STATUSES
+    }));
+    vi.mocked(stepApi.runStep).mockRejectedValueOnce(new Error("Missing aCRF source markdown."));
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: "Perform extraction" }));
+    await user.click(await screen.findByRole("button", { name: "Run to DM revision" }));
+
+    expect((await screen.findAllByText("Missing aCRF source markdown.")).length).toBeGreaterThan(0);
+    expect(stepApi.runStep).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText("Step 7 Deviation Review Grid")).not.toBeInTheDocument();
   });
 });

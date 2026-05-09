@@ -2,10 +2,24 @@ import { useState } from "react";
 import type { Step1PdfExtractor, StepStatus } from "../../services/stepApi";
 import { fetchStep1Preview, runStep1Extraction, uploadStep1Files } from "../../services/stepApi";
 
+type AutoRunStepState = "pending" | "running" | "done" | "failed";
+
+interface AutoRunProgressItem {
+  stepId: string;
+  title: string;
+  status: AutoRunStepState;
+  message: string;
+}
+
 interface Step1ExecutionPanelProps {
   studyId: string;
   onMoveNext: () => void;
   onStatusesChange: (statuses: Record<string, StepStatus>) => void;
+  onRunToDmReview: () => Promise<void>;
+  autoRunProgress: AutoRunProgressItem[];
+  isAutoRunning: boolean;
+  autoRunMessage: string;
+  autoRunError: string;
 }
 
 const EXTRACTOR_LABELS: Record<Step1PdfExtractor, string> = {
@@ -13,7 +27,16 @@ const EXTRACTOR_LABELS: Record<Step1PdfExtractor, string> = {
   document_intelligence: "Document Intelligence (Azure)"
 };
 
-export function Step1ExecutionPanel({ studyId, onMoveNext, onStatusesChange }: Step1ExecutionPanelProps): JSX.Element {
+export function Step1ExecutionPanel({
+  studyId,
+  onMoveNext,
+  onStatusesChange,
+  onRunToDmReview,
+  autoRunProgress,
+  isAutoRunning,
+  autoRunMessage,
+  autoRunError
+}: Step1ExecutionPanelProps): JSX.Element {
   const [protocolFile, setProtocolFile] = useState<File | null>(null);
   const [acrfFile, setAcrfFile] = useState<File | null>(null);
   const [extractorChoice, setExtractorChoice] = useState<Step1PdfExtractor>("document_intelligence");
@@ -26,6 +49,7 @@ export function Step1ExecutionPanel({ studyId, onMoveNext, onStatusesChange }: S
   const [extractionDone, setExtractionDone] = useState(false);
 
   const canUpload = Boolean(studyId.trim() && protocolFile && acrfFile && !isUploading && !isExtracting);
+  const shouldShowAutoRunProgress = extractionDone || isAutoRunning || Boolean(autoRunMessage || autoRunError);
 
   async function handleUpload(): Promise<void> {
     if (!protocolFile || !acrfFile || !studyId.trim()) {
@@ -138,6 +162,14 @@ export function Step1ExecutionPanel({ studyId, onMoveNext, onStatusesChange }: S
         <button className="button" type="button" onClick={() => void handleExtract()} disabled={!studyId.trim() || isUploading || isExtracting}>
           {isExtracting ? "Extracting..." : "Perform extraction"}
         </button>
+        <button
+          className="button"
+          type="button"
+          onClick={() => void onRunToDmReview()}
+          disabled={!extractionDone || isUploading || isExtracting || isAutoRunning}
+        >
+          {isAutoRunning ? "Running to DM revision..." : "Run to DM revision"}
+        </button>
         <button className="button button-secondary" type="button" onClick={onMoveNext} disabled={!extractionDone}>
           Move to Step 2
         </button>
@@ -145,6 +177,24 @@ export function Step1ExecutionPanel({ studyId, onMoveNext, onStatusesChange }: S
 
       {status ? <p className="step1-status">{status}</p> : null}
       {error ? <p className="step1-error">{error}</p> : null}
+      {autoRunMessage ? <p className="step1-status">{autoRunMessage}</p> : null}
+      {autoRunError ? <p className="step1-error">{autoRunError}</p> : null}
+
+      {shouldShowAutoRunProgress ? (
+        <div className="auto-run-progress" aria-live="polite" aria-label="Automatic run progress">
+          {autoRunProgress.map((item) => (
+            <div className="auto-run-step" key={item.stepId}>
+              <span className={`auto-run-circle auto-run-circle-${item.status}`} aria-hidden="true">
+                {item.status === "failed" ? "!" : ""}
+              </span>
+              <div>
+                <span className="auto-run-title">{item.title}</span>
+                <span className="auto-run-message">{item.message}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+      ) : null}
 
       {protocolPreview || acrfPreview ? (
         <div className="step1-preview-grid">

@@ -11,6 +11,17 @@ import { fetchStepPreview, fetchStepStatuses, runStep, type StepStatus } from ".
 import { StepDetailPage } from "./steps/StepDetailPage";
 import { StudySelector } from "../components/ui/StudySelector";
 
+type AutoRunStepState = "pending" | "running" | "done" | "failed";
+
+interface AutoRunProgressItem {
+  stepId: string;
+  title: string;
+  status: AutoRunStepState;
+  message: string;
+}
+
+const AUTO_RUN_STEP_IDS = ["index-protocol", "acrf-split-toc", "acrf-summary-text", "extract-rules", "extract-deviations"] as const;
+
 function getStepIdFromHash(hash: string): string | null {
   const value = hash.replace("#", "").replace("/", "").trim();
   if (!value) {
@@ -23,6 +34,18 @@ function defaultStatuses(): Record<string, StepStatus> {
   return Object.fromEntries(PIPELINE_STEPS.map((step) => [step.id, "pending"])) as Record<string, StepStatus>;
 }
 
+function initialAutoRunProgress(): AutoRunProgressItem[] {
+  return AUTO_RUN_STEP_IDS.map((stepId) => {
+    const step = PIPELINE_STEPS.find((candidate) => candidate.id === stepId);
+    return {
+      stepId,
+      title: step?.title ?? stepId,
+      status: "pending",
+      message: "Waiting"
+    };
+  });
+}
+
 export function WorkflowPage(): JSX.Element {
   const { studyId, setStudyId, data, isLoading, error, refresh } = useStudyDashboard("MY-STUDY");
   const [activeStepId, setActiveStepId] = useState<string>(getStepIdFromHash(window.location.hash) ?? DEFAULT_STEP_ID);
@@ -32,6 +55,10 @@ export function WorkflowPage(): JSX.Element {
   const [isRunningStep, setIsRunningStep] = useState(false);
   const [serverPreviewItems, setServerPreviewItems] = useState<Array<{ title: string; body: string; highlight?: boolean }>>([]);
   const [isNavCollapsed, setIsNavCollapsed] = useState(false);
+  const [autoRunProgress, setAutoRunProgress] = useState<AutoRunProgressItem[]>(initialAutoRunProgress);
+  const [isAutoRunning, setIsAutoRunning] = useState(false);
+  const [autoRunMessage, setAutoRunMessage] = useState("");
+  const [autoRunError, setAutoRunError] = useState("");
 
   useEffect(() => {
     const onHashChange = (): void => {
@@ -132,6 +159,54 @@ export function WorkflowPage(): JSX.Element {
     }
   }
 
+  async function handleAutoRunToDmReview(): Promise<void> {
+    const trimmedStudyId = studyId.trim();
+    if (!trimmedStudyId || isAutoRunning) {
+      return;
+    }
+
+    setAutoRunProgress(initialAutoRunProgress());
+    setAutoRunMessage("Starting automated run to DM revision.");
+    setAutoRunError("");
+    setStepRunMessage("");
+    setStepRunError("");
+    setIsAutoRunning(true);
+
+    try {
+      for (const stepId of AUTO_RUN_STEP_IDS) {
+        setAutoRunProgress((previous) =>
+          previous.map((item) =>
+            item.stepId === stepId ? { ...item, status: "running", message: "Running" } : item
+          )
+        );
+        const response = await runStep(trimmedStudyId, stepId);
+        setStepStatuses((previous) => ({ ...previous, ...response.stepStatuses }));
+        setAutoRunProgress((previous) =>
+          previous.map((item) =>
+            item.stepId === stepId ? { ...item, status: "done", message: response.summary } : item
+          )
+        );
+      }
+
+      const status = await fetchStepStatuses(trimmedStudyId);
+      const normalized = Object.fromEntries(status.steps.map((step) => [step.stepId, step.status])) as Record<string, StepStatus>;
+      setStepStatuses((previous) => ({ ...previous, ...normalized }));
+      setAutoRunMessage("Step 7 DM revision grid is ready.");
+      handleSelectStep("review-and-finalize");
+    } catch (autoRunFailure) {
+      const message = autoRunFailure instanceof Error ? autoRunFailure.message : "Automated run failed.";
+      setAutoRunError(message);
+      setAutoRunMessage("");
+      setAutoRunProgress((previous) =>
+        previous.map((item) =>
+          item.status === "running" ? { ...item, status: "failed", message } : item
+        )
+      );
+    } finally {
+      setIsAutoRunning(false);
+    }
+  }
+
   return (
     <Page>
       <Stack gap="lg">
@@ -178,8 +253,18 @@ export function WorkflowPage(): JSX.Element {
             <StepNavigation steps={PIPELINE_STEPS} activeStepId={activeStep.id} statuses={stepStatuses} onSelectStep={handleSelectStep} />
           </aside>
           <div className="workflow-content">
+            {activeStep.id !== "extract-inputs" && autoRunMessage ? <p className="step1-status">{autoRunMessage}</p> : null}
             {activeStep.id === "extract-inputs" ? (
-              <Step1ExecutionPanel studyId={studyId} onMoveNext={moveToNextStep} onStatusesChange={setStepStatuses} />
+              <Step1ExecutionPanel
+                studyId={studyId}
+                onMoveNext={moveToNextStep}
+                onStatusesChange={setStepStatuses}
+                onRunToDmReview={handleAutoRunToDmReview}
+                autoRunProgress={autoRunProgress}
+                isAutoRunning={isAutoRunning}
+                autoRunMessage={autoRunMessage}
+                autoRunError={autoRunError}
+              />
             ) : activeStep.id === "review-and-finalize" ? (
               <Step7ReviewPanel studyId={studyId} onStepStatusesChange={setStepStatuses} />
             ) : (
