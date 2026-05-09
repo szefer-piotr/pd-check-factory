@@ -45,9 +45,12 @@ export interface Step1UploadResponse {
   stepStatuses: Record<string, StepStatus>;
 }
 
+export type Step1PdfExtractor = "opendataloader" | "document_intelligence";
+
 export interface Step1ExtractResponse {
   studyId: string;
   message: string;
+  extractor?: string;
   stepStatuses: Record<string, StepStatus>;
 }
 
@@ -59,6 +62,7 @@ export interface Step1PreviewResponse {
   acrfPreviewPath: string;
   protocolExists: boolean;
   acrfExists: boolean;
+  extractor?: string | null;
   stepStatuses: Record<string, StepStatus>;
 }
 
@@ -169,11 +173,11 @@ export async function uploadStep1Files(studyId: string, protocolFile: File, acrf
   return parseApiResponse<Step1UploadResponse>(response);
 }
 
-export async function runStep1Extraction(studyId: string): Promise<Step1ExtractResponse> {
+export async function runStep1Extraction(studyId: string, extractor: Step1PdfExtractor): Promise<Step1ExtractResponse> {
   const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step1/extract`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({})
+    body: JSON.stringify({ extractor })
   });
   return parseApiResponse<Step1ExtractResponse>(response);
 }

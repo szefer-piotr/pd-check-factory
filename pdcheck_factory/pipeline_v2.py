@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from openpyxl import Workbook
 
-from pdcheck_factory import llm, paths, text_parse
+from pdcheck_factory import extraction_resolve, llm, paths, text_parse
 from pdcheck_factory.json_util import load_schema, read_json, validate, write_json
 from pdcheck_factory.prompt_loader import load_prompt
 
@@ -19,28 +19,14 @@ def _iso_now() -> str:
 
 
 def _protocol_source(study_id: str, output_dir: Path) -> Path:
-    p = (
-        paths.local_study_root(study_id, output_dir)
-        / "extractions"
-        / "protocol"
-        / "opendataloader"
-        / "rendered"
-        / "source.md"
-    )
+    p = extraction_resolve.resolve_protocol_rendered_source_md(study_id, output_dir)
     if not p.is_file():
         raise ValueError(f"Missing protocol source markdown: {p}")
     return p
 
 
 def _acrf_sections_dir(study_id: str, output_dir: Path) -> Path:
-    p = (
-        paths.local_study_root(study_id, output_dir)
-        / "extractions"
-        / "acrf"
-        / "layout"
-        / "rendered"
-        / "sections_toc"
-    )
+    p = extraction_resolve.resolve_acrf_sections_toc_dir(study_id, output_dir)
     if not p.is_dir():
         raise ValueError(f"Missing aCRF sections_toc directory: {p}")
     return p

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { StepStatus } from "../../services/stepApi";
+import type { Step1PdfExtractor, StepStatus } from "../../services/stepApi";
 import { fetchStep1Preview, runStep1Extraction, uploadStep1Files } from "../../services/stepApi";
 
 interface Step1ExecutionPanelProps {
@@ -8,9 +8,15 @@ interface Step1ExecutionPanelProps {
   onStatusesChange: (statuses: Record<string, StepStatus>) => void;
 }
 
+const EXTRACTOR_LABELS: Record<Step1PdfExtractor, string> = {
+  opendataloader: "OpenDataLoader",
+  document_intelligence: "Document Intelligence (Azure)"
+};
+
 export function Step1ExecutionPanel({ studyId, onMoveNext, onStatusesChange }: Step1ExecutionPanelProps): JSX.Element {
   const [protocolFile, setProtocolFile] = useState<File | null>(null);
   const [acrfFile, setAcrfFile] = useState<File | null>(null);
+  const [extractorChoice, setExtractorChoice] = useState<Step1PdfExtractor>("document_intelligence");
   const [isUploading, setIsUploading] = useState(false);
   const [isExtracting, setIsExtracting] = useState(false);
   const [status, setStatus] = useState<string>("");
@@ -47,13 +53,20 @@ export function Step1ExecutionPanel({ studyId, onMoveNext, onStatusesChange }: S
     setStatus("");
     setIsExtracting(true);
     try {
-      const extract = await runStep1Extraction(studyId.trim());
+      const extract = await runStep1Extraction(studyId.trim(), extractorChoice);
       onStatusesChange(extract.stepStatuses);
       const preview = await fetchStep1Preview(studyId.trim());
       onStatusesChange(preview.stepStatuses);
       setProtocolPreview(preview.protocolPreview);
       setAcrfPreview(preview.acrfPreview);
-      setStatus("Extraction completed successfully. Preview loaded.");
+      const used = extract.extractor ?? preview.extractor ?? extractorChoice;
+      const label =
+        used === "opendataloader"
+          ? EXTRACTOR_LABELS.opendataloader
+          : used === "document_intelligence"
+            ? EXTRACTOR_LABELS.document_intelligence
+            : "OpenDataLoader + Document Intelligence";
+      setStatus(`Extraction completed (${label}). Preview loaded.`);
       setExtractionDone(true);
     } catch (extractError) {
       setError(extractError instanceof Error ? extractError.message : "Extraction failed.");
@@ -65,7 +78,35 @@ export function Step1ExecutionPanel({ studyId, onMoveNext, onStatusesChange }: S
   return (
     <section className="step1-panel" aria-label="Step 1 execution">
       <h3>Run Step 1 with Real Inputs</h3>
-      <p className="step1-subtitle">Upload protocol + aCRF PDFs, run extraction, then proceed to Step 2.</p>
+      <p className="step1-subtitle">
+        Upload protocol + aCRF PDFs, choose how PDFs are converted to markdown, run extraction, then proceed to Step 2.
+      </p>
+
+      <fieldset className="step1-extractor-fieldset">
+        <legend className="control-label">PDF extractor</legend>
+        <div className="step1-extractor-options">
+          <label className="step1-radio-label">
+            <input
+              type="radio"
+              name="pdf-extractor"
+              value="document_intelligence"
+              checked={extractorChoice === "document_intelligence"}
+              onChange={() => setExtractorChoice("document_intelligence")}
+            />
+            <span>{EXTRACTOR_LABELS.document_intelligence}</span>
+          </label>
+          <label className="step1-radio-label">
+            <input
+              type="radio"
+              name="pdf-extractor"
+              value="opendataloader"
+              checked={extractorChoice === "opendataloader"}
+              onChange={() => setExtractorChoice("opendataloader")}
+            />
+            <span>{EXTRACTOR_LABELS.opendataloader}</span>
+          </label>
+        </div>
+      </fieldset>
 
       <div className="step1-inputs">
         <label className="control-group" htmlFor="protocol-file">

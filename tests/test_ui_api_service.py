@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from pdcheck_factory import extraction_resolve
 from pdcheck_factory.json_util import read_json, write_json
 from pdcheck_factory.ui_api.service import STEP_ORDER, UiApiError, UiStepService, parse_json_body
 
@@ -295,3 +296,74 @@ def test_generate_step7_pseudo_logic_bulk_returns_rows_and_count(
     assert payload["rows"][0]["deviation_id"] == "dev-0001"
     assert payload["rows"][0]["pseudo_logic"] == "SELECT 1"
     assert payload["rows"][0]["rule_title"] == "Visit window timing"
+
+
+def test_run_step1_extract_opendataloader_flags_and_choice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "EX-S"
+    captured: dict = {}
+
+    def fake_run_extract(**kwargs: object) -> None:
+        captured.update(kwargs)
+
+    from pdcheck_factory import cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "run_extract", fake_run_extract)
+    out = service.run_step1_extract(study_id, extractor="opendataloader")
+    assert captured.get("opendataloader_only") is True
+    assert captured.get("run_opendataloader_ocr") is True
+    assert out["extractor"] == "opendataloader"
+    choice_path = extraction_resolve.local_ui_extractor_choice_json(study_id, tmp_path)
+    assert choice_path.is_file()
+    assert read_json(choice_path)["extractor"] == "opendataloader"
+
+
+def test_run_step1_extract_document_intelligence_flags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "EX-S"
+    captured: dict = {}
+
+    def fake_run_extract(**kwargs: object) -> None:
+        captured.update(kwargs)
+
+    from pdcheck_factory import cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "run_extract", fake_run_extract)
+    out = service.run_step1_extract(study_id, extractor="document_intelligence")
+    assert captured.get("opendataloader_only") is False
+    assert captured.get("run_opendataloader_ocr") is False
+    assert out["extractor"] == "document_intelligence"
+    choice_path = extraction_resolve.local_ui_extractor_choice_json(study_id, tmp_path)
+    assert read_json(choice_path)["extractor"] == "document_intelligence"
+
+
+def test_run_step1_extract_default_both(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "EX-S"
+    captured: dict = {}
+
+    def fake_run_extract(**kwargs: object) -> None:
+        captured.update(kwargs)
+
+    from pdcheck_factory import cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "run_extract", fake_run_extract)
+    out = service.run_step1_extract(study_id, extractor=None)
+    assert captured.get("run_opendataloader_ocr") is True
+    assert captured.get("opendataloader_only") is False
+    assert out["extractor"] == "both"
+    assert read_json(extraction_resolve.local_ui_extractor_choice_json(study_id, tmp_path))["extractor"] == "both"
+
+
+def test_run_step1_extract_invalid_extractor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+
+    def fake_run_extract(**_kwargs: object) -> None:
+        raise AssertionError("run_extract should not be called")
+
+    from pdcheck_factory import cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "run_extract", fake_run_extract)
+    with pytest.raises(UiApiError) as exc:
+        service.run_step1_extract("EX-S", extractor="bogus")
+    assert exc.value.code == "VALIDATION_ERROR"

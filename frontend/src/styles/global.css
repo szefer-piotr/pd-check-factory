@@ -305,6 +305,31 @@ body {
   color: #555555;
 }
 
+.step1-extractor-fieldset {
+  border: 1px solid #e4e4e4;
+  border-radius: 8px;
+  padding: 0.65rem 0.85rem;
+  margin: 0 0 0.85rem;
+}
+
+.step1-extractor-fieldset legend {
+  padding: 0 0.35rem;
+}
+
+.step1-extractor-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.step1-radio-label {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  cursor: pointer;
+  font-size: 0.92rem;
+}
+
 .step1-inputs {
   display: grid;
   gap: 0.8rem;

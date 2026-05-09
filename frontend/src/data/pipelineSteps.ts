@@ -7,6 +7,7 @@ export const PIPELINE_STEPS: PipelineStepDefinition[] = [
     summary: "Collect protocol and aCRF files and produce normalized source markdown.",
     instructions: [
       "Select the study and verify protocol/aCRF source files are available.",
+      "On the Perform extract page, choose OpenDataLoader or Document Intelligence before running extraction.",
       "Run extraction to render source markdown artifacts.",
       "Validate that extraction output timestamps are current before continuing."
     ],
@@ -25,13 +26,13 @@ export const PIPELINE_STEPS: PipelineStepDefinition[] = [
     outputArtifacts: [
       {
         label: "Protocol Markdown",
-        path: "output/<study_id>/extractions/protocol/opendataloader/rendered/source.md",
-        description: "Normalized protocol markdown passed to protocol indexing."
+        path: "output/<study_id>/extractions/protocol/(opendataloader|layout)/rendered/source.md",
+        description: "Protocol markdown (path depends on selected PDF extractor)."
       },
       {
         label: "aCRF Markdown",
-        path: "output/<study_id>/extractions/acrf/layout/rendered/source.md",
-        description: "aCRF markdown passed to section split and summarization."
+        path: "output/<study_id>/extractions/acrf/(opendataloader|layout)/rendered/source.md",
+        description: "aCRF markdown for section split and summarization (path matches extractor choice)."
       }
     ],
     previewItems: [

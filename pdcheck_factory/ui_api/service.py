@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
-from pdcheck_factory import blob_io, paths, pipeline_v2
+from pdcheck_factory import blob_io, extraction_resolve, paths, pipeline_v2
 from pdcheck_factory.json_util import read_json, write_json
 
 
@@ -61,17 +61,14 @@ class UiStepService:
     output_dir: Path
 
     def _study_paths(self, study_id: str) -> StudyPaths:
+        proto = extraction_resolve.resolve_protocol_rendered_source_md(study_id, self.output_dir)
+        acrf = extraction_resolve.resolve_acrf_rendered_source_md(study_id, self.output_dir)
+        sections_toc = extraction_resolve.resolve_acrf_sections_toc_dir(study_id, self.output_dir)
         return StudyPaths(
-            protocol_source=paths.local_extraction_opendataloader(study_id, "protocol", self.output_dir)
-            / "rendered"
-            / "source.md",
-            acrf_source=paths.local_extraction_layout(study_id, "acrf", self.output_dir)
-            / "rendered"
-            / "source.md",
+            protocol_source=proto,
+            acrf_source=acrf,
             paragraph_index=paths.local_protocol_paragraph_index_json(study_id, self.output_dir),
-            acrf_sections_toc_dir=paths.local_extraction_layout(study_id, "acrf", self.output_dir)
-            / "rendered"
-            / "sections_toc",
+            acrf_sections_toc_dir=sections_toc,
             acrf_summary_text_merged=paths.local_acrf_summary_text_merged(study_id, self.output_dir),
             rules_parsed=paths.local_rules_parsed_json(study_id, self.output_dir),
             deviations_parsed=paths.local_deviations_parsed_json(study_id, self.output_dir),
@@ -251,10 +248,25 @@ class UiStepService:
             "stepStatuses": self._step_statuses(study_id),
         }
 
-    def run_step1_extract(self, study_id: str) -> Dict[str, Any]:
+    def run_step1_extract(self, study_id: str, extractor: str | None = None) -> Dict[str, Any]:
         from pdcheck_factory.cli import run_extract
 
         study_id = self._require_study_id(study_id)
+        raw = (extractor or "").strip().lower()
+        if not raw:
+            mode = extraction_resolve.UI_EXTRACTOR_BOTH
+        elif raw in extraction_resolve.VALID_UI_EXTRACTORS:
+            mode = raw
+        else:
+            raise UiApiError(
+                "VALIDATION_ERROR",
+                "extractor must be 'opendataloader', 'document_intelligence', or 'both'.",
+                400,
+            )
+
+        run_odl = mode != extraction_resolve.UI_EXTRACTOR_DI
+        odl_only = mode == extraction_resolve.UI_EXTRACTOR_OPEN
+
         run_extract(
             study_id=study_id,
             protocol_blob=None,
@@ -266,13 +278,15 @@ class UiStepService:
             skip_acrf=False,
             skip_protocol=False,
             upload_only=False,
-            run_opendataloader_ocr=True,
-            opendataloader_only=False,
+            run_opendataloader_ocr=run_odl,
+            opendataloader_only=odl_only,
             debug_blob=False,
         )
+        extraction_resolve.write_ui_extractor_choice(study_id, self.output_dir, mode)
         return {
             "studyId": study_id,
             "message": "Extraction completed",
+            "extractor": mode,
             "stepStatuses": self._step_statuses(study_id),
         }
 
@@ -287,6 +301,7 @@ class UiStepService:
             "acrfPreviewPath": str(p.acrf_source),
             "protocolExists": p.protocol_source.exists(),
             "acrfExists": p.acrf_source.exists(),
+            "extractor": extraction_resolve.read_ui_extractor_choice(study_id, self.output_dir),
             "stepStatuses": self._step_statuses(study_id),
         }
 

@@ -125,7 +125,7 @@ class StepApiHandler(BaseHTTPRequestHandler):
             if tail == "step1/upload":
                 data = self._parse_step1_upload(study_id)
             elif tail == "step1/extract":
-                data = self.service.run_step1_extract(study_id)
+                data = self._parse_step1_extract(study_id)
             elif tail.startswith("step7/deviations/") and tail.endswith("/refine"):
                 deviation_id = tail[len("step7/deviations/") : -len("/refine")]
                 data = self._parse_step7_refine(study_id, deviation_id)
@@ -217,7 +217,8 @@ class StepApiHandler(BaseHTTPRequestHandler):
             raise UiApiError("BAD_JSON", "Missing JSON body", 400)
         payload = parse_json_body(self.rfile.read(length))
         study_id = str(payload.get("studyId") or "")
-        return self.service.run_step1_extract(study_id)
+        extractor = str(payload.get("extractor", "")).strip() or None
+        return self.service.run_step1_extract(study_id, extractor=extractor)
 
     def _parse_step1_upload(self, study_id: str) -> Dict[str, Any]:
         content_type = self.headers.get("Content-Type", "")
@@ -240,6 +241,15 @@ class StepApiHandler(BaseHTTPRequestHandler):
         protocol_bytes = protocol_item.file.read()
         acrf_bytes = acrf_item.file.read()
         return self.service.upload_step1_files(study_id, protocol_bytes, acrf_bytes)
+
+    def _parse_step1_extract(self, study_id: str) -> Dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0:
+            payload: Dict[str, Any] = {}
+        else:
+            payload = parse_json_body(self.rfile.read(length))
+        extractor = str(payload.get("extractor", "")).strip() or None
+        return self.service.run_step1_extract(study_id, extractor=extractor)
 
     def _parse_step7_refine(self, study_id: str, deviation_id: str) -> Dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
