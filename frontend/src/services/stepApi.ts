@@ -118,6 +118,20 @@ export interface Step7UpdateResponse {
   stepStatuses: Record<string, StepStatus>;
 }
 
+export interface Step7PseudoLogicSingleResponse {
+  studyId: string;
+  deviationId: string;
+  row: Step7DeviationRow;
+  stepStatuses: Record<string, StepStatus>;
+}
+
+export interface Step7PseudoLogicBulkResponse {
+  studyId: string;
+  generated: number;
+  rows: Step7DeviationRow[];
+  stepStatuses: Record<string, StepStatus>;
+}
+
 const API_BASE = (import.meta.env.VITE_PD_API_BASE as string | undefined) ?? "http://127.0.0.1:8787";
 
 async function parseApiResponse<T>(response: Response): Promise<T> {
@@ -229,4 +243,31 @@ export async function updateStep7DeviationStatus(
     }
   );
   return parseApiResponse<Step7UpdateResponse>(response);
+}
+
+export async function generateStep7PseudoLogic(
+  studyId: string,
+  deviationId: string
+): Promise<Step7PseudoLogicSingleResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/${encodeURIComponent(deviationId)}/pseudo-logic`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    }
+  );
+  return parseApiResponse<Step7PseudoLogicSingleResponse>(response);
+}
+
+export async function generateStep7PseudoLogicAll(studyId: string): Promise<Step7PseudoLogicBulkResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/pseudo-logic/generate-all`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    }
+  );
+  return parseApiResponse<Step7PseudoLogicBulkResponse>(response);
 }

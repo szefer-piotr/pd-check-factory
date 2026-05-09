@@ -134,6 +134,60 @@ vi.mock("../services/stepApi", () => ({
       "review-and-finalize": "pending"
     }
   })),
+  generateStep7PseudoLogic: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    deviationId: "dev-0001",
+    row: {
+      rule_id: "rule-001",
+      deviation_id: "dev-0001",
+      rule_title: "Visit window timing",
+      deviation_text: "Visit date outside window",
+      paragraph_refs: ["p2"],
+      paragraph_refs_text: "p2",
+      pseudo_logic: "SELECT generated FROM dm",
+      status: "accepted",
+      dm_comment: "",
+      programmable: true,
+      programmability_note: "ok"
+    },
+    stepStatuses: {
+      "extract-inputs": "done",
+      "index-protocol": "done",
+      "acrf-split-toc": "done",
+      "acrf-summary-text": "done",
+      "extract-rules": "done",
+      "extract-deviations": "done",
+      "review-and-finalize": "pending"
+    }
+  })),
+  generateStep7PseudoLogicAll: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    generated: 1,
+    rows: [
+      {
+        rule_id: "rule-001",
+        deviation_id: "dev-0001",
+        rule_title: "Visit window timing",
+        deviation_text: "Visit date outside window",
+        paragraph_refs: ["p2"],
+        paragraph_refs_text: "p2",
+        pseudo_logic: "SELECT bulk FROM dm",
+        status: "accepted",
+        dm_comment: "",
+        programmable: true,
+        programmability_note: "ok"
+      }
+    ],
+    stepStatuses: {
+      "extract-inputs": "done",
+      "index-protocol": "done",
+      "acrf-split-toc": "done",
+      "acrf-summary-text": "done",
+      "extract-rules": "done",
+      "extract-deviations": "done",
+      "review-and-finalize": "pending"
+    }
+  })),
   uploadStep1Files: vi.fn(),
   runStep1Extraction: vi.fn(),
   fetchStep1Preview: vi.fn()
@@ -177,5 +231,70 @@ describe("Workflow pipeline pages", () => {
     await user.type(input, "please revise");
     await user.click(screen.getByRole("button", { name: "Send (refine)" }));
     expect(await screen.findByText("Updated deviation from your message.")).toBeInTheDocument();
+  });
+
+  it("disables pseudo logic generation when no row is accepted, then enables it after acceptance", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /Step 7 - Review and Finalize/i }));
+    expect(await screen.findByText("Step 7 Deviation Review Grid")).toBeInTheDocument();
+
+    const bulkButton = screen.getByRole("button", { name: /Generate pseudo logic for all accepted/i });
+    expect(bulkButton).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Open" }));
+    expect(await screen.findByText("Refinement Loop: dev-0001")).toBeInTheDocument();
+
+    const perRowButton = screen.getByRole("button", { name: "Generate pseudo logic" });
+    expect(perRowButton).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "Accept" }));
+    expect(await screen.findByRole("button", { name: /Generate pseudo logic for all accepted \(1\)/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Generate pseudo logic" })).toBeEnabled();
+  });
+
+  it("refreshes rows after running bulk pseudo logic generation", async () => {
+    const stepApi = await import("../services/stepApi");
+    (stepApi.fetchStep7Deviations as unknown as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      columns: ["rule_id", "deviation_id", "rule_title", "deviation_text", "paragraph_refs", "pseudo_logic"],
+      rows: [
+        {
+          rule_id: "rule-001",
+          deviation_id: "dev-0001",
+          rule_title: "Visit window timing",
+          deviation_text: "Visit date outside window",
+          paragraph_refs: ["p2"],
+          paragraph_refs_text: "p2",
+          pseudo_logic: "",
+          status: "accepted",
+          dm_comment: "",
+          programmable: null,
+          programmability_note: ""
+        }
+      ],
+      stepStatuses: {
+        "extract-inputs": "done",
+        "index-protocol": "done",
+        "acrf-split-toc": "done",
+        "acrf-summary-text": "done",
+        "extract-rules": "done",
+        "extract-deviations": "done",
+        "review-and-finalize": "pending"
+      }
+    });
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /Step 7 - Review and Finalize/i }));
+    expect(await screen.findByText("Step 7 Deviation Review Grid")).toBeInTheDocument();
+    expect(screen.getByText("not generated")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Generate pseudo logic for all accepted/i }));
+    expect(await screen.findByText("SELECT bulk FROM dm")).toBeInTheDocument();
+    expect(screen.getByText(/Generated pseudo logic for 1 accepted deviation/i)).toBeInTheDocument();
+    expect(stepApi.generateStep7PseudoLogicAll).toHaveBeenCalledWith("MY-STUDY");
   });
 });

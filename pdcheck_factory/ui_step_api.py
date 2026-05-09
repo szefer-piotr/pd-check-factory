@@ -129,6 +129,11 @@ class StepApiHandler(BaseHTTPRequestHandler):
             elif tail.startswith("step7/deviations/") and tail.endswith("/refine"):
                 deviation_id = tail[len("step7/deviations/") : -len("/refine")]
                 data = self._parse_step7_refine(study_id, deviation_id)
+            elif tail == "step7/pseudo-logic/generate-all":
+                data = self.service.generate_step7_pseudo_logic_bulk(study_id)
+            elif tail.startswith("step7/deviations/") and tail.endswith("/pseudo-logic"):
+                deviation_id = tail[len("step7/deviations/") : -len("/pseudo-logic")]
+                data = self.service.generate_step7_pseudo_logic_for_deviation(study_id, deviation_id)
             elif tail.startswith("steps/") and tail.endswith("/run"):
                 step_id = tail[len("steps/") : -len("/run")]
                 data = self.service.run_step(study_id, step_id)

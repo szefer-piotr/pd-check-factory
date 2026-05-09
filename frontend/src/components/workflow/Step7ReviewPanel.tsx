@@ -2,6 +2,8 @@ import { Fragment, useEffect, useState } from "react";
 import {
   fetchStep7DeviationChat,
   fetchStep7Deviations,
+  generateStep7PseudoLogic,
+  generateStep7PseudoLogicAll,
   refineStep7Deviation,
   updateStep7DeviationStatus,
   type Step7ChatMessage,
@@ -31,6 +33,11 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
   const [chatByDeviation, setChatByDeviation] = useState<Record<string, Step7ChatMessage[]>>({});
   const [chatInputByDeviation, setChatInputByDeviation] = useState<Record<string, string>>({});
   const [pendingRefineId, setPendingRefineId] = useState<string | null>(null);
+  const [pendingPseudoId, setPendingPseudoId] = useState<string | null>(null);
+  const [isBulkGenerating, setIsBulkGenerating] = useState(false);
+  const [bulkStatus, setBulkStatus] = useState("");
+
+  const acceptedCount = rows.filter((row) => row.status === "accepted").length;
 
   useEffect(() => {
     async function loadRows(): Promise<void> {
@@ -99,6 +106,37 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
     }
   }
 
+  async function handleGeneratePseudoLogic(deviationId: string): Promise<void> {
+    setPendingPseudoId(deviationId);
+    setError("");
+    setBulkStatus("");
+    try {
+      const result = await generateStep7PseudoLogic(studyId.trim(), deviationId);
+      setRows((previous) => previous.map((row) => (row.deviation_id === deviationId ? result.row : row)));
+      onStepStatusesChange(result.stepStatuses);
+    } catch (generateError) {
+      setError(generateError instanceof Error ? generateError.message : "Unable to generate pseudo logic.");
+    } finally {
+      setPendingPseudoId(null);
+    }
+  }
+
+  async function handleGenerateAllPseudoLogic(): Promise<void> {
+    setIsBulkGenerating(true);
+    setError("");
+    setBulkStatus("");
+    try {
+      const result = await generateStep7PseudoLogicAll(studyId.trim());
+      setRows(result.rows);
+      onStepStatusesChange(result.stepStatuses);
+      setBulkStatus(`Generated pseudo logic for ${result.generated} accepted deviation${result.generated === 1 ? "" : "s"}.`);
+    } catch (generateError) {
+      setError(generateError instanceof Error ? generateError.message : "Unable to generate pseudo logic for all accepted deviations.");
+    } finally {
+      setIsBulkGenerating(false);
+    }
+  }
+
   return (
     <section className="step7-panel" aria-label="Step 7 review table">
       <h3>Step 7 Deviation Review Grid</h3>
@@ -106,6 +144,27 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
       {error ? <p className="step1-error">{error}</p> : null}
       {isLoading ? <p className="step7-muted">Loading deviations...</p> : null}
       {!isLoading && rows.length === 0 ? <p className="step7-muted">No deviations available for review.</p> : null}
+
+      {rows.length > 0 ? (
+        <div className="step7-toolbar">
+          <button
+            className="button"
+            type="button"
+            onClick={() => void handleGenerateAllPseudoLogic()}
+            disabled={isBulkGenerating || acceptedCount === 0}
+            title={
+              acceptedCount === 0
+                ? "Accept at least one deviation before generating pseudo logic."
+                : "Generate pseudo logic for every accepted deviation."
+            }
+          >
+            {isBulkGenerating
+              ? "Generating pseudo logic..."
+              : `Generate pseudo logic for all accepted (${acceptedCount})`}
+          </button>
+          {bulkStatus ? <span className="step7-muted">{bulkStatus}</span> : null}
+        </div>
+      ) : null}
 
       {rows.length > 0 ? (
         <div className="step7-grid-wrap">
@@ -138,7 +197,13 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
                     <td>{row.rule_title}</td>
                     <td>{row.deviation_text}</td>
                     <td>{row.paragraph_refs_text}</td>
-                    <td>{row.pseudo_logic}</td>
+                    <td>
+                      {row.pseudo_logic ? (
+                        row.pseudo_logic
+                      ) : (
+                        <em className="step7-muted">not generated</em>
+                      )}
+                    </td>
                     <td>
                       <span className={`step7-status step7-status-${row.status}`}>{row.status}</span>
                     </td>
@@ -149,6 +214,16 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
                         <div className="step7-chat" aria-live="polite">
                           <h4>Refinement Loop: {row.deviation_id}</h4>
                           <p className="step7-muted">{row.deviation_text}</p>
+                          {row.programmable !== null ? (
+                            <p className="step7-muted">
+                              <span
+                                className={`step7-pill step7-pill-${row.programmable ? "yes" : "no"}`}
+                              >
+                                programmable: {row.programmable ? "yes" : "no"}
+                              </span>
+                              {row.programmability_note ? ` — ${row.programmability_note}` : null}
+                            </p>
+                          ) : null}
                           <div className="step7-chat-log">
                             {(chatByDeviation[row.deviation_id] ?? []).map((message, index) => (
                               <div className="step7-chat-msg" key={`${message.ts}-${index}`}>
@@ -172,6 +247,19 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
                               disabled={pendingRefineId === row.deviation_id}
                             >
                               {pendingRefineId === row.deviation_id ? "Refining..." : "Send (refine)"}
+                            </button>
+                            <button
+                              className="button"
+                              type="button"
+                              onClick={() => void handleGeneratePseudoLogic(row.deviation_id)}
+                              disabled={row.status !== "accepted" || pendingPseudoId === row.deviation_id}
+                              title={
+                                row.status !== "accepted"
+                                  ? "Only accepted deviations can have pseudo logic generated."
+                                  : "Generate pseudo logic for this deviation."
+                              }
+                            >
+                              {pendingPseudoId === row.deviation_id ? "Generating..." : "Generate pseudo logic"}
                             </button>
                             <button
                               className="button button-secondary"

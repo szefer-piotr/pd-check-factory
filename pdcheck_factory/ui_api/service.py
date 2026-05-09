@@ -563,6 +563,97 @@ class UiStepService:
             "stepStatuses": self._step_statuses(study_id),
         }
 
+    def generate_step7_pseudo_logic_for_deviation(
+        self, study_id: str, deviation_id: str
+    ) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        dev_id = str(deviation_id).strip()
+        if not dev_id:
+            raise UiApiError("VALIDATION_ERROR", "deviationId is required", 400)
+
+        state_obj = self._load_state(study_id)
+        row = next(
+            (item for item in state_obj.get("deviations", []) if str(item.get("deviation_id", "")) == dev_id),
+            None,
+        )
+        if row is None:
+            raise UiApiError("NOT_FOUND", f"Unknown deviationId '{dev_id}'", 404)
+        if str(row.get("status", "")) != "accepted":
+            raise UiApiError(
+                "STEP_BLOCKED",
+                "Pseudo logic can only be generated for deviations with status='accepted'.",
+                409,
+            )
+
+        try:
+            pseudo_item = pipeline_v2.generate_pseudo_logic_for_deviation(
+                study_id=study_id,
+                output_dir=self.output_dir,
+                deviation=row,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise UiApiError("PSEUDO_LOGIC_FAILED", str(exc), 500) from exc
+
+        pseudo_obj = self._load_pseudo_state(study_id)
+        items = list(pseudo_obj.get("items", []))
+        replaced = False
+        for idx, existing in enumerate(items):
+            if str(existing.get("deviation_id", "")) == dev_id:
+                items[idx] = pseudo_item
+                replaced = True
+                break
+        if not replaced:
+            items.append(pseudo_item)
+        pseudo_obj["schema_version"] = pseudo_obj.get("schema_version", "1.0.0")
+        pseudo_obj["study_id"] = study_id
+        pseudo_obj["generated_at"] = datetime.now(timezone.utc).isoformat()
+        pseudo_obj["items"] = items
+        write_json(paths.local_pseudo_logic_review_state(study_id, self.output_dir), pseudo_obj)
+        write_json(paths.local_pseudo_logic_validated_json(study_id, self.output_dir), pseudo_obj)
+
+        rules_obj = read_json(paths.local_rules_parsed_json(study_id, self.output_dir))
+        pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in items}
+        rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
+        return {
+            "studyId": study_id,
+            "deviationId": dev_id,
+            "row": self._normalized_step7_row(row, pseudo_by_dev, rule_by_id),
+            "stepStatuses": self._step_statuses(study_id),
+        }
+
+    def generate_step7_pseudo_logic_bulk(self, study_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+
+        validated_path = paths.local_deviations_validated_json(study_id, self.output_dir)
+        if not validated_path.exists():
+            review_state_path = paths.local_deviations_review_state(study_id, self.output_dir)
+            if not review_state_path.exists():
+                raise UiApiError(
+                    "STEP_BLOCKED",
+                    "Missing deviation review state; run extract-deviations first.",
+                    409,
+                )
+            validated_path.parent.mkdir(parents=True, exist_ok=True)
+            validated_path.write_text(review_state_path.read_text(encoding="utf-8"), encoding="utf-8")
+
+        try:
+            pseudo_out = pipeline_v2.step8_generate_pseudo_logic(study_id, self.output_dir)
+        except Exception as exc:  # noqa: BLE001
+            raise UiApiError("PSEUDO_LOGIC_FAILED", str(exc), 500) from exc
+
+        items = list(pseudo_out.get("items", []))
+        state_obj = self._load_state(study_id)
+        rules_obj = read_json(paths.local_rules_parsed_json(study_id, self.output_dir))
+        pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in items}
+        rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
+        rows = [self._normalized_step7_row(row, pseudo_by_dev, rule_by_id) for row in state_obj.get("deviations", [])]
+        return {
+            "studyId": study_id,
+            "generated": len(items),
+            "rows": rows,
+            "stepStatuses": self._step_statuses(study_id),
+        }
+
 
 def parse_json_body(raw: bytes) -> Dict[str, Any]:
     try:

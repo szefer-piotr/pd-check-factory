@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 
+from pdcheck_factory.json_util import read_json, write_json
 from pdcheck_factory.ui_api.service import STEP_ORDER, UiApiError, UiStepService, parse_json_body
 
 
@@ -179,3 +180,118 @@ def test_step7_deviations_chat_and_refine(tmp_path: Path, monkeypatch: pytest.Mo
     )
     assert updated["row"]["status"] == "accepted"
     assert updated["row"]["dm_comment"] == "approved"
+
+
+def _seed_step7_state(tmp_path: Path, study_id: str, status: str = "accepted") -> None:
+    rule_path = tmp_path / study_id / "pipeline" / "rules" / "rules_parsed.json"
+    review_path = tmp_path / study_id / "pipeline" / "review" / "deviations_review_state.json"
+    validated_path = tmp_path / study_id / "pipeline" / "deviations" / "deviations_validated.json"
+    _touch(
+        rule_path,
+        '{"rules":[{"rule_id":"rule-001","title":"Visit window timing"}]}',
+    )
+    state_json = (
+        '{"schema_version":"1.0.0","study_id":"' + study_id + '","deviations":['
+        '{"deviation_id":"dev-0001","rule_id":"rule-001","text":"Original","paragraph_refs":["p1"],'
+        '"status":"' + status + '","dm_comment":""}]}'
+    )
+    _touch(review_path, state_json)
+    _touch(validated_path, state_json)
+
+
+def test_generate_step7_pseudo_logic_for_deviation_writes_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "MY-STUDY"
+    _seed_step7_state(tmp_path, study_id, status="accepted")
+
+    from pdcheck_factory import paths, pipeline_v2
+
+    def fake_single(*, study_id: str, output_dir: Path, deviation: dict, rule_by_id=None):
+        return {
+            "deviation_id": deviation["deviation_id"],
+            "rule_id": deviation["rule_id"],
+            "rule_title": "Visit window timing",
+            "pseudo_logic": "SELECT * FROM dm",
+            "programmable": True,
+            "programmability_note": "ok",
+            "status": "pending",
+            "dm_comment": "",
+        }
+
+    monkeypatch.setattr(pipeline_v2, "generate_pseudo_logic_for_deviation", fake_single)
+
+    payload = service.generate_step7_pseudo_logic_for_deviation(study_id, "dev-0001")
+    assert payload["row"]["pseudo_logic"] == "SELECT * FROM dm"
+    assert payload["row"]["programmable"] is True
+    assert payload["row"]["programmability_note"] == "ok"
+
+    review_state_path = paths.local_pseudo_logic_review_state(study_id, tmp_path)
+    validated_path = paths.local_pseudo_logic_validated_json(study_id, tmp_path)
+    assert review_state_path.is_file()
+    assert validated_path.is_file()
+    review_obj = read_json(review_state_path)
+    assert any(item.get("deviation_id") == "dev-0001" for item in review_obj.get("items", []))
+
+
+def test_generate_step7_pseudo_logic_for_deviation_rejects_non_accepted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "MY-STUDY"
+    _seed_step7_state(tmp_path, study_id, status="pending")
+
+    from pdcheck_factory import pipeline_v2
+
+    def fake_single(**_kwargs):
+        raise AssertionError("should not be called")
+
+    monkeypatch.setattr(pipeline_v2, "generate_pseudo_logic_for_deviation", fake_single)
+
+    with pytest.raises(UiApiError) as blocked:
+        service.generate_step7_pseudo_logic_for_deviation(study_id, "dev-0001")
+    assert blocked.value.code == "STEP_BLOCKED"
+    assert blocked.value.status_code == 409
+
+
+def test_generate_step7_pseudo_logic_bulk_returns_rows_and_count(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "MY-STUDY"
+    _seed_step7_state(tmp_path, study_id, status="accepted")
+
+    from pdcheck_factory import paths, pipeline_v2
+
+    def fake_bulk(sid: str, output_dir: Path):
+        out = {
+            "schema_version": "1.0.0",
+            "study_id": sid,
+            "generated_at": "2024-01-01T00:00:00Z",
+            "items": [
+                {
+                    "deviation_id": "dev-0001",
+                    "rule_id": "rule-001",
+                    "rule_title": "Visit window timing",
+                    "pseudo_logic": "SELECT 1",
+                    "programmable": True,
+                    "programmability_note": "ok",
+                    "status": "pending",
+                    "dm_comment": "",
+                }
+            ],
+        }
+        review_state_path = paths.local_pseudo_logic_review_state(sid, output_dir)
+        validated_path = paths.local_pseudo_logic_validated_json(sid, output_dir)
+        write_json(review_state_path, out)
+        write_json(validated_path, out)
+        return out
+
+    monkeypatch.setattr(pipeline_v2, "step8_generate_pseudo_logic", fake_bulk)
+
+    payload = service.generate_step7_pseudo_logic_bulk(study_id)
+    assert payload["generated"] == 1
+    assert payload["rows"][0]["deviation_id"] == "dev-0001"
+    assert payload["rows"][0]["pseudo_logic"] == "SELECT 1"
+    assert payload["rows"][0]["rule_title"] == "Visit window timing"
