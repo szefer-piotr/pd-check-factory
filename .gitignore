@@ -6,6 +6,8 @@ __pycache__/
 dist/
 build/
 node_modules/
+# Accidental npm lock at repo root (frontend lives under frontend/)
+/package-lock.json
 .venv/
 venv/
 .env
