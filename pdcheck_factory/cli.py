@@ -6,8 +6,6 @@ import os
 import json
 import re
 import shutil
-import subprocess
-import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Tuple
@@ -36,7 +34,7 @@ protocol_app = typer.Typer(help="Segment protocol Markdown and run Step 1 extrac
 sections_app = typer.Typer(help="List, preview, or extract sections.")
 protocol_app.add_typer(sections_app, name="sections")
 acrf_app = typer.Typer(help="Tools for aCRF markdown processing.")
-ui_app = typer.Typer(help="Pipeline V2 Streamlit review UI.", no_args_is_help=True)
+ui_app = typer.Typer(help="UI commands for React Step API.", no_args_is_help=True)
 v2_app = typer.Typer(help="Pipeline V2 runner (paragraph anchors, staged reviews).", no_args_is_help=True)
 
 _TOC_ROW = re.compile(
@@ -1652,52 +1650,6 @@ app.add_typer(protocol_app, name="protocol")
 app.add_typer(acrf_app, name="acrf")
 app.add_typer(ui_app, name="ui")
 app.add_typer(v2_app, name="v2")
-
-
-@ui_app.command("review")
-def cmd_ui_review(
-    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
-    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
-    host: str = typer.Option("127.0.0.1", "--host"),
-    port: int = typer.Option(8766, "--port", min=1, max=65535),
-    data_mode: Literal["real", "test", "mixed"] = typer.Option(
-        "real",
-        "--data-mode",
-        help="UI data mode: real LLM pipeline, synthetic test data, or mixed fallback.",
-    ),
-    fixtures_dir: Path = typer.Option(
-        Path("tests/fixtures/ui_v2"),
-        "--fixtures-dir",
-        help="Path to synthetic UI fixture directory used in test/mixed modes.",
-    ),
-) -> None:
-    """Start local Streamlit UI for Pipeline V2 review cycles."""
-    try:
-        import streamlit  # noqa: F401
-    except ImportError as ex:
-        raise typer.BadParameter('Install UI dependencies: pip install -e ".[ui]"') from ex
-    ui_script = Path(__file__).resolve().parent / "ui_v2_review_streamlit.py"
-    cmd = [
-        sys.executable,
-        "-m",
-        "streamlit",
-        "run",
-        str(ui_script),
-        "--server.address",
-        host,
-        "--server.port",
-        str(port),
-        "--",
-        "--study-id",
-        study_id,
-        "--output-dir",
-        str(output_dir),
-        "--data-mode",
-        data_mode,
-        "--fixtures-dir",
-        str(fixtures_dir),
-    ]
-    raise SystemExit(subprocess.call(cmd))
 
 
 @ui_app.command("step-api")

@@ -1,7 +1,7 @@
 # React Single-Page UI Specification
 
 ## Purpose
-Provide a lightweight web interface for reviewing pipeline execution status and recent study outputs without replacing the existing Streamlit workflow.
+Provide a lightweight web interface for reviewing pipeline execution status and recent study outputs using the React frontend + API workflow.
 
 ## Primary User
 Data manager or QA reviewer who needs a quick read-only dashboard with simple filtering.
