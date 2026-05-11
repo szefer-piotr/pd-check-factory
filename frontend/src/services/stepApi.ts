@@ -45,7 +45,7 @@ export interface Step1UploadResponse {
   stepStatuses: Record<string, StepStatus>;
 }
 
-export type Step1PdfExtractor = "opendataloader" | "document_intelligence";
+export type Step1PdfExtractor = "opendataloader" | "document_intelligence" | "both";
 
 export interface Step1ExtractResponse {
   studyId: string;

@@ -278,6 +278,11 @@ export function WorkflowPage(): JSX.Element {
                 </div>
                 {stepRunMessage ? <p className="step1-status">{stepRunMessage}</p> : null}
                 {stepRunError ? <p className="step1-error">{stepRunError}</p> : null}
+                {activeStep.id === "acrf-split-toc" && stepRunError.includes("No TOC rows found") ? (
+                  <p className="step1-note">
+                    Recovery: go to Step 1, select <strong>Auto (recommended)</strong>, re-run extraction, then run this step again.
+                  </p>
+                ) : null}
               </section>
             )}
             <StepDetailPage step={activeStepWithPreview} />

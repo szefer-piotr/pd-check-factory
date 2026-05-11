@@ -343,6 +343,36 @@ body {
   margin-top: 0.8rem;
 }
 
+.step1-note {
+  margin: 0.7rem 0 0;
+  color: #5f5f5f;
+  font-size: 0.9rem;
+}
+
+.step1-warning {
+  margin: 0.6rem 0 0;
+  color: #8c5b00;
+  font-size: 0.9rem;
+}
+
+.step1-extraction-progress {
+  margin: 0.7rem 0 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: #2f5f3a;
+  font-size: 0.92rem;
+}
+
+.step1-extraction-circle {
+  width: 1rem;
+  height: 1rem;
+  border-radius: 999px;
+  border: 2px solid #6f8f76;
+  border-top-color: transparent;
+  animation: auto-run-spin 0.8s linear infinite;
+}
+
 .step1-status {
   margin: 0.7rem 0 0;
   color: #1f5f2a;

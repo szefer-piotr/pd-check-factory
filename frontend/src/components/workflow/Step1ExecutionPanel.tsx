@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Step1PdfExtractor, StepStatus } from "../../services/stepApi";
 import { fetchStep1Preview, runStep1Extraction, uploadStep1Files } from "../../services/stepApi";
 
@@ -23,6 +23,7 @@ interface Step1ExecutionPanelProps {
 }
 
 const EXTRACTOR_LABELS: Record<Step1PdfExtractor, string> = {
+  both: "Auto (recommended)",
   opendataloader: "OpenDataLoader",
   document_intelligence: "Document Intelligence (Azure)"
 };
@@ -39,7 +40,7 @@ export function Step1ExecutionPanel({
 }: Step1ExecutionPanelProps): JSX.Element {
   const [protocolFile, setProtocolFile] = useState<File | null>(null);
   const [acrfFile, setAcrfFile] = useState<File | null>(null);
-  const [extractorChoice, setExtractorChoice] = useState<Step1PdfExtractor>("document_intelligence");
+  const [extractorChoice, setExtractorChoice] = useState<Step1PdfExtractor>("both");
   const [isUploading, setIsUploading] = useState(false);
   const [isExtracting, setIsExtracting] = useState(false);
   const [status, setStatus] = useState<string>("");
@@ -47,9 +48,16 @@ export function Step1ExecutionPanel({
   const [protocolPreview, setProtocolPreview] = useState("");
   const [acrfPreview, setAcrfPreview] = useState("");
   const [extractionDone, setExtractionDone] = useState(false);
+  const [uploadCompleted, setUploadCompleted] = useState(false);
 
   const canUpload = Boolean(studyId.trim() && protocolFile && acrfFile && !isUploading && !isExtracting);
+  const canExtract = Boolean(studyId.trim() && uploadCompleted && !isUploading && !isExtracting);
   const shouldShowAutoRunProgress = extractionDone || isAutoRunning || Boolean(autoRunMessage || autoRunError);
+
+  useEffect(() => {
+    setUploadCompleted(false);
+    setExtractionDone(false);
+  }, [studyId]);
 
   async function handleUpload(): Promise<void> {
     if (!protocolFile || !acrfFile || !studyId.trim()) {
@@ -61,8 +69,11 @@ export function Step1ExecutionPanel({
     try {
       const response = await uploadStep1Files(studyId.trim(), protocolFile, acrfFile);
       onStatusesChange(response.stepStatuses);
+      setUploadCompleted(true);
+      setExtractionDone(false);
       setStatus(`Uploaded protocol and aCRF to blob paths: ${response.protocolBlob} and ${response.acrfBlob}`);
     } catch (uploadError) {
+      setUploadCompleted(false);
       setError(uploadError instanceof Error ? uploadError.message : "Upload failed.");
     } finally {
       setIsUploading(false);
@@ -113,6 +124,16 @@ export function Step1ExecutionPanel({
             <input
               type="radio"
               name="pdf-extractor"
+              value="both"
+              checked={extractorChoice === "both"}
+              onChange={() => setExtractorChoice("both")}
+            />
+            <span>{EXTRACTOR_LABELS.both}</span>
+          </label>
+          <label className="step1-radio-label">
+            <input
+              type="radio"
+              name="pdf-extractor"
               value="document_intelligence"
               checked={extractorChoice === "document_intelligence"}
               onChange={() => setExtractorChoice("document_intelligence")}
@@ -130,6 +151,14 @@ export function Step1ExecutionPanel({
             <span>{EXTRACTOR_LABELS.opendataloader}</span>
           </label>
         </div>
+        <p className="step1-note">
+          Auto mode uses OpenDataLoader for protocol and Document Intelligence for aCRF TOC compatibility.
+        </p>
+        {extractorChoice === "opendataloader" ? (
+          <p className="step1-warning">
+            OpenDataLoader-only may fail at Step 3 if aCRF markdown does not contain TOC rows.
+          </p>
+        ) : null}
       </fieldset>
 
       <div className="step1-inputs">
@@ -140,7 +169,11 @@ export function Step1ExecutionPanel({
             className="input"
             type="file"
             accept=".pdf,application/pdf"
-            onChange={(event) => setProtocolFile(event.target.files?.[0] ?? null)}
+            onChange={(event) => {
+              setProtocolFile(event.target.files?.[0] ?? null);
+              setUploadCompleted(false);
+              setExtractionDone(false);
+            }}
           />
         </label>
         <label className="control-group" htmlFor="acrf-file">
@@ -150,7 +183,11 @@ export function Step1ExecutionPanel({
             className="input"
             type="file"
             accept=".pdf,application/pdf"
-            onChange={(event) => setAcrfFile(event.target.files?.[0] ?? null)}
+            onChange={(event) => {
+              setAcrfFile(event.target.files?.[0] ?? null);
+              setUploadCompleted(false);
+              setExtractionDone(false);
+            }}
           />
         </label>
       </div>
@@ -159,7 +196,7 @@ export function Step1ExecutionPanel({
         <button className="button" type="button" onClick={() => void handleUpload()} disabled={!canUpload}>
           {isUploading ? "Uploading..." : "Upload protocol + aCRF"}
         </button>
-        <button className="button" type="button" onClick={() => void handleExtract()} disabled={!studyId.trim() || isUploading || isExtracting}>
+        <button className="button" type="button" onClick={() => void handleExtract()} disabled={!canExtract}>
           {isExtracting ? "Extracting..." : "Perform extraction"}
         </button>
         <button
@@ -175,6 +212,15 @@ export function Step1ExecutionPanel({
         </button>
       </div>
 
+      {!uploadCompleted ? (
+        <p className="step1-note">Upload protocol + aCRF first to enable extraction.</p>
+      ) : null}
+      {isExtracting ? (
+        <div className="step1-extraction-progress" role="status" aria-live="polite" aria-label="Extraction in progress">
+          <span className="step1-extraction-circle" aria-hidden="true" />
+          <span>Extraction in progress. Please wait...</span>
+        </div>
+      ) : null}
       {status ? <p className="step1-status">{status}</p> : null}
       {error ? <p className="step1-error">{error}</p> : null}
       {autoRunMessage ? <p className="step1-status">{autoRunMessage}</p> : null}
