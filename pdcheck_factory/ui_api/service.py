@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import json
 import os
+from io import BytesIO
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
+
+from openpyxl import load_workbook
 
 from pdcheck_factory import blob_io, extraction_resolve, paths, pipeline_v2
 from pdcheck_factory.json_util import read_json, write_json
@@ -131,6 +134,46 @@ class UiStepService:
             "items": [],
         }
 
+    def _load_rules(self, study_id: str) -> Dict[str, Any]:
+        path = paths.local_rules_parsed_json(study_id, self.output_dir)
+        if path.is_file():
+            return read_json(path)
+        return {
+            "schema_version": "1.0.0",
+            "study_id": study_id,
+            "generated_at": "",
+            "rules": [],
+        }
+
+    def _save_rules(self, study_id: str, rules_obj: Dict[str, Any]) -> None:
+        rules_obj["schema_version"] = rules_obj.get("schema_version", "1.0.0")
+        rules_obj["study_id"] = study_id
+        if not rules_obj.get("generated_at"):
+            rules_obj["generated_at"] = datetime.now(timezone.utc).isoformat()
+        write_json(paths.local_rules_parsed_json(study_id, self.output_dir), rules_obj)
+
+    def _load_paragraph_index(self, study_id: str) -> Dict[str, Dict[str, Any]]:
+        path = paths.local_protocol_paragraph_index_json(study_id, self.output_dir)
+        if not path.is_file():
+            return {}
+        obj = read_json(path)
+        paragraphs = obj.get("paragraphs", [])
+        by_ref: Dict[str, Dict[str, Any]] = {}
+        if isinstance(paragraphs, list):
+            for paragraph in paragraphs:
+                if not isinstance(paragraph, dict):
+                    continue
+                ref = str(
+                    paragraph.get("paragraph_id")
+                    or paragraph.get("id")
+                    or paragraph.get("ref")
+                    or paragraph.get("paragraph_ref")
+                    or ""
+                )
+                if ref:
+                    by_ref[ref] = paragraph
+        return by_ref
+
     def _chat_state_path(self, study_id: str) -> Path:
         return paths.local_review_dir(study_id, self.output_dir) / "deviation_chat_state.json"
 
@@ -183,31 +226,139 @@ class UiStepService:
         return state_obj
 
     def _persist_state(self, study_id: str, state_obj: Dict[str, Any], audit_obj: Dict[str, Any]) -> None:
+        state_obj["schema_version"] = state_obj.get("schema_version", "1.0.0")
+        state_obj["study_id"] = study_id
+        if not state_obj.get("generated_at"):
+            state_obj["generated_at"] = datetime.now(timezone.utc).isoformat()
         write_json(paths.local_deviations_review_state(study_id, self.output_dir), state_obj)
         write_json(paths.local_deviations_validated_json(study_id, self.output_dir), state_obj)
         write_json(paths.local_deviations_review_audit_json(study_id, self.output_dir), audit_obj)
 
+    def _audit(self, study_id: str, *, action: str, target_id: str, updated_rows: int) -> Dict[str, Any]:
+        return {
+            "study_id": study_id,
+            "review_type": "deviations",
+            "action": action,
+            "target_id": target_id,
+            "updated_rows": updated_rows,
+            "revised_rows": 0,
+            "run_revision_cycle": False,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def _normalize_refs(self, value: Any) -> List[str]:
+        if isinstance(value, list):
+            refs = [str(item).strip() for item in value if str(item).strip()]
+        else:
+            refs = [part.strip() for part in str(value or "").replace(";", ",").split(",") if part.strip()]
+        if not refs:
+            raise UiApiError("VALIDATION_ERROR", "paragraph_refs is required", 400)
+        invalid = [ref for ref in refs if not ref.startswith("p") or not ref[1:].isdigit()]
+        if invalid:
+            raise UiApiError("VALIDATION_ERROR", f"Invalid paragraph_refs: {', '.join(invalid)}", 400)
+        return refs
+
+    def _normalize_deviation_payload(self, payload: Dict[str, Any], *, default_source: str) -> Dict[str, Any]:
+        deviation_id = str(payload.get("deviation_id") or payload.get("deviationId") or "").strip()
+        rule_id = str(payload.get("rule_id") or payload.get("ruleId") or "").strip()
+        text = str(payload.get("text") or payload.get("deviation_text") or payload.get("deviationText") or "").strip()
+        if not deviation_id or not rule_id or not text:
+            raise UiApiError("VALIDATION_ERROR", "deviation_id, rule_id, and text are required", 400)
+        status = str(payload.get("status") or "pending").strip().lower()
+        if status not in {"pending", "accepted", "to_review", "rejected"}:
+            raise UiApiError("VALIDATION_ERROR", "status must be one of pending,accepted,to_review,rejected", 400)
+        return {
+            "deviation_id": deviation_id,
+            "rule_id": rule_id,
+            "text": text,
+            "paragraph_refs": self._normalize_refs(payload.get("paragraph_refs") or payload.get("paragraphRefs")),
+            "data_support_note": str(payload.get("data_support_note") or payload.get("dataSupportNote") or ""),
+            "status": status,
+            "dm_comment": str(payload.get("dm_comment") or payload.get("dmComment") or ""),
+            "entry_source": str(payload.get("entry_source") or payload.get("entrySource") or default_source),
+        }
+
+    def _normalized_rule_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        rule_id = str(payload.get("rule_id") or payload.get("ruleId") or "").strip()
+        title = str(payload.get("title") or payload.get("rule_title") or payload.get("ruleTitle") or "").strip()
+        text = str(payload.get("text") or payload.get("rule_text") or payload.get("ruleText") or "").strip()
+        if not rule_id:
+            raise UiApiError("VALIDATION_ERROR", "rule_id is required", 400)
+        refs_value = payload.get("paragraph_refs") or payload.get("paragraphRefs")
+        return {
+            "rule_id": rule_id,
+            "title": title,
+            "text": text,
+            "paragraph_refs": self._normalize_refs(refs_value) if refs_value else [],
+        }
+
     def _normalized_step7_row(
-        self, row: Dict[str, Any], pseudo_by_dev: Dict[str, Dict[str, Any]], rule_by_id: Dict[str, Dict[str, Any]]
+        self,
+        row: Dict[str, Any],
+        pseudo_by_dev: Dict[str, Dict[str, Any]],
+        rule_by_id: Dict[str, Dict[str, Any]],
+        paragraph_by_ref: Dict[str, Dict[str, Any]] | None = None,
     ) -> Dict[str, Any]:
         deviation_id = str(row.get("deviation_id", ""))
         rule_id = str(row.get("rule_id", ""))
         pseudo = pseudo_by_dev.get(deviation_id, {})
         rule = rule_by_id.get(rule_id, {})
         refs = list(row.get("paragraph_refs", []))
+        paragraph_lookup = paragraph_by_ref or {}
+        supporting_sentences = []
+        for ref in refs:
+            paragraph = paragraph_lookup.get(str(ref), {})
+            text = str(paragraph.get("text") or paragraph.get("content") or paragraph.get("paragraph_text") or "")
+            supporting_sentences.append({"ref": str(ref), "text": text})
         return {
             "rule_id": rule_id,
             "deviation_id": deviation_id,
             "rule_title": str(rule.get("title", "")),
+            "rule_text": str(rule.get("text") or rule.get("rule_text") or rule.get("description") or ""),
             "deviation_text": str(row.get("text", "")),
             "paragraph_refs": refs,
             "paragraph_refs_text": ", ".join(refs),
+            "supporting_sentences": supporting_sentences,
+            "data_support_note": str(row.get("data_support_note", "")),
             "pseudo_logic": str(pseudo.get("pseudo_logic", "")),
             "status": str(row.get("status", "pending")),
             "dm_comment": str(row.get("dm_comment", "")),
+            "entry_source": str(row.get("entry_source", "extracted")),
             "programmable": pseudo.get("programmable"),
             "programmability_note": str(pseudo.get("programmability_note", "")),
         }
+
+    def list_studies(self) -> Dict[str, Any]:
+        blob_service = blob_io.blob_service_from_env()
+        container = blob_io.container_from_env()
+        names = blob_io.list_blob_names_with_prefix(
+            blob_service=blob_service,
+            container_name=container,
+            prefix="raw/",
+        )
+        by_study: Dict[str, set[str]] = {}
+        for name in names:
+            parts = name.strip("/").split("/")
+            if len(parts) != 3 or parts[0] != "raw":
+                continue
+            study_id, file_name = parts[1], parts[2]
+            if file_name in {"protocol.pdf", "acrf.pdf"}:
+                by_study.setdefault(study_id, set()).add(file_name)
+
+        studies = []
+        for study_id in sorted(by_study):
+            if {"protocol.pdf", "acrf.pdf"}.issubset(by_study[study_id]):
+                statuses = self._step_statuses(study_id)
+                studies.append(
+                    {
+                        "studyId": study_id,
+                        "protocolBlob": paths.raw_protocol_blob(study_id),
+                        "acrfBlob": paths.raw_acrf_blob(study_id),
+                        "stepStatuses": statuses,
+                        "nextStepId": next((step_id for step_id in STEP_ORDER if statuses[step_id] != "done"), None),
+                    }
+                )
+        return {"studies": studies}
 
     def upload_step1_files(self, study_id: str, protocol_bytes: bytes, acrf_bytes: bytes) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
@@ -456,16 +607,204 @@ class UiStepService:
         study_id = self._require_study_id(study_id)
         state_obj = self._load_state(study_id)
         pseudo_obj = self._load_pseudo_state(study_id)
-        rules_obj = read_json(paths.local_rules_parsed_json(study_id, self.output_dir))
+        rules_obj = self._load_rules(study_id)
+        paragraph_by_ref = self._load_paragraph_index(study_id)
         pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in pseudo_obj.get("items", [])}
         rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
-        rows = [self._normalized_step7_row(row, pseudo_by_dev, rule_by_id) for row in state_obj.get("deviations", [])]
+        rows = [
+            self._normalized_step7_row(row, pseudo_by_dev, rule_by_id, paragraph_by_ref)
+            for row in state_obj.get("deviations", [])
+        ]
         return {
             "studyId": study_id,
-            "columns": ["rule_id", "deviation_id", "rule_title", "deviation_text", "paragraph_refs", "pseudo_logic"],
+            "columns": [
+                "rule_id",
+                "deviation_id",
+                "rule_title",
+                "deviation_text",
+                "paragraph_refs",
+                "pseudo_logic",
+            ],
             "rows": rows,
             "stepStatuses": self._step_statuses(study_id),
         }
+
+    def create_step7_deviation(self, study_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        new_row = self._normalize_deviation_payload(payload, default_source="imported")
+        state_obj = self._load_state(study_id)
+        rows = list(state_obj.get("deviations", []))
+        if any(str(row.get("deviation_id", "")) == new_row["deviation_id"] for row in rows):
+            raise UiApiError("VALIDATION_ERROR", f"Duplicate deviation_id '{new_row['deviation_id']}'", 400)
+        rows.append(new_row)
+        state_obj["deviations"] = rows
+        self._persist_state(study_id, state_obj, self._audit(study_id, action="create_deviation", target_id=new_row["deviation_id"], updated_rows=1))
+        return self.get_step7_deviations(study_id)
+
+    def patch_step7_deviation_fields(self, study_id: str, deviation_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        dev_id = str(deviation_id).strip()
+        state_obj = self._load_state(study_id)
+        rows = list(state_obj.get("deviations", []))
+        row = next((item for item in rows if str(item.get("deviation_id", "")) == dev_id), None)
+        if row is None:
+            raise UiApiError("NOT_FOUND", f"Unknown deviationId '{dev_id}'", 404)
+        merged = dict(row)
+        for source_key, target_key in [
+            ("rule_id", "rule_id"),
+            ("ruleId", "rule_id"),
+            ("text", "text"),
+            ("deviation_text", "text"),
+            ("deviationText", "text"),
+            ("data_support_note", "data_support_note"),
+            ("dataSupportNote", "data_support_note"),
+            ("dm_comment", "dm_comment"),
+            ("dmComment", "dm_comment"),
+            ("status", "status"),
+        ]:
+            if source_key in payload:
+                merged[target_key] = payload[source_key]
+        if "paragraph_refs" in payload or "paragraphRefs" in payload:
+            merged["paragraph_refs"] = payload.get("paragraph_refs") or payload.get("paragraphRefs")
+        normalized = self._normalize_deviation_payload(merged, default_source=str(row.get("entry_source", "extracted")))
+        normalized["deviation_id"] = dev_id
+        state_obj = self._replace_row(state_obj, normalized)
+        self._persist_state(study_id, state_obj, self._audit(study_id, action="update_deviation", target_id=dev_id, updated_rows=1))
+        return self._single_step7_deviation_response(study_id, normalized)
+
+    def delete_step7_deviation(self, study_id: str, deviation_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        dev_id = str(deviation_id).strip()
+        state_obj = self._load_state(study_id)
+        rows = list(state_obj.get("deviations", []))
+        next_rows = [row for row in rows if str(row.get("deviation_id", "")) != dev_id]
+        if len(next_rows) == len(rows):
+            raise UiApiError("NOT_FOUND", f"Unknown deviationId '{dev_id}'", 404)
+        state_obj["deviations"] = next_rows
+        self._persist_state(study_id, state_obj, self._audit(study_id, action="delete_deviation", target_id=dev_id, updated_rows=1))
+
+        pseudo_obj = self._load_pseudo_state(study_id)
+        pseudo_items = [item for item in pseudo_obj.get("items", []) if str(item.get("deviation_id", "")) != dev_id]
+        if len(pseudo_items) != len(pseudo_obj.get("items", [])):
+            pseudo_obj["items"] = pseudo_items
+            write_json(paths.local_pseudo_logic_review_state(study_id, self.output_dir), pseudo_obj)
+            write_json(paths.local_pseudo_logic_validated_json(study_id, self.output_dir), pseudo_obj)
+        return self.get_step7_deviations(study_id)
+
+    def import_step7_deviations_xlsx(self, study_id: str, workbook_bytes: bytes) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        if not workbook_bytes:
+            raise UiApiError("VALIDATION_ERROR", "Workbook must not be empty", 400)
+        try:
+            workbook = load_workbook(BytesIO(workbook_bytes), read_only=True, data_only=True)
+            sheet = workbook.active
+        except Exception as exc:  # noqa: BLE001
+            raise UiApiError("VALIDATION_ERROR", "Workbook must be a readable .xlsx file", 400) from exc
+
+        rows_iter = sheet.iter_rows(values_only=True)
+        headers = next(rows_iter, None)
+        if not headers:
+            raise UiApiError("VALIDATION_ERROR", "Workbook must include a header row", 400)
+        header_map = {str(value or "").strip().lower(): index for index, value in enumerate(headers)}
+
+        def cell(row_values: tuple[Any, ...], *names: str) -> Any:
+            for name in names:
+                idx = header_map.get(name)
+                if idx is not None and idx < len(row_values):
+                    return row_values[idx]
+            return ""
+
+        imported: List[Dict[str, Any]] = []
+        for row_values in rows_iter:
+            if not row_values or not any(value is not None and str(value).strip() for value in row_values):
+                continue
+            imported.append(
+                self._normalize_deviation_payload(
+                    {
+                        "deviation_id": cell(row_values, "deviation_id", "deviationid"),
+                        "rule_id": cell(row_values, "rule_id", "ruleid"),
+                        "text": cell(row_values, "text", "deviation_text", "deviationtext"),
+                        "paragraph_refs": cell(row_values, "paragraph_refs", "paragraphrefs"),
+                        "data_support_note": cell(row_values, "data_support_note", "datasupportnote"),
+                        "dm_comment": cell(row_values, "dm_comment", "dmcomment"),
+                        "status": cell(row_values, "status") or "pending",
+                    },
+                    default_source="imported",
+                )
+            )
+
+        if not imported:
+            raise UiApiError("VALIDATION_ERROR", "Workbook did not contain any deviation rows", 400)
+
+        state_obj = self._load_state(study_id)
+        existing_ids = {str(row.get("deviation_id", "")) for row in state_obj.get("deviations", [])}
+        imported_ids = [row["deviation_id"] for row in imported]
+        duplicate_ids = sorted({dev_id for dev_id in imported_ids if imported_ids.count(dev_id) > 1 or dev_id in existing_ids})
+        if duplicate_ids:
+            raise UiApiError("VALIDATION_ERROR", f"Duplicate deviation_id values: {', '.join(duplicate_ids)}", 400)
+
+        state_obj["deviations"] = list(state_obj.get("deviations", [])) + imported
+        self._persist_state(study_id, state_obj, self._audit(study_id, action="import_deviations", target_id="xlsx", updated_rows=len(imported)))
+        payload = self.get_step7_deviations(study_id)
+        payload["imported"] = len(imported)
+        return payload
+
+    def _single_step7_deviation_response(self, study_id: str, row: Dict[str, Any]) -> Dict[str, Any]:
+        pseudo_obj = self._load_pseudo_state(study_id)
+        rules_obj = self._load_rules(study_id)
+        paragraph_by_ref = self._load_paragraph_index(study_id)
+        pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in pseudo_obj.get("items", [])}
+        rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
+        dev_id = str(row.get("deviation_id", ""))
+        return {
+            "studyId": study_id,
+            "deviationId": dev_id,
+            "row": self._normalized_step7_row(row, pseudo_by_dev, rule_by_id, paragraph_by_ref),
+            "stepStatuses": self._step_statuses(study_id),
+        }
+
+    def create_step7_rule(self, study_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        rule = self._normalized_rule_payload(payload)
+        rules_obj = self._load_rules(study_id)
+        rules = list(rules_obj.get("rules", []))
+        if any(str(item.get("rule_id", "")) == rule["rule_id"] for item in rules):
+            raise UiApiError("VALIDATION_ERROR", f"Duplicate rule_id '{rule['rule_id']}'", 400)
+        rules.append(rule)
+        rules_obj["rules"] = rules
+        self._save_rules(study_id, rules_obj)
+        return {"studyId": study_id, "rule": rule, "stepStatuses": self._step_statuses(study_id)}
+
+    def update_step7_rule(self, study_id: str, rule_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        rid = str(rule_id).strip()
+        rules_obj = self._load_rules(study_id)
+        rules = list(rules_obj.get("rules", []))
+        idx = next((i for i, item in enumerate(rules) if str(item.get("rule_id", "")) == rid), None)
+        if idx is None:
+            raise UiApiError("NOT_FOUND", f"Unknown ruleId '{rid}'", 404)
+        merged = dict(rules[idx])
+        merged.update(payload)
+        updated = self._normalized_rule_payload({**merged, "rule_id": rid})
+        rules[idx] = updated
+        rules_obj["rules"] = rules
+        self._save_rules(study_id, rules_obj)
+        return {"studyId": study_id, "rule": updated, "stepStatuses": self._step_statuses(study_id)}
+
+    def delete_step7_rule(self, study_id: str, rule_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        rid = str(rule_id).strip()
+        state_obj = self._load_state(study_id)
+        if any(str(row.get("rule_id", "")) == rid for row in state_obj.get("deviations", [])):
+            raise UiApiError("VALIDATION_ERROR", f"Rule '{rid}' is used by one or more deviations", 400)
+        rules_obj = self._load_rules(study_id)
+        rules = list(rules_obj.get("rules", []))
+        next_rules = [rule for rule in rules if str(rule.get("rule_id", "")) != rid]
+        if len(next_rules) == len(rules):
+            raise UiApiError("NOT_FOUND", f"Unknown ruleId '{rid}'", 404)
+        rules_obj["rules"] = next_rules
+        self._save_rules(study_id, rules_obj)
+        return {"studyId": study_id, "deletedRuleId": rid, "stepStatuses": self._step_statuses(study_id)}
 
     def get_step7_deviation_chat(self, study_id: str, deviation_id: str) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)

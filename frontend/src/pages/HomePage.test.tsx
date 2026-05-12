@@ -14,6 +14,17 @@ const DONE_STATUSES: Record<string, StepStatus> = {
 };
 
 vi.mock("../services/stepApi", () => ({
+  fetchStudies: vi.fn(async () => ({
+    studies: [
+      {
+        studyId: "MY-STUDY",
+        protocolBlob: "raw/MY-STUDY/protocol.pdf",
+        acrfBlob: "raw/MY-STUDY/acrf.pdf",
+        stepStatuses: DONE_STATUSES,
+        nextStepId: "review-and-finalize"
+      }
+    ]
+  })),
   fetchStepStatuses: vi.fn(async () => ({
     studyId: "MY-STUDY",
     steps: [
@@ -64,12 +75,16 @@ vi.mock("../services/stepApi", () => ({
         rule_id: "rule-001",
         deviation_id: "dev-0001",
         rule_title: "Visit window timing",
+        rule_text: "Visit must happen inside window",
         deviation_text: "Visit date outside window",
         paragraph_refs: ["p2"],
         paragraph_refs_text: "p2",
+        supporting_sentences: [{ ref: "p2", text: "Visit 2 must occur within 7 days." }],
+        data_support_note: "SV date supports this deviation",
         pseudo_logic: "SELECT 1",
         status: "to_review",
         dm_comment: "",
+        entry_source: "extracted",
         programmable: true,
         programmability_note: "ok"
       }
@@ -96,12 +111,16 @@ vi.mock("../services/stepApi", () => ({
       rule_id: "rule-001",
       deviation_id: "dev-0001",
       rule_title: "Visit window timing",
+      rule_text: "Visit must happen inside window",
       deviation_text: "Visit date outside window refined",
       paragraph_refs: ["p2"],
       paragraph_refs_text: "p2",
+      supporting_sentences: [{ ref: "p2", text: "Visit 2 must occur within 7 days." }],
+      data_support_note: "SV date supports this deviation",
       pseudo_logic: "SELECT 1",
       status: "to_review",
       dm_comment: "please revise",
+      entry_source: "extracted",
       programmable: true,
       programmability_note: "ok"
     },
@@ -127,12 +146,16 @@ vi.mock("../services/stepApi", () => ({
       rule_id: "rule-001",
       deviation_id: "dev-0001",
       rule_title: "Visit window timing",
+      rule_text: "Visit must happen inside window",
       deviation_text: "Visit date outside window",
       paragraph_refs: ["p2"],
       paragraph_refs_text: "p2",
+      supporting_sentences: [{ ref: "p2", text: "Visit 2 must occur within 7 days." }],
+      data_support_note: "SV date supports this deviation",
       pseudo_logic: "SELECT 1",
       status: "accepted",
       dm_comment: "",
+      entry_source: "extracted",
       programmable: true,
       programmability_note: "ok"
     },
@@ -153,12 +176,16 @@ vi.mock("../services/stepApi", () => ({
       rule_id: "rule-001",
       deviation_id: "dev-0001",
       rule_title: "Visit window timing",
+      rule_text: "Visit must happen inside window",
       deviation_text: "Visit date outside window",
       paragraph_refs: ["p2"],
       paragraph_refs_text: "p2",
+      supporting_sentences: [{ ref: "p2", text: "Visit 2 must occur within 7 days." }],
+      data_support_note: "SV date supports this deviation",
       pseudo_logic: "SELECT generated FROM dm",
       status: "accepted",
       dm_comment: "",
+      entry_source: "extracted",
       programmable: true,
       programmability_note: "ok"
     },
@@ -180,12 +207,16 @@ vi.mock("../services/stepApi", () => ({
         rule_id: "rule-001",
         deviation_id: "dev-0001",
         rule_title: "Visit window timing",
+        rule_text: "Visit must happen inside window",
         deviation_text: "Visit date outside window",
         paragraph_refs: ["p2"],
         paragraph_refs_text: "p2",
+        supporting_sentences: [{ ref: "p2", text: "Visit 2 must occur within 7 days." }],
+        data_support_note: "SV date supports this deviation",
         pseudo_logic: "SELECT bulk FROM dm",
         status: "accepted",
         dm_comment: "",
+        entry_source: "extracted",
         programmable: true,
         programmability_note: "ok"
       }
@@ -200,6 +231,86 @@ vi.mock("../services/stepApi", () => ({
       "review-and-finalize": "pending"
     }
   })),
+  createStep7Deviation: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    columns: ["rule_id", "deviation_id", "rule_title", "deviation_text", "paragraph_refs", "pseudo_logic"],
+    rows: [
+      {
+        rule_id: "rule-001",
+        deviation_id: "dev-manual",
+        rule_title: "Visit window timing",
+        rule_text: "Visit must happen inside window",
+        deviation_text: "Manual deviation",
+        paragraph_refs: ["p2"],
+        paragraph_refs_text: "p2",
+        supporting_sentences: [{ ref: "p2", text: "Visit 2 must occur within 7 days." }],
+        data_support_note: "Manual support",
+        pseudo_logic: "",
+        status: "pending",
+        dm_comment: "",
+        entry_source: "imported",
+        programmable: null,
+        programmability_note: ""
+      }
+    ],
+    stepStatuses: DONE_STATUSES
+  })),
+  deleteStep7Deviation: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    columns: ["rule_id", "deviation_id", "rule_title", "deviation_text", "paragraph_refs", "pseudo_logic"],
+    rows: [],
+    stepStatuses: DONE_STATUSES
+  })),
+  importStep7DeviationsWorkbook: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    imported: 1,
+    columns: ["rule_id", "deviation_id", "rule_title", "deviation_text", "paragraph_refs", "pseudo_logic"],
+    rows: [
+      {
+        rule_id: "rule-001",
+        deviation_id: "dev-imported",
+        rule_title: "Visit window timing",
+        rule_text: "Visit must happen inside window",
+        deviation_text: "Imported deviation",
+        paragraph_refs: ["p2"],
+        paragraph_refs_text: "p2",
+        supporting_sentences: [],
+        data_support_note: "Imported support",
+        pseudo_logic: "",
+        status: "pending",
+        dm_comment: "",
+        entry_source: "imported",
+        programmable: null,
+        programmability_note: ""
+      }
+    ],
+    stepStatuses: DONE_STATUSES
+  })),
+  updateStep7Deviation: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    deviationId: "dev-0001",
+    row: {
+      rule_id: "rule-001",
+      deviation_id: "dev-0001",
+      rule_title: "Visit window timing",
+      rule_text: "Visit must happen inside window",
+      deviation_text: "Edited deviation",
+      paragraph_refs: ["p2"],
+      paragraph_refs_text: "p2",
+      supporting_sentences: [],
+      data_support_note: "",
+      pseudo_logic: "",
+      status: "pending",
+      dm_comment: "",
+      entry_source: "extracted",
+      programmable: null,
+      programmability_note: ""
+    },
+    stepStatuses: DONE_STATUSES
+  })),
+  createStep7Rule: vi.fn(async () => ({ studyId: "MY-STUDY", rule: { rule_id: "rule-new", title: "New rule", text: "" }, stepStatuses: DONE_STATUSES })),
+  updateStep7Rule: vi.fn(async () => ({ studyId: "MY-STUDY", rule: { rule_id: "rule-001", title: "Edited rule", text: "Edited body" }, stepStatuses: DONE_STATUSES })),
+  deleteStep7Rule: vi.fn(async () => ({ studyId: "MY-STUDY", deletedRuleId: "rule-unused", stepStatuses: DONE_STATUSES })),
   uploadStep1Files: vi.fn(),
   runStep1Extraction: vi.fn(async () => ({
     studyId: "MY-STUDY",
@@ -250,6 +361,7 @@ describe("Workflow pipeline pages", () => {
     render(<App />);
 
     expect(await screen.findByText("PD Check Pipeline Pages")).toBeInTheDocument();
+    expect(await screen.findByText("1 blob project available")).toBeInTheDocument();
     expect(screen.getAllByText("Step 1 - Extract Inputs").length).toBeGreaterThan(0);
     expect(screen.getAllByText("Collect protocol and aCRF files and produce normalized source markdown.").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Perform extraction" })).toBeInTheDocument();
@@ -277,6 +389,10 @@ describe("Workflow pipeline pages", () => {
 
     await user.click(screen.getByRole("button", { name: "Open" }));
     expect(await screen.findByText("Refinement Loop: dev-0001")).toBeInTheDocument();
+    expect(screen.getByText("Rule preview")).toBeInTheDocument();
+    expect(screen.getByText("Visit must happen inside window")).toBeInTheDocument();
+    expect(screen.getByText(/Visit 2 must occur within 7 days/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "To Review" })).not.toBeInTheDocument();
 
     const input = screen.getByPlaceholderText("Add DM instruction for this deviation...");
     await user.clear(input);
@@ -316,12 +432,16 @@ describe("Workflow pipeline pages", () => {
           rule_id: "rule-001",
           deviation_id: "dev-0001",
           rule_title: "Visit window timing",
+          rule_text: "Visit must happen inside window",
           deviation_text: "Visit date outside window",
           paragraph_refs: ["p2"],
           paragraph_refs_text: "p2",
+          supporting_sentences: [{ ref: "p2", text: "Visit 2 must occur within 7 days." }],
+          data_support_note: "SV date supports this deviation",
           pseudo_logic: "",
           status: "accepted",
           dm_comment: "",
+          entry_source: "extracted",
           programmable: null,
           programmability_note: ""
         }
@@ -348,6 +468,32 @@ describe("Workflow pipeline pages", () => {
     expect(await screen.findByText("SELECT bulk FROM dm")).toBeInTheDocument();
     expect(screen.getByText(/Generated pseudo logic for 1 accepted deviation/i)).toBeInTheDocument();
     expect(stepApi.generateStep7PseudoLogicAll).toHaveBeenCalledWith("MY-STUDY");
+  });
+
+  it("adds manual deviations and imports Excel rows from Step 7", async () => {
+    const stepApi = await import("../services/stepApi");
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /Step 7 - Review and Finalize/i }));
+    expect(await screen.findByText("Step 7 Deviation Review Grid")).toBeInTheDocument();
+
+    await user.click(screen.getByText("Add manual deviation"));
+    await user.type(screen.getByPlaceholderText("deviation_id"), "dev-manual");
+    await user.type(screen.getAllByPlaceholderText("rule_id")[0], "rule-001");
+    await user.type(screen.getByPlaceholderText("paragraph refs (p1, p2)"), "p2");
+    await user.type(screen.getByPlaceholderText("deviation text"), "Manual deviation");
+    await user.click(screen.getByRole("button", { name: "Add deviation" }));
+    expect(await screen.findByText("Manual deviation")).toBeInTheDocument();
+    expect(stepApi.createStep7Deviation).toHaveBeenCalled();
+
+    const file = new File(["xlsx"], "deviations.xlsx", {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    });
+    await user.upload(screen.getByLabelText("Choose Excel"), file);
+    await user.click(screen.getByRole("button", { name: "Import deviations" }));
+    expect(await screen.findByText("Imported deviation")).toBeInTheDocument();
+    expect(stepApi.importStep7DeviationsWorkbook).toHaveBeenCalledWith("MY-STUDY", file);
   });
 
   it("runs backend steps in order and opens the DM revision grid", async () => {

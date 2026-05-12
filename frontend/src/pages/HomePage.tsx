@@ -127,7 +127,7 @@ export function HomePage(): JSX.Element {
 
         <Section title="Study">
           <div className="controls-row">
-            <StudySelector value={studyId} onChange={setStudyId} />
+            <StudySelector value={studyId} onChange={setStudyId} studies={[]} />
             <div className="control-group">
               <span className="control-label">Last update</span>
               <div className="inline-text">{new Date(data?.overview.updatedAt ?? Date.now()).toLocaleString()}</div>

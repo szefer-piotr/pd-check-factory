@@ -51,7 +51,7 @@ export function Step1ExecutionPanel({
   const [uploadCompleted, setUploadCompleted] = useState(false);
 
   const canUpload = Boolean(studyId.trim() && protocolFile && acrfFile && !isUploading && !isExtracting);
-  const canExtract = Boolean(studyId.trim() && uploadCompleted && !isUploading && !isExtracting);
+  const canExtract = Boolean(studyId.trim() && !isUploading && !isExtracting);
   const shouldShowAutoRunProgress = extractionDone || isAutoRunning || Boolean(autoRunMessage || autoRunError);
 
   useEffect(() => {
@@ -213,7 +213,7 @@ export function Step1ExecutionPanel({
       </div>
 
       {!uploadCompleted ? (
-        <p className="step1-note">Upload protocol + aCRF first to enable extraction.</p>
+        <p className="step1-note">Upload protocol + aCRF for a new study, or extract an already loaded blob study.</p>
       ) : null}
       {isExtracting ? (
         <div className="step1-extraction-progress" role="status" aria-live="polite" aria-label="Extraction in progress">

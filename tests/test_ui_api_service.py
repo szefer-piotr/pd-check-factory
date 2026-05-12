@@ -1,8 +1,10 @@
 from pathlib import Path
+from io import BytesIO
 
 import pytest
+from openpyxl import Workbook
 
-from pdcheck_factory import extraction_resolve
+from pdcheck_factory import blob_io, extraction_resolve, paths
 from pdcheck_factory.json_util import read_json, write_json
 from pdcheck_factory.ui_api.service import STEP_ORDER, UiApiError, UiStepService, parse_json_body
 
@@ -110,6 +112,29 @@ def test_status_progression_and_dependency_guard(tmp_path: Path, monkeypatch: py
     assert final_status["review-and-finalize"] == "done"
 
 
+def test_list_studies_discovers_raw_blob_pairs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+
+    monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
+    monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
+    monkeypatch.setattr(
+        blob_io,
+        "list_blob_names_with_prefix",
+        lambda **_kwargs: [
+            "raw/STUDY-A/protocol.pdf",
+            "raw/STUDY-A/acrf.pdf",
+            "raw/STUDY-B/protocol.pdf",
+            "raw/STUDY-C/acrf.pdf",
+        ],
+    )
+
+    payload = service.list_studies()
+
+    assert [study["studyId"] for study in payload["studies"]] == ["STUDY-A"]
+    assert payload["studies"][0]["protocolBlob"] == "raw/STUDY-A/protocol.pdf"
+    assert payload["studies"][0]["stepStatuses"]["extract-inputs"] == "pending"
+
+
 def test_step7_deviations_chat_and_refine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = UiStepService(output_dir=tmp_path)
     study_id = "MY-STUDY"
@@ -121,11 +146,15 @@ def test_step7_deviations_chat_and_refine(tmp_path: Path, monkeypatch: pytest.Mo
         '{"rules":[{"rule_id":"rule-001","title":"Visit window timing"}]}',
     )
     _touch(
+        tmp_path / study_id / "pipeline" / "protocol_index" / "paragraph_index.json",
+        '{"paragraphs":[{"paragraph_id":"p1","text":"Visit must be inside the allowed window."}]}',
+    )
+    _touch(
         review_path,
         (
             '{"schema_version":"1.0.0","study_id":"MY-STUDY","deviations":['
             '{"deviation_id":"dev-0001","rule_id":"rule-001","text":"Original","paragraph_refs":["p1"],'
-            '"status":"to_review","dm_comment":""}]}'
+            '"data_support_note":"Supported by SV date","status":"to_review","dm_comment":""}]}'
         ),
     )
     _touch(
@@ -158,6 +187,8 @@ def test_step7_deviations_chat_and_refine(tmp_path: Path, monkeypatch: pytest.Mo
     assert list_payload["columns"] == ["rule_id", "deviation_id", "rule_title", "deviation_text", "paragraph_refs", "pseudo_logic"]
     assert list_payload["rows"][0]["deviation_id"] == "dev-0001"
     assert list_payload["rows"][0]["rule_title"] == "Visit window timing"
+    assert list_payload["rows"][0]["data_support_note"] == "Supported by SV date"
+    assert list_payload["rows"][0]["supporting_sentences"][0]["text"] == "Visit must be inside the allowed window."
 
     chat_payload = service.get_step7_deviation_chat(study_id, "dev-0001")
     assert chat_payload["messages"] == []
@@ -181,6 +212,71 @@ def test_step7_deviations_chat_and_refine(tmp_path: Path, monkeypatch: pytest.Mo
     )
     assert updated["row"]["status"] == "accepted"
     assert updated["row"]["dm_comment"] == "approved"
+
+
+def test_step7_manual_deviation_crud_and_xlsx_import(tmp_path: Path) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "MY-STUDY"
+    _seed_step7_state(tmp_path, study_id, status="pending")
+
+    added = service.create_step7_deviation(
+        study_id,
+        {
+            "deviation_id": "dev-manual",
+            "rule_id": "rule-001",
+            "text": "Manual deviation",
+            "paragraph_refs": ["p1"],
+            "data_support_note": "Manual support",
+        },
+    )
+    assert any(row["deviation_id"] == "dev-manual" for row in added["rows"])
+
+    updated = service.patch_step7_deviation_fields(
+        study_id,
+        "dev-manual",
+        {"text": "Manual deviation edited", "status": "accepted"},
+    )
+    assert updated["row"]["deviation_text"] == "Manual deviation edited"
+    assert updated["row"]["status"] == "accepted"
+
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.append(["deviation_id", "rule_id", "deviation_text", "paragraph_refs", "data_support_note"])
+    sheet.append(["dev-imported", "rule-001", "Imported deviation", "p1", "Imported support"])
+    buffer = BytesIO()
+    workbook.save(buffer)
+
+    imported = service.import_step7_deviations_xlsx(study_id, buffer.getvalue())
+    assert imported["imported"] == 1
+    assert any(row["deviation_id"] == "dev-imported" for row in imported["rows"])
+
+    with pytest.raises(UiApiError) as duplicate:
+        service.import_step7_deviations_xlsx(study_id, buffer.getvalue())
+    assert duplicate.value.code == "VALIDATION_ERROR"
+
+    deleted = service.delete_step7_deviation(study_id, "dev-manual")
+    assert all(row["deviation_id"] != "dev-manual" for row in deleted["rows"])
+
+    state = read_json(paths.local_deviations_review_state(study_id, tmp_path))
+    assert any(row.get("entry_source") == "imported" for row in state["deviations"])
+
+
+def test_step7_manual_rule_crud(tmp_path: Path) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "MY-STUDY"
+    _seed_step7_state(tmp_path, study_id, status="pending")
+
+    created = service.create_step7_rule(
+        study_id,
+        {"rule_id": "rule-manual", "title": "Manual rule", "text": "Rule body"},
+    )
+    assert created["rule"]["rule_id"] == "rule-manual"
+
+    updated = service.update_step7_rule(study_id, "rule-manual", {"title": "Manual rule edited"})
+    assert updated["rule"]["title"] == "Manual rule edited"
+
+    deleted = service.delete_step7_rule(study_id, "rule-manual")
+    assert deleted["deletedRuleId"] == "rule-manual"
 
 
 def _seed_step7_state(tmp_path: Path, study_id: str, status: str = "accepted") -> None:

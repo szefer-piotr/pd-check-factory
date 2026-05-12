@@ -1,13 +1,22 @@
 import { Fragment, useEffect, useState } from "react";
 import {
+  createStep7Deviation,
+  createStep7Rule,
+  deleteStep7Deviation,
+  deleteStep7Rule,
   fetchStep7DeviationChat,
   fetchStep7Deviations,
   generateStep7PseudoLogic,
   generateStep7PseudoLogicAll,
+  importStep7DeviationsWorkbook,
   refineStep7Deviation,
+  updateStep7Deviation,
   updateStep7DeviationStatus,
+  updateStep7Rule,
   type Step7ChatMessage,
+  type Step7DeviationPayload,
   type Step7DeviationRow,
+  type Step7RulePayload,
   type StepStatus
 } from "../../services/stepApi";
 
@@ -25,6 +34,34 @@ const XLSX_COLUMNS = [
   { key: "pseudo_logic", label: "pseudo_logic" }
 ] as const;
 
+const EMPTY_DEVIATION_FORM: Step7DeviationPayload = {
+  deviation_id: "",
+  rule_id: "",
+  text: "",
+  paragraph_refs: [],
+  data_support_note: "",
+  dm_comment: "",
+  status: "pending"
+};
+
+const EMPTY_RULE_FORM: Step7RulePayload = {
+  rule_id: "",
+  title: "",
+  text: "",
+  paragraph_refs: []
+};
+
+function refsFromText(value: string): string[] {
+  return value
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function refsToText(value: string[]): string {
+  return value.join(", ");
+}
+
 export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewPanelProps): JSX.Element {
   const [rows, setRows] = useState<Step7DeviationRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -36,6 +73,14 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
   const [pendingPseudoId, setPendingPseudoId] = useState<string | null>(null);
   const [isBulkGenerating, setIsBulkGenerating] = useState(false);
   const [bulkStatus, setBulkStatus] = useState("");
+  const [deviationForm, setDeviationForm] = useState<Step7DeviationPayload>(EMPTY_DEVIATION_FORM);
+  const [ruleForm, setRuleForm] = useState<Step7RulePayload>(EMPTY_RULE_FORM);
+  const [editingDeviationId, setEditingDeviationId] = useState<string | null>(null);
+  const [editDeviationForm, setEditDeviationForm] = useState<Step7DeviationPayload>(EMPTY_DEVIATION_FORM);
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  const [editRuleForm, setEditRuleForm] = useState<Step7RulePayload>(EMPTY_RULE_FORM);
+  const [workbookFile, setWorkbookFile] = useState<File | null>(null);
+  const [mutationStatus, setMutationStatus] = useState("");
 
   const acceptedCount = rows.filter((row) => row.status === "accepted").length;
 
@@ -137,34 +182,203 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
     }
   }
 
+  async function handleAddDeviation(): Promise<void> {
+    setError("");
+    setMutationStatus("");
+    try {
+      const result = await createStep7Deviation(studyId.trim(), deviationForm);
+      setRows(result.rows);
+      onStepStatusesChange(result.stepStatuses);
+      setDeviationForm(EMPTY_DEVIATION_FORM);
+      setMutationStatus("Added manual deviation.");
+    } catch (mutationError) {
+      setError(mutationError instanceof Error ? mutationError.message : "Unable to add deviation.");
+    }
+  }
+
+  async function handleSaveDeviation(deviationId: string): Promise<void> {
+    setError("");
+    setMutationStatus("");
+    try {
+      const result = await updateStep7Deviation(studyId.trim(), deviationId, editDeviationForm);
+      setRows((previous) => previous.map((row) => (row.deviation_id === deviationId ? result.row : row)));
+      onStepStatusesChange(result.stepStatuses);
+      setEditingDeviationId(null);
+      setMutationStatus("Updated deviation.");
+    } catch (mutationError) {
+      setError(mutationError instanceof Error ? mutationError.message : "Unable to update deviation.");
+    }
+  }
+
+  async function handleDeleteDeviation(deviationId: string): Promise<void> {
+    setError("");
+    setMutationStatus("");
+    try {
+      const result = await deleteStep7Deviation(studyId.trim(), deviationId);
+      setRows(result.rows);
+      onStepStatusesChange(result.stepStatuses);
+      setMutationStatus("Deleted deviation.");
+    } catch (mutationError) {
+      setError(mutationError instanceof Error ? mutationError.message : "Unable to delete deviation.");
+    }
+  }
+
+  async function handleImportWorkbook(): Promise<void> {
+    if (!workbookFile) {
+      return;
+    }
+    setError("");
+    setMutationStatus("");
+    try {
+      const result = await importStep7DeviationsWorkbook(studyId.trim(), workbookFile);
+      setRows(result.rows);
+      onStepStatusesChange(result.stepStatuses);
+      setWorkbookFile(null);
+      setMutationStatus(`Imported ${result.imported ?? 0} deviation${result.imported === 1 ? "" : "s"}.`);
+    } catch (mutationError) {
+      setError(mutationError instanceof Error ? mutationError.message : "Unable to import workbook.");
+    }
+  }
+
+  async function handleAddRule(): Promise<void> {
+    setError("");
+    setMutationStatus("");
+    try {
+      const result = await createStep7Rule(studyId.trim(), ruleForm);
+      onStepStatusesChange(result.stepStatuses);
+      setRuleForm(EMPTY_RULE_FORM);
+      setMutationStatus("Added rule.");
+    } catch (mutationError) {
+      setError(mutationError instanceof Error ? mutationError.message : "Unable to add rule.");
+    }
+  }
+
+  async function handleSaveRule(ruleId: string): Promise<void> {
+    setError("");
+    setMutationStatus("");
+    try {
+      const result = await updateStep7Rule(studyId.trim(), ruleId, editRuleForm);
+      onStepStatusesChange(result.stepStatuses);
+      setRows((previous) =>
+        previous.map((row) =>
+          row.rule_id === ruleId
+            ? { ...row, rule_title: result.rule?.title ?? row.rule_title, rule_text: result.rule?.text ?? row.rule_text }
+            : row
+        )
+      );
+      setEditingRuleId(null);
+      setMutationStatus("Updated rule.");
+    } catch (mutationError) {
+      setError(mutationError instanceof Error ? mutationError.message : "Unable to update rule.");
+    }
+  }
+
+  async function handleDeleteRule(ruleId: string): Promise<void> {
+    setError("");
+    setMutationStatus("");
+    try {
+      const result = await deleteStep7Rule(studyId.trim(), ruleId);
+      onStepStatusesChange(result.stepStatuses);
+      setMutationStatus("Deleted rule.");
+    } catch (mutationError) {
+      setError(mutationError instanceof Error ? mutationError.message : "Unable to delete rule.");
+    }
+  }
+
+  function startEditingDeviation(row: Step7DeviationRow): void {
+    setEditingDeviationId(row.deviation_id);
+    setEditDeviationForm({
+      deviation_id: row.deviation_id,
+      rule_id: row.rule_id,
+      text: row.deviation_text,
+      paragraph_refs: row.paragraph_refs,
+      data_support_note: row.data_support_note,
+      dm_comment: row.dm_comment,
+      status: row.status
+    });
+  }
+
+  function startEditingRule(row: Step7DeviationRow): void {
+    setEditingRuleId(row.rule_id);
+    setEditRuleForm({
+      rule_id: row.rule_id,
+      title: row.rule_title,
+      text: row.rule_text,
+      paragraph_refs: row.paragraph_refs
+    });
+  }
+
   return (
     <section className="step7-panel" aria-label="Step 7 review table">
       <h3>Step 7 Deviation Review Grid</h3>
       <p className="step1-subtitle">Excel-like table aligned to final workbook columns with per-row chat refinement.</p>
       {error ? <p className="step1-error">{error}</p> : null}
+      {mutationStatus ? <p className="step1-status">{mutationStatus}</p> : null}
       {isLoading ? <p className="step7-muted">Loading deviations...</p> : null}
       {!isLoading && rows.length === 0 ? <p className="step7-muted">No deviations available for review.</p> : null}
 
-      {rows.length > 0 ? (
-        <div className="step7-toolbar">
+      <div className="step7-toolbar">
+        <button
+          className="button button-optional"
+          type="button"
+          onClick={() => void handleGenerateAllPseudoLogic()}
+          disabled={isBulkGenerating || acceptedCount === 0}
+          title={
+            acceptedCount === 0
+              ? "Accept at least one deviation before generating pseudo logic."
+              : "Generate pseudo logic for every accepted deviation."
+          }
+        >
+          {isBulkGenerating
+            ? "Generating pseudo logic..."
+            : `Generate pseudo logic for all accepted (${acceptedCount})`}
+        </button>
+        <label className="button button-optional" htmlFor="step7-import-workbook">
+          Choose Excel
+        </label>
+        <input
+          id="step7-import-workbook"
+          className="visually-hidden"
+          type="file"
+          accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          onChange={(event) => setWorkbookFile(event.target.files?.[0] ?? null)}
+        />
+        <button className="button button-optional" type="button" onClick={() => void handleImportWorkbook()} disabled={!workbookFile}>
+          Import deviations
+        </button>
+        {bulkStatus ? <span className="step7-muted">{bulkStatus}</span> : null}
+      </div>
+
+      <details className="step7-form-panel">
+        <summary>Add manual deviation</summary>
+        <div className="step7-form-grid">
+          <input className="input" placeholder="deviation_id" value={deviationForm.deviation_id} onChange={(event) => setDeviationForm((previous) => ({ ...previous, deviation_id: event.target.value }))} />
+          <input className="input" placeholder="rule_id" value={deviationForm.rule_id} onChange={(event) => setDeviationForm((previous) => ({ ...previous, rule_id: event.target.value }))} />
+          <input className="input" placeholder="paragraph refs (p1, p2)" value={refsToText(deviationForm.paragraph_refs)} onChange={(event) => setDeviationForm((previous) => ({ ...previous, paragraph_refs: refsFromText(event.target.value) }))} />
+          <textarea className="step7-chat-input" placeholder="deviation text" value={deviationForm.text} onChange={(event) => setDeviationForm((previous) => ({ ...previous, text: event.target.value }))} />
+          <textarea className="step7-chat-input" placeholder="supporting sentences / data support note" value={deviationForm.data_support_note} onChange={(event) => setDeviationForm((previous) => ({ ...previous, data_support_note: event.target.value }))} />
           <button
-            className="button"
+            className="button button-optional"
             type="button"
-            onClick={() => void handleGenerateAllPseudoLogic()}
-            disabled={isBulkGenerating || acceptedCount === 0}
-            title={
-              acceptedCount === 0
-                ? "Accept at least one deviation before generating pseudo logic."
-                : "Generate pseudo logic for every accepted deviation."
-            }
+            onClick={() => void handleAddDeviation()}
+            disabled={!deviationForm.deviation_id || !deviationForm.rule_id || !deviationForm.text || deviationForm.paragraph_refs.length === 0}
           >
-            {isBulkGenerating
-              ? "Generating pseudo logic..."
-              : `Generate pseudo logic for all accepted (${acceptedCount})`}
+            Add deviation
           </button>
-          {bulkStatus ? <span className="step7-muted">{bulkStatus}</span> : null}
         </div>
-      ) : null}
+      </details>
+
+      <details className="step7-form-panel">
+        <summary>Add manual rule</summary>
+        <div className="step7-form-grid">
+          <input className="input" placeholder="rule_id" value={ruleForm.rule_id} onChange={(event) => setRuleForm((previous) => ({ ...previous, rule_id: event.target.value }))} />
+          <input className="input" placeholder="rule title" value={ruleForm.title} onChange={(event) => setRuleForm((previous) => ({ ...previous, title: event.target.value }))} />
+          <textarea className="step7-chat-input" placeholder="rule text" value={ruleForm.text} onChange={(event) => setRuleForm((previous) => ({ ...previous, text: event.target.value }))} />
+          <button className="button button-optional" type="button" onClick={() => void handleAddRule()} disabled={!ruleForm.rule_id}>
+            Add rule
+          </button>
+        </div>
+      </details>
 
       {rows.length > 0 ? (
         <div className="step7-grid-wrap">
@@ -214,6 +428,29 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
                         <div className="step7-chat" aria-live="polite">
                           <h4>Refinement Loop: {row.deviation_id}</h4>
                           <p className="step7-muted">{row.deviation_text}</p>
+                          <div className="step7-evidence-grid">
+                            <article className="step7-evidence-card">
+                              <h5>Rule preview</h5>
+                              <p><strong>{row.rule_title || row.rule_id}</strong></p>
+                              <p>{row.rule_text || "No rule text available."}</p>
+                            </article>
+                            <article className="step7-evidence-card">
+                              <h5>Supporting sentences</h5>
+                              {(row.supporting_sentences ?? []).length > 0 ? (
+                                (row.supporting_sentences ?? []).map((sentence) => (
+                                  <p key={sentence.ref}>
+                                    <strong>{sentence.ref}:</strong> {sentence.text || "No paragraph text available."}
+                                  </p>
+                                ))
+                              ) : (
+                                <p>No supporting references available.</p>
+                              )}
+                            </article>
+                            <article className="step7-evidence-card">
+                              <h5>Data support note</h5>
+                              <p>{row.data_support_note || "No data support note available."}</p>
+                            </article>
+                          </div>
                           {row.programmable !== null ? (
                             <p className="step7-muted">
                               <span
@@ -241,7 +478,7 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
                           />
                           <div className="step7-chat-actions">
                             <button
-                              className="button"
+                              className="button button-optional"
                               type="button"
                               onClick={() => void handleRefine(row.deviation_id)}
                               disabled={pendingRefineId === row.deviation_id}
@@ -249,7 +486,7 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
                               {pendingRefineId === row.deviation_id ? "Refining..." : "Send (refine)"}
                             </button>
                             <button
-                              className="button"
+                              className="button button-optional"
                               type="button"
                               onClick={() => void handleGeneratePseudoLogic(row.deviation_id)}
                               disabled={row.status !== "accepted" || pendingPseudoId === row.deviation_id}
@@ -262,27 +499,66 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
                               {pendingPseudoId === row.deviation_id ? "Generating..." : "Generate pseudo logic"}
                             </button>
                             <button
-                              className="button button-secondary"
+                              className="button button-primary"
                               type="button"
                               onClick={() => void handleStatusUpdate(row.deviation_id, "accepted")}
                             >
                               Accept
                             </button>
                             <button
-                              className="button button-secondary"
-                              type="button"
-                              onClick={() => void handleStatusUpdate(row.deviation_id, "to_review")}
-                            >
-                              To Review
-                            </button>
-                            <button
-                              className="button button-secondary"
+                              className="button button-danger"
                               type="button"
                               onClick={() => void handleStatusUpdate(row.deviation_id, "rejected")}
                             >
                               Reject
                             </button>
+                            <button
+                              className="button button-optional"
+                              type="button"
+                              onClick={() => startEditingDeviation(row)}
+                            >
+                              Edit deviation
+                            </button>
+                            <button
+                              className="button button-optional"
+                              type="button"
+                              onClick={() => startEditingRule(row)}
+                            >
+                              Edit rule
+                            </button>
+                            <button
+                              className="button button-danger"
+                              type="button"
+                              onClick={() => void handleDeleteDeviation(row.deviation_id)}
+                            >
+                              Delete deviation
+                            </button>
+                            <button
+                              className="button button-danger"
+                              type="button"
+                              onClick={() => void handleDeleteRule(row.rule_id)}
+                            >
+                              Delete rule
+                            </button>
                           </div>
+                          {editingDeviationId === row.deviation_id ? (
+                            <div className="step7-form-grid step7-inline-editor">
+                              <input className="input" value={editDeviationForm.rule_id} onChange={(event) => setEditDeviationForm((previous) => ({ ...previous, rule_id: event.target.value }))} />
+                              <input className="input" value={refsToText(editDeviationForm.paragraph_refs)} onChange={(event) => setEditDeviationForm((previous) => ({ ...previous, paragraph_refs: refsFromText(event.target.value) }))} />
+                              <textarea className="step7-chat-input" value={editDeviationForm.text} onChange={(event) => setEditDeviationForm((previous) => ({ ...previous, text: event.target.value }))} />
+                              <textarea className="step7-chat-input" value={editDeviationForm.data_support_note} onChange={(event) => setEditDeviationForm((previous) => ({ ...previous, data_support_note: event.target.value }))} />
+                              <button className="button button-primary" type="button" onClick={() => void handleSaveDeviation(row.deviation_id)}>Save deviation</button>
+                              <button className="button button-secondary" type="button" onClick={() => setEditingDeviationId(null)}>Cancel</button>
+                            </div>
+                          ) : null}
+                          {editingRuleId === row.rule_id ? (
+                            <div className="step7-form-grid step7-inline-editor">
+                              <input className="input" value={editRuleForm.title} onChange={(event) => setEditRuleForm((previous) => ({ ...previous, title: event.target.value }))} />
+                              <textarea className="step7-chat-input" value={editRuleForm.text} onChange={(event) => setEditRuleForm((previous) => ({ ...previous, text: event.target.value }))} />
+                              <button className="button button-primary" type="button" onClick={() => void handleSaveRule(row.rule_id)}>Save rule</button>
+                              <button className="button button-secondary" type="button" onClick={() => setEditingRuleId(null)}>Cancel</button>
+                            </div>
+                          ) : null}
                         </div>
                       </td>
                     </tr>

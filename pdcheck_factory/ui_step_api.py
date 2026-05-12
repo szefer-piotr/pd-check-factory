@@ -30,7 +30,7 @@ def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: Dict[s
     handler.send_header("Content-Length", str(len(body)))
     handler.send_header("Access-Control-Allow-Origin", "*")
     handler.send_header("Access-Control-Allow-Headers", "Content-Type")
-    handler.send_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+    handler.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
     handler.end_headers()
     handler.wfile.write(body)
 
@@ -42,7 +42,7 @@ class StepApiHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.NO_CONTENT)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
         self.end_headers()
 
     def do_GET(self) -> None:  # noqa: N802
@@ -54,6 +54,10 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 qs = parse_qs(parsed.query)
                 study_id = (qs.get("studyId") or [""])[0]
                 data = self.service.get_step1_preview(study_id)
+                _json_response(self, HTTPStatus.OK, _response_payload(request_id=request_id, data=data))
+                return
+            if path == "/api/v1/studies":
+                data = self.service.list_studies()
                 _json_response(self, HTTPStatus.OK, _response_payload(request_id=request_id, data=data))
                 return
 
@@ -129,6 +133,12 @@ class StepApiHandler(BaseHTTPRequestHandler):
             elif tail.startswith("step7/deviations/") and tail.endswith("/refine"):
                 deviation_id = tail[len("step7/deviations/") : -len("/refine")]
                 data = self._parse_step7_refine(study_id, deviation_id)
+            elif tail == "step7/deviations/import":
+                data = self._parse_step7_deviation_import(study_id)
+            elif tail == "step7/deviations":
+                data = self._parse_step7_deviation_create(study_id)
+            elif tail == "step7/rules":
+                data = self._parse_step7_rule_create(study_id)
             elif tail == "step7/pseudo-logic/generate-all":
                 data = self.service.generate_step7_pseudo_logic_bulk(study_id)
             elif tail.startswith("step7/deviations/") and tail.endswith("/pseudo-logic"):
@@ -170,6 +180,44 @@ class StepApiHandler(BaseHTTPRequestHandler):
             if tail.startswith("step7/deviations/"):
                 deviation_id = tail[len("step7/deviations/") :]
                 data = self._parse_step7_status_patch(study_id, deviation_id)
+            elif tail.startswith("step7/rules/"):
+                rule_id = tail[len("step7/rules/") :]
+                data = self._parse_step7_rule_patch(study_id, rule_id)
+            else:
+                raise UiApiError("NOT_FOUND", "Not found", 404)
+            _json_response(self, HTTPStatus.OK, _response_payload(request_id=request_id, data=data))
+        except UiApiError as exc:
+            _json_response(
+                self,
+                exc.status_code,
+                _response_payload(
+                    request_id=request_id,
+                    error={"code": exc.code, "message": exc.message},
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _json_response(
+                self,
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                _response_payload(
+                    request_id=request_id,
+                    error={"code": "INTERNAL_ERROR", "message": str(exc)},
+                ),
+            )
+
+    def do_DELETE(self) -> None:  # noqa: N802
+        request_id = str(uuid.uuid4())
+        try:
+            v1 = self._match_v1(self.path)
+            if v1 is None:
+                raise UiApiError("NOT_FOUND", "Not found", 404)
+            study_id, tail = v1
+            if tail.startswith("step7/deviations/"):
+                deviation_id = tail[len("step7/deviations/") :]
+                data = self.service.delete_step7_deviation(study_id, deviation_id)
+            elif tail.startswith("step7/rules/"):
+                rule_id = tail[len("step7/rules/") :]
+                data = self.service.delete_step7_rule(study_id, rule_id)
             else:
                 raise UiApiError("NOT_FOUND", "Not found", 404)
             _json_response(self, HTTPStatus.OK, _response_payload(request_id=request_id, data=data))
@@ -263,20 +311,50 @@ class StepApiHandler(BaseHTTPRequestHandler):
             run_revision_cycle=bool(payload.get("runRevisionCycle", True)),
         )
 
+    def _parse_step7_deviation_create(self, study_id: str) -> Dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0:
+            raise UiApiError("BAD_JSON", "Missing JSON body", 400)
+        payload = parse_json_body(self.rfile.read(length))
+        return self.service.create_step7_deviation(study_id, payload)
+
+    def _parse_step7_deviation_import(self, study_id: str) -> Dict[str, Any]:
+        content_type = self.headers.get("Content-Type", "")
+        if "multipart/form-data" not in content_type:
+            raise UiApiError("VALIDATION_ERROR", "Content-Type must be multipart/form-data", 400)
+        form = cgi.FieldStorage(
+            fp=self.rfile,
+            headers=self.headers,
+            environ={
+                "REQUEST_METHOD": "POST",
+                "CONTENT_TYPE": content_type,
+            },
+        )
+        workbook_item = form["workbook"] if "workbook" in form else None
+        if workbook_item is None:
+            raise UiApiError("VALIDATION_ERROR", "workbook is required", 400)
+        return self.service.import_step7_deviations_xlsx(study_id, workbook_item.file.read())
+
+    def _parse_step7_rule_create(self, study_id: str) -> Dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0:
+            raise UiApiError("BAD_JSON", "Missing JSON body", 400)
+        payload = parse_json_body(self.rfile.read(length))
+        return self.service.create_step7_rule(study_id, payload)
+
+    def _parse_step7_rule_patch(self, study_id: str, rule_id: str) -> Dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0:
+            raise UiApiError("BAD_JSON", "Missing JSON body", 400)
+        payload = parse_json_body(self.rfile.read(length))
+        return self.service.update_step7_rule(study_id, rule_id, payload)
+
     def _parse_step7_status_patch(self, study_id: str, deviation_id: str) -> Dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
         if length <= 0:
             raise UiApiError("BAD_JSON", "Missing JSON body", 400)
         payload = parse_json_body(self.rfile.read(length))
-        status = str(payload.get("status", "")).strip().lower()
-        if status not in {"pending", "to_review", "accepted", "rejected"}:
-            raise UiApiError("VALIDATION_ERROR", "status must be one of pending,to_review,accepted,rejected", 400)
-        return self.service.update_step7_deviation(
-            study_id=study_id,
-            deviation_id=deviation_id,
-            status=status,
-            dm_comment=str(payload.get("dmComment")) if "dmComment" in payload else None,
-        )
+        return self.service.patch_step7_deviation_fields(study_id, deviation_id, payload)
 
     def _match_v1(self, path: str) -> Tuple[str, str] | None:
         prefix = "/api/v1/studies/"

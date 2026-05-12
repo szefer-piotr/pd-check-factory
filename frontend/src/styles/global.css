@@ -86,6 +86,36 @@ body {
   cursor: not-allowed;
 }
 
+.button-primary {
+  border-color: #1f7b2e;
+  background: #1f7b2e;
+  color: #ffffff;
+}
+
+.button-danger {
+  border-color: #8f1d1d;
+  background: #8f1d1d;
+  color: #ffffff;
+}
+
+.button-optional {
+  border-color: #2f6fb2;
+  background: #edf5ff;
+  color: #164f86;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .controls-row {
   display: grid;
   gap: 1rem;
@@ -165,6 +195,10 @@ body {
   border-radius: 10px;
   padding: 0.7rem;
   cursor: pointer;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  column-gap: 0.55rem;
+  align-items: start;
 }
 
 .step-nav-item:hover {
@@ -176,9 +210,24 @@ body {
   background: #f3faf4;
 }
 
+.step-nav-item-done {
+  border-color: #82bc8c;
+  background: #f1faf3;
+}
+
+.step-nav-item-running {
+  border-color: #6f8f76;
+}
+
+.step-nav-item-failed {
+  border-color: #d7a1a1;
+  background: #fff8f8;
+}
+
 .step-nav-title {
   display: block;
   font-weight: 600;
+  grid-column: 2;
 }
 
 .step-nav-summary {
@@ -186,6 +235,7 @@ body {
   margin-top: 0.2rem;
   font-size: 0.86rem;
   color: #575757;
+  grid-column: 2;
 }
 
 .step-nav-status {
@@ -195,10 +245,19 @@ body {
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: #666666;
+  grid-column: 2;
 }
 
 .step-nav-status-done {
   color: #1f7b2e;
+}
+
+.step-nav-status-running {
+  color: #1f5f2a;
+}
+
+.step-nav-status-failed {
+  color: #8f1d1d;
 }
 
 .step-page {
@@ -574,6 +633,54 @@ body {
   gap: 0.75rem;
   flex-wrap: wrap;
   margin-bottom: 0.65rem;
+}
+
+.step7-form-panel {
+  border: 1px solid #ececec;
+  border-radius: 10px;
+  padding: 0.75rem;
+  margin: 0.65rem 0;
+  background: #fcfcfc;
+}
+
+.step7-form-panel summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.step7-form-grid {
+  margin-top: 0.65rem;
+  display: grid;
+  gap: 0.55rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
+.step7-inline-editor {
+  border-top: 1px solid #e8e8e8;
+  padding-top: 0.65rem;
+}
+
+.step7-evidence-grid {
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin: 0.75rem 0;
+}
+
+.step7-evidence-card {
+  border: 1px solid #e8e8e8;
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 0.65rem;
+}
+
+.step7-evidence-card h5 {
+  margin: 0 0 0.35rem;
+  font-size: 0.88rem;
+}
+
+.step7-evidence-card p {
+  margin: 0.3rem 0;
 }
 
 .step7-pill {

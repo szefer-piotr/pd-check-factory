@@ -23,6 +23,18 @@ export interface StepStatusesResponse {
   nextStepId: string | null;
 }
 
+export interface StudyOption {
+  studyId: string;
+  protocolBlob: string;
+  acrfBlob: string;
+  stepStatuses: Record<string, StepStatus>;
+  nextStepId: string | null;
+}
+
+export interface StudiesResponse {
+  studies: StudyOption[];
+}
+
 export interface StepPreviewItem {
   title: string;
   body: string;
@@ -77,14 +89,35 @@ export interface Step7DeviationRow {
   rule_id: string;
   deviation_id: string;
   rule_title: string;
+  rule_text: string;
   deviation_text: string;
   paragraph_refs: string[];
   paragraph_refs_text: string;
+  supporting_sentences: Array<{ ref: string; text: string }>;
+  data_support_note: string;
   pseudo_logic: string;
   status: "pending" | "to_review" | "accepted" | "rejected";
   dm_comment: string;
+  entry_source: string;
   programmable: boolean | null;
   programmability_note: string;
+}
+
+export interface Step7DeviationPayload {
+  deviation_id: string;
+  rule_id: string;
+  text: string;
+  paragraph_refs: string[];
+  data_support_note?: string;
+  dm_comment?: string;
+  status?: Step7DeviationRow["status"];
+}
+
+export interface Step7RulePayload {
+  rule_id: string;
+  title?: string;
+  text?: string;
+  paragraph_refs?: string[];
 }
 
 export interface Step7DeviationsResponse {
@@ -136,6 +169,17 @@ export interface Step7PseudoLogicBulkResponse {
   stepStatuses: Record<string, StepStatus>;
 }
 
+export interface Step7DeviationListMutationResponse extends Step7DeviationsResponse {
+  imported?: number;
+}
+
+export interface Step7RuleMutationResponse {
+  studyId: string;
+  rule?: Step7RulePayload;
+  deletedRuleId?: string;
+  stepStatuses: Record<string, StepStatus>;
+}
+
 const API_BASE = (import.meta.env.VITE_PD_API_BASE as string | undefined) ?? "http://127.0.0.1:8787";
 
 async function parseApiResponse<T>(response: Response): Promise<T> {
@@ -159,6 +203,11 @@ async function parseApiResponse<T>(response: Response): Promise<T> {
 export async function fetchStepStatuses(studyId: string): Promise<StepStatusesResponse> {
   const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/steps/status`);
   return parseApiResponse<StepStatusesResponse>(response);
+}
+
+export async function fetchStudies(): Promise<StudiesResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/studies`);
+  return parseApiResponse<StudiesResponse>(response);
 }
 
 export async function uploadStep1Files(studyId: string, protocolFile: File, acrfFile: File): Promise<Step1UploadResponse> {
@@ -247,6 +296,87 @@ export async function updateStep7DeviationStatus(
     }
   );
   return parseApiResponse<Step7UpdateResponse>(response);
+}
+
+export async function createStep7Deviation(
+  studyId: string,
+  payload: Step7DeviationPayload
+): Promise<Step7DeviationListMutationResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  return parseApiResponse<Step7DeviationListMutationResponse>(response);
+}
+
+export async function updateStep7Deviation(
+  studyId: string,
+  deviationId: string,
+  payload: Partial<Step7DeviationPayload>
+): Promise<Step7UpdateResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/${encodeURIComponent(deviationId)}`,
+    {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload)
+    }
+  );
+  return parseApiResponse<Step7UpdateResponse>(response);
+}
+
+export async function deleteStep7Deviation(
+  studyId: string,
+  deviationId: string
+): Promise<Step7DeviationListMutationResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/${encodeURIComponent(deviationId)}`,
+    { method: "DELETE" }
+  );
+  return parseApiResponse<Step7DeviationListMutationResponse>(response);
+}
+
+export async function importStep7DeviationsWorkbook(
+  studyId: string,
+  workbook: File
+): Promise<Step7DeviationListMutationResponse> {
+  const formData = new FormData();
+  formData.append("workbook", workbook);
+  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/import`, {
+    method: "POST",
+    body: formData
+  });
+  return parseApiResponse<Step7DeviationListMutationResponse>(response);
+}
+
+export async function createStep7Rule(studyId: string, payload: Step7RulePayload): Promise<Step7RuleMutationResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/rules`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  return parseApiResponse<Step7RuleMutationResponse>(response);
+}
+
+export async function updateStep7Rule(
+  studyId: string,
+  ruleId: string,
+  payload: Partial<Step7RulePayload>
+): Promise<Step7RuleMutationResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/rules/${encodeURIComponent(ruleId)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  return parseApiResponse<Step7RuleMutationResponse>(response);
+}
+
+export async function deleteStep7Rule(studyId: string, ruleId: string): Promise<Step7RuleMutationResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/rules/${encodeURIComponent(ruleId)}`, {
+    method: "DELETE"
+  });
+  return parseApiResponse<Step7RuleMutationResponse>(response);
 }
 
 export async function generateStep7PseudoLogic(
