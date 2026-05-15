@@ -71,7 +71,7 @@ export function Step1ExecutionPanel({
       onStatusesChange(response.stepStatuses);
       setUploadCompleted(true);
       setExtractionDone(false);
-      setStatus(`Uploaded protocol and aCRF to blob paths: ${response.protocolBlob} and ${response.acrfBlob}`);
+      setStatus(`Uploaded to ${response.protocolBlob} and ${response.acrfBlob}`);
     } catch (uploadError) {
       setUploadCompleted(false);
       setError(uploadError instanceof Error ? uploadError.message : "Upload failed.");
@@ -94,14 +94,7 @@ export function Step1ExecutionPanel({
       onStatusesChange(preview.stepStatuses);
       setProtocolPreview(preview.protocolPreview);
       setAcrfPreview(preview.acrfPreview);
-      const used = extract.extractor ?? preview.extractor ?? extractorChoice;
-      const label =
-        used === "opendataloader"
-          ? EXTRACTOR_LABELS.opendataloader
-          : used === "document_intelligence"
-            ? EXTRACTOR_LABELS.document_intelligence
-            : "OpenDataLoader + Document Intelligence";
-      setStatus(`Extraction completed (${label}). Preview loaded.`);
+      setStatus("Extraction completed. Preview loaded.");
       setExtractionDone(true);
     } catch (extractError) {
       setError(extractError instanceof Error ? extractError.message : "Extraction failed.");
@@ -111,53 +104,25 @@ export function Step1ExecutionPanel({
   }
 
   return (
-    <section className="step1-panel" aria-label="Step 1 execution">
-      <h3>Run Step 1 with Real Inputs</h3>
-      <p className="step1-subtitle">
-        Upload protocol + aCRF PDFs, choose how PDFs are converted to markdown, run extraction, then proceed to Step 2.
-      </p>
-
+    <section className="workflow-panel step1-panel" aria-label="Step 1 execution">
       <fieldset className="step1-extractor-fieldset">
         <legend className="control-label">PDF extractor</legend>
         <div className="step1-extractor-options">
-          <label className="step1-radio-label">
-            <input
-              type="radio"
-              name="pdf-extractor"
-              value="both"
-              checked={extractorChoice === "both"}
-              onChange={() => setExtractorChoice("both")}
-            />
-            <span>{EXTRACTOR_LABELS.both}</span>
-          </label>
-          <label className="step1-radio-label">
-            <input
-              type="radio"
-              name="pdf-extractor"
-              value="document_intelligence"
-              checked={extractorChoice === "document_intelligence"}
-              onChange={() => setExtractorChoice("document_intelligence")}
-            />
-            <span>{EXTRACTOR_LABELS.document_intelligence}</span>
-          </label>
-          <label className="step1-radio-label">
-            <input
-              type="radio"
-              name="pdf-extractor"
-              value="opendataloader"
-              checked={extractorChoice === "opendataloader"}
-              onChange={() => setExtractorChoice("opendataloader")}
-            />
-            <span>{EXTRACTOR_LABELS.opendataloader}</span>
-          </label>
+          {(["both", "document_intelligence", "opendataloader"] as const).map((value) => (
+            <label className="step1-radio-label" key={value}>
+              <input
+                type="radio"
+                name="pdf-extractor"
+                value={value}
+                checked={extractorChoice === value}
+                onChange={() => setExtractorChoice(value)}
+              />
+              <span>{EXTRACTOR_LABELS[value]}</span>
+            </label>
+          ))}
         </div>
-        <p className="step1-note">
-          Auto mode uses OpenDataLoader for protocol and Document Intelligence for aCRF TOC compatibility.
-        </p>
         {extractorChoice === "opendataloader" ? (
-          <p className="step1-warning">
-            OpenDataLoader-only may fail at Step 3 if aCRF markdown does not contain TOC rows.
-          </p>
+          <p className="step1-warning">OpenDataLoader-only may fail at Step 3 without TOC rows.</p>
         ) : null}
       </fieldset>
 
@@ -193,32 +158,30 @@ export function Step1ExecutionPanel({
       </div>
 
       <div className="step1-actions">
-        <button className="button" type="button" onClick={() => void handleUpload()} disabled={!canUpload}>
-          {isUploading ? "Uploading..." : "Upload protocol + aCRF"}
+        <button className="button button-secondary" type="button" onClick={() => void handleUpload()} disabled={!canUpload}>
+          {isUploading ? "Uploading…" : "Upload"}
         </button>
-        <button className="button" type="button" onClick={() => void handleExtract()} disabled={!canExtract}>
-          {isExtracting ? "Extracting..." : "Perform extraction"}
+        <button className="button button-primary" type="button" onClick={() => void handleExtract()} disabled={!canExtract}>
+          {isExtracting ? "Extracting…" : "Extract"}
         </button>
         <button
-          className="button"
+          className="button button-optional"
           type="button"
           onClick={() => void onRunToDmReview()}
           disabled={!extractionDone || isUploading || isExtracting || isAutoRunning}
         >
-          {isAutoRunning ? "Running to DM revision..." : "Run to DM revision"}
+          {isAutoRunning ? "Running pipeline…" : "Run to review"}
         </button>
-        <button className="button button-secondary" type="button" onClick={onMoveNext} disabled={!extractionDone}>
-          Move to Step 2
+        <button className="button button-ghost" type="button" onClick={onMoveNext} disabled={!extractionDone}>
+          Next step
         </button>
       </div>
 
-      {!uploadCompleted ? (
-        <p className="step1-note">Upload protocol + aCRF for a new study, or extract an already loaded blob study.</p>
-      ) : null}
+      {!uploadCompleted ? <p className="step1-note">Upload PDFs for a new study, or extract an existing blob study.</p> : null}
       {isExtracting ? (
-        <div className="step1-extraction-progress" role="status" aria-live="polite" aria-label="Extraction in progress">
+        <div className="step1-extraction-progress" role="status" aria-live="polite">
           <span className="step1-extraction-circle" aria-hidden="true" />
-          <span>Extraction in progress. Please wait...</span>
+          <span>Extracting…</span>
         </div>
       ) : null}
       {status ? <p className="step1-status">{status}</p> : null}
@@ -227,7 +190,7 @@ export function Step1ExecutionPanel({
       {autoRunError ? <p className="step1-error">{autoRunError}</p> : null}
 
       {shouldShowAutoRunProgress ? (
-        <div className="auto-run-progress" aria-live="polite" aria-label="Automatic run progress">
+        <div className="auto-run-progress" aria-live="polite">
           {autoRunProgress.map((item) => (
             <div className="auto-run-step" key={item.stepId}>
               <span className={`auto-run-circle auto-run-circle-${item.status}`} aria-hidden="true">
@@ -244,13 +207,13 @@ export function Step1ExecutionPanel({
 
       {protocolPreview || acrfPreview ? (
         <div className="step1-preview-grid">
-          <article className="preview-item preview-item-highlight">
-            <p className="preview-title">Protocol extraction preview</p>
-            <pre className="preview-body">{protocolPreview || "No preview found yet."}</pre>
+          <article className="preview-item">
+            <p className="preview-title">Protocol preview</p>
+            <pre className="preview-body">{protocolPreview || "No preview yet."}</pre>
           </article>
-          <article className="preview-item preview-item-highlight">
-            <p className="preview-title">aCRF extraction preview</p>
-            <pre className="preview-body">{acrfPreview || "No preview found yet."}</pre>
+          <article className="preview-item">
+            <p className="preview-title">aCRF preview</p>
+            <pre className="preview-body">{acrfPreview || "No preview yet."}</pre>
           </article>
         </div>
       ) : null}

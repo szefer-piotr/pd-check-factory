@@ -357,47 +357,60 @@ describe("Workflow pipeline pages", () => {
     vi.mocked(stepApi.fetchStep1Preview).mockClear();
   });
 
-  it("renders step navigation and default step details", async () => {
+  it("renders step navigation and default step panel", async () => {
     render(<App />);
 
-    expect(await screen.findByText("PD Check Pipeline Pages")).toBeInTheDocument();
     expect(await screen.findByText("1 blob project available")).toBeInTheDocument();
     expect(screen.getAllByText("Step 1 - Extract Inputs").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Collect protocol and aCRF files and produce normalized source markdown.").length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: "Perform extraction" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Extract" })).toBeInTheDocument();
+    expect(screen.getByText("PDF extractor")).toBeInTheDocument();
   });
 
-  it("switches to rule extraction page and runs backend step", async () => {
+  it("switches to rule extraction page, shows preview, and runs backend step", async () => {
     const user = userEvent.setup();
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: /Step 5 - Rule Extractions/i }));
-    expect((await screen.findAllByText("Generate atomic protocol rules with traceable references.")).length).toBeGreaterThan(0);
+    expect(await screen.findByRole("heading", { name: "Preview" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Run this step" }));
-    expect(await screen.findByText("Extracted 10 rules.")).toBeInTheDocument();
+    expect((await screen.findAllByText("Extracted 10 rules.")).length).toBeGreaterThan(0);
+    expect(screen.getByText("Rules preview")).toBeInTheDocument();
   });
 
-  it("renders step 7 excel-like table and refinement loop", async () => {
+  it("shows Re-run when step is already done", async () => {
+    const stepApi = await import("../services/stepApi");
+    vi.mocked(stepApi.fetchStepPreview).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      stepId: "extract-rules",
+      previews: [{ title: "Rules preview", body: '{"rules":[]}', highlight: true }],
+      stepStatuses: DONE_STATUSES
+    });
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /Step 5 - Rule Extractions/i }));
+    expect(await screen.findByRole("button", { name: "Re-run" })).toBeInTheDocument();
+  });
+
+  it("renders step 7 rule groups and drawer chat", async () => {
     const user = userEvent.setup();
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: /Step 7 - Review and Finalize/i }));
-    expect(await screen.findByText("Step 7 Deviation Review Grid")).toBeInTheDocument();
-    expect(screen.getByText("rule_id")).toBeInTheDocument();
-    expect(screen.getByText("pseudo_logic")).toBeInTheDocument();
+    expect(await screen.findByText("Visit window timing")).toBeInTheDocument();
+    expect(screen.getByText("dev-0001")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Open" }));
-    expect(await screen.findByText("Refinement Loop: dev-0001")).toBeInTheDocument();
-    expect(screen.getByText("Rule preview")).toBeInTheDocument();
+    await user.click(screen.getByText("dev-0001"));
+    expect(await screen.findByRole("heading", { name: "dev-0001" })).toBeInTheDocument();
     expect(screen.getByText("Visit must happen inside window")).toBeInTheDocument();
-    expect(screen.getByText(/Visit 2 must occur within 7 days/i)).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "To Review" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "To review" })).toBeInTheDocument();
 
-    const input = screen.getByPlaceholderText("Add DM instruction for this deviation...");
+    const input = screen.getByPlaceholderText("Add DM instruction...");
     await user.clear(input);
     await user.type(input, "please revise");
-    await user.click(screen.getByRole("button", { name: "Send (refine)" }));
+    await user.click(screen.getByRole("button", { name: "Send" }));
     expect(await screen.findByText("Updated deviation from your message.")).toBeInTheDocument();
   });
 
@@ -406,19 +419,19 @@ describe("Workflow pipeline pages", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: /Step 7 - Review and Finalize/i }));
-    expect(await screen.findByText("Step 7 Deviation Review Grid")).toBeInTheDocument();
+    expect(await screen.findByText("Visit window timing")).toBeInTheDocument();
 
-    const bulkButton = screen.getByRole("button", { name: /Generate pseudo logic for all accepted/i });
+    const bulkButton = screen.getByRole("button", { name: /Generate all pseudo \(0\)/i });
     expect(bulkButton).toBeDisabled();
 
-    await user.click(screen.getByRole("button", { name: "Open" }));
-    expect(await screen.findByText("Refinement Loop: dev-0001")).toBeInTheDocument();
+    await user.click(screen.getByText("dev-0001"));
+    expect(await screen.findByRole("heading", { name: "dev-0001" })).toBeInTheDocument();
 
     const perRowButton = screen.getByRole("button", { name: "Generate pseudo logic" });
     expect(perRowButton).toBeDisabled();
 
     await user.click(screen.getByRole("button", { name: "Accept" }));
-    expect(await screen.findByRole("button", { name: /Generate pseudo logic for all accepted \(1\)/i })).toBeEnabled();
+    expect(await screen.findByRole("button", { name: /Generate all pseudo \(1\)/i })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Generate pseudo logic" })).toBeEnabled();
   });
 
@@ -461,10 +474,12 @@ describe("Workflow pipeline pages", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: /Step 7 - Review and Finalize/i }));
-    expect(await screen.findByText("Step 7 Deviation Review Grid")).toBeInTheDocument();
-    expect(screen.getByText("not generated")).toBeInTheDocument();
+    expect(await screen.findByText("Visit window timing")).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /Generate pseudo logic for all accepted/i }));
+    await user.click(screen.getByText("dev-0001"));
+    expect(await screen.findByText("Not generated yet.")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /Generate all pseudo \(1\)/i }));
     expect(await screen.findByText("SELECT bulk FROM dm")).toBeInTheDocument();
     expect(screen.getByText(/Generated pseudo logic for 1 accepted deviation/i)).toBeInTheDocument();
     expect(stepApi.generateStep7PseudoLogicAll).toHaveBeenCalledWith("MY-STUDY");
@@ -476,17 +491,18 @@ describe("Workflow pipeline pages", () => {
     render(<App />);
 
     await user.click(screen.getByRole("button", { name: /Step 7 - Review and Finalize/i }));
-    expect(await screen.findByText("Step 7 Deviation Review Grid")).toBeInTheDocument();
+    expect(await screen.findByText("Visit window timing")).toBeInTheDocument();
 
-    await user.click(screen.getByText("Add manual deviation"));
+    await user.click(screen.getByRole("button", { name: "More actions" }));
     await user.type(screen.getByPlaceholderText("deviation_id"), "dev-manual");
     await user.type(screen.getAllByPlaceholderText("rule_id")[0], "rule-001");
-    await user.type(screen.getByPlaceholderText("paragraph refs (p1, p2)"), "p2");
+    await user.type(screen.getByPlaceholderText("refs (p1, p2)"), "p2");
     await user.type(screen.getByPlaceholderText("deviation text"), "Manual deviation");
     await user.click(screen.getByRole("button", { name: "Add deviation" }));
     expect(await screen.findByText("Manual deviation")).toBeInTheDocument();
     expect(stepApi.createStep7Deviation).toHaveBeenCalled();
 
+    await user.click(screen.getByRole("button", { name: "More actions" }));
     const file = new File(["xlsx"], "deviations.xlsx", {
       type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     });
@@ -501,10 +517,10 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "Perform extraction" }));
+    await user.click(screen.getByRole("button", { name: "Extract" }));
     expect(await screen.findByText(/Extraction completed/i)).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: "Run to DM revision" }));
+    await user.click(screen.getByRole("button", { name: "Run to review" }));
 
     await waitFor(() => {
       expect(stepApi.runStep).toHaveBeenCalledTimes(5);
@@ -516,8 +532,8 @@ describe("Workflow pipeline pages", () => {
       "extract-rules",
       "extract-deviations"
     ]);
-    expect(await screen.findByText("Step 7 Deviation Review Grid")).toBeInTheDocument();
-    expect(screen.getByText("Step 7 DM revision grid is ready.")).toBeInTheDocument();
+    expect(await screen.findByText("Visit window timing")).toBeInTheDocument();
+    expect(screen.getByText("Step 7 review is ready.")).toBeInTheDocument();
   });
 
   it("stops the automated run when a backend step fails", async () => {
@@ -533,11 +549,11 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "Perform extraction" }));
-    await user.click(await screen.findByRole("button", { name: "Run to DM revision" }));
+    await user.click(screen.getByRole("button", { name: "Extract" }));
+    await user.click(await screen.findByRole("button", { name: "Run to review" }));
 
     expect((await screen.findAllByText("Missing aCRF source markdown.")).length).toBeGreaterThan(0);
     expect(stepApi.runStep).toHaveBeenCalledTimes(2);
-    expect(screen.queryByText("Step 7 Deviation Review Grid")).not.toBeInTheDocument();
+    expect(screen.queryByText("Visit window timing")).not.toBeInTheDocument();
   });
 });

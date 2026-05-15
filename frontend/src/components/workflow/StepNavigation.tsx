@@ -34,7 +34,6 @@ export function StepNavigation({ steps, activeStepId, statuses, runtimeStates = 
               {status === "failed" ? "!" : ""}
             </span>
             <span className="step-nav-title">{step.title}</span>
-            <span className="step-nav-summary">{step.summary}</span>
             <span className={`step-nav-status step-nav-status-${status}`}>{message}</span>
           </button>
         );

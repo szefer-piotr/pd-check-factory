@@ -2,14 +2,15 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Page } from "../components/layout/Page";
 import { Section } from "../components/layout/Section";
 import { Stack } from "../components/layout/Stack";
-import { StepNavigation } from "../components/workflow/StepNavigation";
 import { Step1ExecutionPanel } from "../components/workflow/Step1ExecutionPanel";
 import { Step7ReviewPanel } from "../components/workflow/Step7ReviewPanel";
+import { StepNavigation } from "../components/workflow/StepNavigation";
 import type { StepRuntimeState } from "../components/workflow/StepNavigation";
+import { StepPreview } from "../components/workflow/StepPreview";
+import { StepRunPanel } from "../components/workflow/StepRunPanel";
 import { DEFAULT_STEP_ID, PIPELINE_STEPS } from "../data/pipelineSteps";
 import { useStudyDashboard } from "../hooks/useStudyDashboard";
 import { fetchStepPreview, fetchStepStatuses, fetchStudies, runStep, type StepStatus, type StudyOption } from "../services/stepApi";
-import { StepDetailPage } from "./steps/StepDetailPage";
 import { StudySelector } from "../components/ui/StudySelector";
 
 type AutoRunStepState = "pending" | "running" | "done" | "failed";
@@ -60,7 +61,7 @@ function runtimeFromStatuses(statuses: Record<string, StepStatus>): Record<strin
 }
 
 export function WorkflowPage(): JSX.Element {
-  const { studyId, setStudyId, data, isLoading, error, refresh } = useStudyDashboard("MY-STUDY");
+  const { studyId, setStudyId, data, isLoading, refresh } = useStudyDashboard("MY-STUDY");
   const [activeStepId, setActiveStepId] = useState<string>(getStepIdFromHash(window.location.hash) ?? DEFAULT_STEP_ID);
   const [stepStatuses, setStepStatuses] = useState<Record<string, StepStatus>>(defaultStatuses());
   const [stepRunMessage, setStepRunMessage] = useState("");
@@ -112,7 +113,7 @@ export function WorkflowPage(): JSX.Element {
 
   useEffect(() => {
     async function loadPreview(): Promise<void> {
-      if (!studyId.trim() || activeStepId === "extract-inputs") {
+      if (!studyId.trim() || activeStepId === "extract-inputs" || activeStepId === "review-and-finalize") {
         setServerPreviewItems([]);
         return;
       }
@@ -133,11 +134,9 @@ export function WorkflowPage(): JSX.Element {
     [activeStepId]
   );
 
-  const activeStepWithPreview = useMemo(
-    () => ({ ...activeStep, previewItems: serverPreviewItems.length > 0 ? serverPreviewItems : activeStep.previewItems }),
-    [activeStep, serverPreviewItems]
-  );
   const canCollapseNav = activeStep.id === "review-and-finalize";
+  const stepStatus = stepStatuses[activeStep.id] ?? "pending";
+  const hasRunStep = stepStatus === "done";
 
   const loadStudies = useCallback(async (): Promise<void> => {
     setIsLoadingStudies(true);
@@ -214,7 +213,6 @@ export function WorkflowPage(): JSX.Element {
       const preview = await fetchStepPreview(studyId.trim(), activeStep.id);
       setServerPreviewItems(preview.previews);
       setStepStatuses((previous) => ({ ...previous, ...preview.stepStatuses }));
-      setRuntimeStates((previous) => ({ ...previous, ...runtimeFromStatuses({ ...stepStatuses, ...preview.stepStatuses }) }));
     } catch (runError) {
       const message = runError instanceof Error ? runError.message : "Step run failed.";
       setStepRunError(message);
@@ -231,7 +229,6 @@ export function WorkflowPage(): JSX.Element {
     }
 
     setAutoRunProgress(initialAutoRunProgress());
-    setRuntimeStates((previous) => ({ ...runtimeFromStatuses(stepStatuses), ...previous }));
     setAutoRunMessage("Starting automated run to DM revision.");
     setAutoRunError("");
     setStepRunMessage("");
@@ -264,7 +261,7 @@ export function WorkflowPage(): JSX.Element {
       const normalized = Object.fromEntries(status.steps.map((step) => [step.stepId, step.status])) as Record<string, StepStatus>;
       setStepStatuses((previous) => ({ ...previous, ...normalized }));
       setRuntimeStates(runtimeFromStatuses({ ...defaultStatuses(), ...normalized }));
-      setAutoRunMessage("Step 7 DM revision grid is ready.");
+      setAutoRunMessage("Step 7 review is ready.");
       handleSelectStep("review-and-finalize");
     } catch (autoRunFailure) {
       const message = autoRunFailure instanceof Error ? autoRunFailure.message : "Automated run failed.";
@@ -275,14 +272,6 @@ export function WorkflowPage(): JSX.Element {
           item.status === "running" ? { ...item, status: "failed", message } : item
         )
       );
-      setRuntimeStates((previous) =>
-        Object.fromEntries(
-          Object.entries(previous).map(([stepId, item]) => [
-            stepId,
-            item.status === "running" ? { status: "failed", message } : item
-          ])
-        ) as Record<string, StepRuntimeState>
-      );
     } finally {
       setIsAutoRunning(false);
     }
@@ -291,20 +280,8 @@ export function WorkflowPage(): JSX.Element {
   return (
     <Page>
       <Stack gap="lg">
-        <Section>
-          <header className="hero hero-tight">
-            <div>
-              <h1>PD Check Pipeline Pages</h1>
-              <p>Each step has its own page with inputs, outputs, and previewed results.</p>
-            </div>
-            <button className="button" type="button" onClick={() => void refresh()} disabled={isLoading}>
-              {isLoading ? "Syncing..." : "Sync study"}
-            </button>
-          </header>
-        </Section>
-
-        <Section title="Study Context">
-          <div className="controls-row">
+        <Section className="section-flat">
+          <header className="hero hero-tight study-bar">
             <StudySelector
               value={studyId}
               onChange={handleStudyChange}
@@ -313,15 +290,21 @@ export function WorkflowPage(): JSX.Element {
               error={studyListError}
               onReload={() => void loadStudies()}
             />
-            <div className="control-group">
-              <span className="control-label">Study snapshot</span>
-              <div className="inline-text">
-                {error
-                  ? error
-                  : `total ${data?.overview.totalDeviations ?? "-"} | accepted ${data?.overview.acceptedCount ?? "-"} | to_review ${data?.overview.toReviewCount ?? "-"} | rejected ${data?.overview.rejectedCount ?? "-"}`}
-              </div>
+            <div className="study-chips">
+              <span className="chip">
+                Total <strong>{data?.overview.totalDeviations ?? "—"}</strong>
+              </span>
+              <span className="chip">
+                Accepted <strong>{data?.overview.acceptedCount ?? "—"}</strong>
+              </span>
+              <span className="chip">
+                To review <strong>{data?.overview.toReviewCount ?? "—"}</strong>
+              </span>
+              <button className="button button-ghost" type="button" onClick={() => void refresh()} disabled={isLoading}>
+                {isLoading ? "Syncing…" : "Sync"}
+              </button>
             </div>
-          </div>
+          </header>
         </Section>
 
         <div
@@ -349,11 +332,12 @@ export function WorkflowPage(): JSX.Element {
           <div className="workflow-content">
             {activeStep.id !== "extract-inputs" && autoRunMessage ? <p className="step1-status">{autoRunMessage}</p> : null}
             {runtimeStates[activeStep.id]?.status === "running" ? (
-              <p className="step1-status">Running {activeStep.title}...</p>
+              <p className="step1-status">Running {activeStep.title}…</p>
             ) : null}
             {runtimeStates[activeStep.id]?.status === "failed" ? (
               <p className="step1-error">{runtimeStates[activeStep.id]?.message}</p>
             ) : null}
+
             {activeStep.id === "extract-inputs" ? (
               <Step1ExecutionPanel
                 studyId={studyId}
@@ -368,24 +352,20 @@ export function WorkflowPage(): JSX.Element {
             ) : activeStep.id === "review-and-finalize" ? (
               <Step7ReviewPanel studyId={studyId} onStepStatusesChange={setStepStatuses} />
             ) : (
-              <section className="step1-panel" aria-label="Step execution">
-                <h3>Run {activeStep.title}</h3>
-                <p className="step1-subtitle">Execute this step against real backend pipeline artifacts.</p>
-                <div className="step1-actions">
-                  <button className="button" type="button" onClick={() => void handleRunCurrentStep()} disabled={isRunningStep || !studyId.trim()}>
-                    {isRunningStep ? "Running..." : "Run this step"}
-                  </button>
-                </div>
-                {stepRunMessage ? <p className="step1-status">{stepRunMessage}</p> : null}
-                {stepRunError ? <p className="step1-error">{stepRunError}</p> : null}
-                {activeStep.id === "acrf-split-toc" && stepRunError.includes("No TOC rows found") ? (
-                  <p className="step1-note">
-                    Recovery: go to Step 1, select <strong>Auto (recommended)</strong>, re-run extraction, then run this step again.
-                  </p>
-                ) : null}
+              <section className="workflow-panel">
+                <StepRunPanel
+                  stepTitle={activeStep.title}
+                  stepId={activeStep.id}
+                  stepStatus={stepStatus}
+                  studyId={studyId}
+                  isRunning={isRunningStep}
+                  runMessage={stepRunMessage}
+                  runError={stepRunError}
+                  onRun={() => void handleRunCurrentStep()}
+                />
+                <StepPreview stepId={activeStep.id} previews={serverPreviewItems} hasRun={hasRunStep} />
               </section>
             )}
-            <StepDetailPage step={activeStepWithPreview} />
           </div>
         </div>
       </Stack>
