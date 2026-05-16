@@ -117,6 +117,42 @@ class UiStepService:
             return ""
         return file_path.read_text(encoding="utf-8")[:max_chars]
 
+    def _ui_upload_manifest_path(self, study_id: str) -> Path:
+        return paths.local_ui_upload_manifest(study_id, self.output_dir)
+
+    def _read_upload_filenames(self, study_id: str) -> Dict[str, str]:
+        manifest_path = self._ui_upload_manifest_path(study_id)
+        if manifest_path.is_file():
+            obj = read_json(manifest_path)
+            protocol = str(obj.get("protocolFileName") or "").strip()
+            acrf = str(obj.get("acrfFileName") or "").strip()
+            if protocol and acrf:
+                return {"protocolFileName": protocol, "acrfFileName": acrf}
+        return {
+            "protocolFileName": "protocol.pdf",
+            "acrfFileName": "acrf.pdf",
+        }
+
+    def _write_upload_manifest(
+        self,
+        study_id: str,
+        *,
+        protocol_file_name: str,
+        acrf_file_name: str,
+    ) -> None:
+        manifest_path = self._ui_upload_manifest_path(study_id)
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(
+            manifest_path,
+            {
+                "schema_version": "1.0.0",
+                "study_id": study_id,
+                "protocolFileName": protocol_file_name or "protocol.pdf",
+                "acrfFileName": acrf_file_name or "acrf.pdf",
+                "uploadedAt": datetime.now(timezone.utc).isoformat(),
+            },
+        )
+
     def _load_state(self, study_id: str) -> Dict[str, Any]:
         path = paths.local_deviations_review_state(study_id, self.output_dir)
         if not path.is_file():
@@ -349,18 +385,29 @@ class UiStepService:
         for study_id in sorted(by_study):
             if {"protocol.pdf", "acrf.pdf"}.issubset(by_study[study_id]):
                 statuses = self._step_statuses(study_id)
+                filenames = self._read_upload_filenames(study_id)
                 studies.append(
                     {
                         "studyId": study_id,
                         "protocolBlob": paths.raw_protocol_blob(study_id),
                         "acrfBlob": paths.raw_acrf_blob(study_id),
+                        "protocolFileName": filenames["protocolFileName"],
+                        "acrfFileName": filenames["acrfFileName"],
                         "stepStatuses": statuses,
                         "nextStepId": next((step_id for step_id in STEP_ORDER if statuses[step_id] != "done"), None),
                     }
                 )
         return {"studies": studies}
 
-    def upload_step1_files(self, study_id: str, protocol_bytes: bytes, acrf_bytes: bytes) -> Dict[str, Any]:
+    def upload_step1_files(
+        self,
+        study_id: str,
+        protocol_bytes: bytes,
+        acrf_bytes: bytes,
+        *,
+        protocol_file_name: str | None = None,
+        acrf_file_name: str | None = None,
+    ) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         if not protocol_bytes or not acrf_bytes:
             raise UiApiError("VALIDATION_ERROR", "protocolFile and acrfFile must not be empty", 400)
@@ -390,10 +437,20 @@ class UiStepService:
             content_type="application/pdf",
         )
 
+        protocol_name = (protocol_file_name or "").strip() or "protocol.pdf"
+        acrf_name = (acrf_file_name or "").strip() or "acrf.pdf"
+        self._write_upload_manifest(
+            study_id,
+            protocol_file_name=protocol_name,
+            acrf_file_name=acrf_name,
+        )
+
         return {
             "studyId": study_id,
             "protocolBlob": protocol_blob,
             "acrfBlob": acrf_blob,
+            "protocolFileName": protocol_name,
+            "acrfFileName": acrf_name,
             "protocolSize": len(protocol_bytes),
             "acrfSize": len(acrf_bytes),
             "stepStatuses": self._step_statuses(study_id),
@@ -444,14 +501,18 @@ class UiStepService:
     def get_step1_preview(self, study_id: str) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         p = self._study_paths(study_id)
+        filenames = self._read_upload_filenames(study_id)
+        preview_max = 8000
         return {
             "studyId": study_id,
-            "protocolPreview": self._read_excerpt(p.protocol_source),
-            "acrfPreview": self._read_excerpt(p.acrf_source),
+            "protocolPreview": self._read_excerpt(p.protocol_source, max_chars=preview_max),
+            "acrfPreview": self._read_excerpt(p.acrf_source, max_chars=preview_max),
             "protocolPreviewPath": str(p.protocol_source),
             "acrfPreviewPath": str(p.acrf_source),
             "protocolExists": p.protocol_source.exists(),
             "acrfExists": p.acrf_source.exists(),
+            "protocolFileName": filenames["protocolFileName"],
+            "acrfFileName": filenames["acrfFileName"],
             "extractor": extraction_resolve.read_ui_extractor_choice(study_id, self.output_dir),
             "stepStatuses": self._step_statuses(study_id),
         }

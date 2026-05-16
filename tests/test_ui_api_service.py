@@ -478,6 +478,41 @@ def test_run_step1_extract_default_both(tmp_path: Path, monkeypatch: pytest.Monk
     assert read_json(extraction_resolve.local_ui_extractor_choice_json(study_id, tmp_path))["extractor"] == "both"
 
 
+def test_upload_step1_files_persists_original_filenames(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "UP-S"
+
+    monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
+    monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
+    monkeypatch.setattr(blob_io, "upload_blob_bytes", lambda **_kwargs: None)
+
+    out = service.upload_step1_files(
+        study_id,
+        b"protocol-bytes",
+        b"acrf-bytes",
+        protocol_file_name="Protocol_v3_final.pdf",
+        acrf_file_name="aCRF_annotated.pdf",
+    )
+
+    assert out["protocolFileName"] == "Protocol_v3_final.pdf"
+    assert out["acrfFileName"] == "aCRF_annotated.pdf"
+    manifest = read_json(paths.local_ui_upload_manifest(study_id, tmp_path))
+    assert manifest["protocolFileName"] == "Protocol_v3_final.pdf"
+    assert manifest["acrfFileName"] == "aCRF_annotated.pdf"
+
+    preview = service.get_step1_preview(study_id)
+    assert preview["protocolFileName"] == "Protocol_v3_final.pdf"
+    assert preview["acrfFileName"] == "aCRF_annotated.pdf"
+
+
+def test_get_step1_preview_filename_fallback_without_manifest(tmp_path: Path) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "FB-S"
+    preview = service.get_step1_preview(study_id)
+    assert preview["protocolFileName"] == "protocol.pdf"
+    assert preview["acrfFileName"] == "acrf.pdf"
+
+
 def test_run_step1_extract_invalid_extractor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = UiStepService(output_dir=tmp_path)
 

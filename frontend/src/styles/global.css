@@ -102,6 +102,25 @@ body {
   gap: var(--space-lg);
 }
 
+.study-selector {
+  min-width: min(100%, 22rem);
+}
+
+.study-selector-row {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: stretch;
+}
+
+.study-selector-input {
+  flex: 1;
+  min-width: 10rem;
+}
+
+.study-selector-quick-pick {
+  margin-top: var(--space-sm);
+}
+
 .study-chips {
   display: flex;
   flex-wrap: wrap;
@@ -384,6 +403,70 @@ body {
   color: var(--text-muted);
   max-height: 280px;
   overflow: auto;
+}
+
+.markdown-preview {
+  max-height: 280px;
+  overflow: auto;
+  font-size: 0.84rem;
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.markdown-preview h1,
+.markdown-preview h2,
+.markdown-preview h3,
+.markdown-preview h4 {
+  margin: 0.75rem 0 0.35rem;
+  font-size: 0.95rem;
+  line-height: 1.3;
+}
+
+.markdown-preview p {
+  margin: 0 0 0.5rem;
+}
+
+.markdown-preview ul,
+.markdown-preview ol {
+  margin: 0 0 0.5rem;
+  padding-left: 1.25rem;
+}
+
+.markdown-preview code {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  background: var(--surface-muted);
+  padding: 0.1rem 0.25rem;
+  border-radius: var(--radius-sm);
+}
+
+.markdown-preview pre {
+  margin: 0 0 0.5rem;
+  padding: 0.5rem;
+  overflow: auto;
+  background: var(--surface-muted);
+  border-radius: var(--radius-sm);
+  font-size: 0.78rem;
+}
+
+.markdown-preview pre code {
+  padding: 0;
+  background: transparent;
+}
+
+.markdown-preview table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 0 0 0.5rem;
+  font-size: 0.8rem;
+}
+
+.markdown-preview th,
+.markdown-preview td {
+  border: 1px solid var(--border-subtle);
+  padding: 0.3rem 0.45rem;
+  text-align: left;
+  vertical-align: top;
 }
 
 .preview-empty {

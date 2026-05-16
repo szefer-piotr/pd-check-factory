@@ -2,14 +2,15 @@ import type { PipelineStepDefinition } from "../types/pipeline";
 
 export const PIPELINE_STEPS: PipelineStepDefinition[] = [
   {
-    id: "extract-inputs",
-    title: "Step 1 - Extract Inputs",
-    summary: "Collect protocol and aCRF files and produce normalized source markdown.",
+    id: "processing",
+    title: "Step 1 - Processing",
+    summary:
+      "Upload protocol and aCRF PDFs, extract markdown, index the protocol, split aCRF sections, and merge summary text.",
     instructions: [
-      "Select the study and verify protocol/aCRF source files are available.",
-      "On the Perform extract page, choose OpenDataLoader or Document Intelligence before running extraction.",
-      "Run extraction to render source markdown artifacts.",
-      "Validate that extraction output timestamps are current before continuing."
+      "Select the study and verify protocol/aCRF source files are available in blob storage.",
+      "Choose OpenDataLoader or Document Intelligence before running processing.",
+      "Run processing to extract PDFs, build paragraph index, split aCRF TOC, and merge summary text.",
+      "Review rendered markdown previews before continuing to rule extraction."
     ],
     inputSources: [
       {
@@ -32,7 +33,22 @@ export const PIPELINE_STEPS: PipelineStepDefinition[] = [
       {
         label: "aCRF Markdown",
         path: "output/<study_id>/extractions/acrf/(opendataloader|layout)/rendered/source.md",
-        description: "aCRF markdown for section split and summarization (path matches extractor choice)."
+        description: "aCRF markdown for section split and summarization."
+      },
+      {
+        label: "Paragraph Index",
+        path: "output/<study_id>/pipeline/protocol_index/paragraph_index.json",
+        description: "Paragraph references consumed by rule extraction."
+      },
+      {
+        label: "aCRF sections_toc",
+        path: "output/<study_id>/extractions/acrf/layout/rendered/sections_toc/*.md",
+        description: "Section markdown inputs required by summary text merge."
+      },
+      {
+        label: "Merged aCRF Summary Text",
+        path: "output/<study_id>/pipeline/acrf_summary/acrf_summary_text_merged.json",
+        description: "Required context artifact consumed by deviation extraction."
       }
     ],
     previewItems: [
@@ -47,105 +63,8 @@ export const PIPELINE_STEPS: PipelineStepDefinition[] = [
     ]
   },
   {
-    id: "index-protocol",
-    title: "Step 2 - Index Protocol",
-    summary: "Create paragraph-level references for deterministic downstream linking.",
-    instructions: [
-      "Run paragraph indexing against protocol source markdown.",
-      "Verify sequential paragraph IDs and section boundaries.",
-      "Confirm index artifact is available before rule extraction."
-    ],
-    inputSources: [
-      {
-        label: "Protocol Markdown",
-        path: "output/<study_id>/extractions/protocol/opendataloader/rendered/source.md",
-        description: "Input generated in Step 1."
-      }
-    ],
-    outputArtifacts: [
-      {
-        label: "Paragraph Index",
-        path: "output/<study_id>/pipeline/protocol_index/paragraph_index.json",
-        description: "Paragraph references consumed by rule extraction and review."
-      }
-    ],
-    previewItems: [
-      {
-        title: "Index row preview",
-        body: "p154 -> section: InclusionCriteria, text: Subject must be >= 18 years old"
-      }
-    ]
-  },
-  {
-    id: "acrf-split-toc",
-    title: "Step 3 - aCRF Split TOC",
-    summary: "Split extracted aCRF markdown into TOC section files.",
-    instructions: [
-      "Run TOC split on aCRF rendered markdown.",
-      "Confirm markdown files exist under sections_toc.",
-      "Ensure section manifest is generated before summary merge."
-    ],
-    inputSources: [
-      {
-        label: "aCRF Markdown",
-        path: "output/<study_id>/extractions/acrf/layout/rendered/source.md",
-        description: "aCRF markdown produced by Step 1 extraction."
-      }
-    ],
-    outputArtifacts: [
-      {
-        label: "aCRF sections_toc",
-        path: "output/<study_id>/extractions/acrf/layout/rendered/sections_toc/*.md",
-        description: "Section markdown inputs required by summary text merge."
-      },
-      {
-        label: "sections manifest",
-        path: "output/<study_id>/extractions/acrf/layout/rendered/sections_toc/sections_manifest.json",
-        description: "Metadata describing split TOC sections."
-      }
-    ],
-    previewItems: [
-      {
-        title: "sections_toc preview",
-        body: "001_demographics.md, 002_labs.md, ...",
-        highlight: true
-      }
-    ]
-  },
-  {
-    id: "acrf-summary-text",
-    title: "Step 4 - aCRF Summary Text Merge",
-    summary: "Generate merged aCRF summary text artifact required for deviation extraction.",
-    instructions: [
-      "Run aCRF section summarization merge to create one consolidated text summary.",
-      "Confirm acrf_summary_text_merged.json exists under pipeline outputs.",
-      "Use this merged summary as required context before deviation extraction."
-    ],
-    inputSources: [
-      {
-        label: "aCRF Sections",
-        path: "output/<study_id>/extractions/acrf/layout/rendered/sections_toc/*.md",
-        description: "Split aCRF section markdown files produced from extraction output."
-      }
-    ],
-    outputArtifacts: [
-      {
-        label: "Merged aCRF Summary Text",
-        path: "output/<study_id>/pipeline/acrf_summary/acrf_summary_text_merged.json",
-        description: "Required context artifact consumed by deviation extraction."
-      }
-    ],
-    previewItems: [
-      {
-        title: "Merged summary preview",
-        body: "datasets: [DM, VS, LB] ... key columns and value patterns consolidated.",
-        highlight: true
-      }
-    ]
-  },
-  {
     id: "extract-rules",
-    title: "Step 5 - Rule Extractions",
+    title: "Step 2 - Rule Extractions",
     summary: "Generate atomic protocol rules with traceable references.",
     instructions: [
       "Run rule extraction with paragraph index context.",
@@ -176,7 +95,7 @@ export const PIPELINE_STEPS: PipelineStepDefinition[] = [
   },
   {
     id: "extract-deviations",
-    title: "Step 6 - Deviation Extractions",
+    title: "Step 3 - Deviation Extractions",
     summary: "Attach candidate deviations to each rule with evidence and rationale.",
     instructions: [
       "Run deviation extraction from parsed rules and source context.",
@@ -187,7 +106,7 @@ export const PIPELINE_STEPS: PipelineStepDefinition[] = [
       {
         label: "Parsed Rules",
         path: "output/<study_id>/pipeline/rules/rules_parsed.json",
-        description: "Rules produced in Step 5 with paragraph references."
+        description: "Rules produced in Step 2 with paragraph references."
       },
       {
         label: "aCRF Summary",
@@ -217,7 +136,7 @@ export const PIPELINE_STEPS: PipelineStepDefinition[] = [
   },
   {
     id: "review-and-finalize",
-    title: "Step 7 - Review and Finalize",
+    title: "Step 4 - Review and Finalize",
     summary: "Review decisions, refine pseudo-logic, and emit final outputs.",
     instructions: [
       "Review each deviation status: accepted, to_review, rejected.",
@@ -257,5 +176,13 @@ export const PIPELINE_STEPS: PipelineStepDefinition[] = [
     ]
   }
 ];
+
+/** Backend step IDs that constitute the merged Processing step. */
+export const PROCESSING_BACKEND_STEP_IDS = [
+  "extract-inputs",
+  "index-protocol",
+  "acrf-split-toc",
+  "acrf-summary-text"
+] as const;
 
 export const DEFAULT_STEP_ID = PIPELINE_STEPS[0].id;

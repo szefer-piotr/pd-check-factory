@@ -27,6 +27,8 @@ export interface StudyOption {
   studyId: string;
   protocolBlob: string;
   acrfBlob: string;
+  protocolFileName?: string;
+  acrfFileName?: string;
   stepStatuses: Record<string, StepStatus>;
   nextStepId: string | null;
 }
@@ -52,6 +54,8 @@ export interface Step1UploadResponse {
   studyId: string;
   protocolBlob: string;
   acrfBlob: string;
+  protocolFileName?: string;
+  acrfFileName?: string;
   protocolSize: number;
   acrfSize: number;
   stepStatuses: Record<string, StepStatus>;
@@ -74,6 +78,8 @@ export interface Step1PreviewResponse {
   acrfPreviewPath: string;
   protocolExists: boolean;
   acrfExists: boolean;
+  protocolFileName?: string;
+  acrfFileName?: string;
   extractor?: string | null;
   stepStatuses: Record<string, StepStatus>;
 }

@@ -77,6 +77,10 @@ def local_study_root(study_id: str, output_dir: Path) -> Path:
     return output_dir / study_id
 
 
+def local_ui_upload_manifest(study_id: str, output_dir: Path) -> Path:
+    return local_study_root(study_id, output_dir) / "ui_upload_manifest.json"
+
+
 def local_extraction_layout(study_id: str, doc_role: str, output_dir: Path) -> Path:
     return local_study_root(study_id, output_dir) / "extractions" / doc_role / "layout"
 

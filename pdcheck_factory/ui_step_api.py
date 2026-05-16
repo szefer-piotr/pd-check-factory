@@ -262,7 +262,15 @@ class StepApiHandler(BaseHTTPRequestHandler):
 
         protocol_bytes = protocol_item.file.read()
         acrf_bytes = acrf_item.file.read()
-        return self.service.upload_step1_files(study_id, protocol_bytes, acrf_bytes)
+        protocol_name = getattr(protocol_item, "filename", None) or None
+        acrf_name = getattr(acrf_item, "filename", None) or None
+        return self.service.upload_step1_files(
+            study_id,
+            protocol_bytes,
+            acrf_bytes,
+            protocol_file_name=protocol_name,
+            acrf_file_name=acrf_name,
+        )
 
     def _legacy_extract(self) -> Dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
@@ -293,7 +301,15 @@ class StepApiHandler(BaseHTTPRequestHandler):
 
         protocol_bytes = protocol_item.file.read()
         acrf_bytes = acrf_item.file.read()
-        return self.service.upload_step1_files(study_id, protocol_bytes, acrf_bytes)
+        protocol_name = getattr(protocol_item, "filename", None) or None
+        acrf_name = getattr(acrf_item, "filename", None) or None
+        return self.service.upload_step1_files(
+            study_id,
+            protocol_bytes,
+            acrf_bytes,
+            protocol_file_name=protocol_name,
+            acrf_file_name=acrf_name,
+        )
 
     def _parse_step1_extract(self, study_id: str) -> Dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))

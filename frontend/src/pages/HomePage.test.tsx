@@ -29,14 +29,14 @@ vi.mock("../services/stepApi", () => ({
     studyId: "MY-STUDY",
     steps: [
       { stepId: "extract-inputs", status: "done" },
-      { stepId: "index-protocol", status: "pending" },
-      { stepId: "acrf-split-toc", status: "pending" },
-      { stepId: "acrf-summary-text", status: "pending" },
-      { stepId: "extract-rules", status: "pending" },
-      { stepId: "extract-deviations", status: "pending" },
+      { stepId: "index-protocol", status: "done" },
+      { stepId: "acrf-split-toc", status: "done" },
+      { stepId: "acrf-summary-text", status: "done" },
+      { stepId: "extract-rules", status: "done" },
+      { stepId: "extract-deviations", status: "done" },
       { stepId: "review-and-finalize", status: "pending" }
     ],
-    nextStepId: "index-protocol"
+    nextStepId: "review-and-finalize"
   })),
   fetchStepPreview: vi.fn(async () => ({
     studyId: "MY-STUDY",
@@ -318,9 +318,9 @@ vi.mock("../services/stepApi", () => ({
     extractor: "document_intelligence",
     stepStatuses: {
       "extract-inputs": "done",
-      "index-protocol": "pending",
-      "acrf-split-toc": "pending",
-      "acrf-summary-text": "pending",
+      "index-protocol": "done",
+      "acrf-split-toc": "done",
+      "acrf-summary-text": "done",
       "extract-rules": "pending",
       "extract-deviations": "pending",
       "review-and-finalize": "pending"
@@ -328,8 +328,10 @@ vi.mock("../services/stepApi", () => ({
   })),
   fetchStep1Preview: vi.fn(async () => ({
     studyId: "MY-STUDY",
-    protocolPreview: "Protocol preview",
-    acrfPreview: "aCRF preview",
+    protocolPreview: "## Protocol preview",
+    acrfPreview: "## aCRF preview",
+    protocolFileName: "protocol.pdf",
+    acrfFileName: "acrf.pdf",
     protocolPreviewPath: "output/MY-STUDY/protocol/source.md",
     acrfPreviewPath: "output/MY-STUDY/acrf/source.md",
     protocolExists: true,
@@ -337,9 +339,9 @@ vi.mock("../services/stepApi", () => ({
     extractor: "document_intelligence",
     stepStatuses: {
       "extract-inputs": "done",
-      "index-protocol": "pending",
-      "acrf-split-toc": "pending",
-      "acrf-summary-text": "pending",
+      "index-protocol": "done",
+      "acrf-split-toc": "done",
+      "acrf-summary-text": "done",
       "extract-rules": "pending",
       "extract-deviations": "pending",
       "review-and-finalize": "pending"
@@ -360,17 +362,33 @@ describe("Workflow pipeline pages", () => {
   it("renders step navigation and default step panel", async () => {
     render(<App />);
 
-    expect(await screen.findByText("1 blob project available")).toBeInTheDocument();
-    expect(screen.getAllByText("Step 1 - Extract Inputs").length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: "Extract" })).toBeInTheDocument();
+    expect(await screen.findByText(/1 blob project/)).toBeInTheDocument();
+    expect(screen.getAllByText("Step 1 - Processing").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /Run processing|Re-run processing/i })).toBeInTheDocument();
     expect(screen.getByText("PDF extractor")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Use ID" })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText(/Type a new project ID/i)).toBeInTheDocument();
+  });
+
+  it("switches to a typed project id when Use ID is clicked", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const input = await screen.findByPlaceholderText(/Type a new project ID/i);
+    await user.click(input);
+    await user.keyboard("{Control>}a{/Control}");
+    await user.keyboard("NEW-STUDY");
+    await user.click(screen.getByRole("button", { name: "Use ID" }));
+
+    expect(input).toHaveValue("NEW-STUDY");
+    expect(await screen.findByText(/Custom project/i)).toBeInTheDocument();
   });
 
   it("switches to rule extraction page, shows preview, and runs backend step", async () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /Step 5 - Rule Extractions/i }));
+    await user.click(screen.getByRole("button", { name: /Step 2 - Rule Extractions/i }));
     expect(await screen.findByRole("heading", { name: "Preview" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Run this step" }));
@@ -390,7 +408,7 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /Step 5 - Rule Extractions/i }));
+    await user.click(screen.getByRole("button", { name: /Step 2 - Rule Extractions/i }));
     expect(await screen.findByRole("button", { name: "Re-run" })).toBeInTheDocument();
   });
 
@@ -398,7 +416,7 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /Step 7 - Review and Finalize/i }));
+    await user.click(screen.getByRole("button", { name: /Step 4 - Review and Finalize/i }));
     expect(await screen.findByText("Visit window timing")).toBeInTheDocument();
     expect(screen.getByText("dev-0001")).toBeInTheDocument();
 
@@ -420,7 +438,7 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /Step 5 - Rule Extractions/i }));
+    await user.click(screen.getByRole("button", { name: /Step 2 - Rule Extractions/i }));
     expect(await screen.findByRole("heading", { name: "Preview" })).toBeInTheDocument();
 
     await user.click(screen.getByText("Additional instructions for the model"));
@@ -440,7 +458,7 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /Step 7 - Review and Finalize/i }));
+    await user.click(screen.getByRole("button", { name: /Step 4 - Review and Finalize/i }));
     expect(await screen.findByText("Visit window timing")).toBeInTheDocument();
 
     const bulkButton = screen.getByRole("button", { name: /Generate all pseudo \(0\)/i });
@@ -495,7 +513,7 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /Step 7 - Review and Finalize/i }));
+    await user.click(screen.getByRole("button", { name: /Step 4 - Review and Finalize/i }));
     expect(await screen.findByText("Visit window timing")).toBeInTheDocument();
 
     await user.click(screen.getByText("dev-0001"));
@@ -512,7 +530,7 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /Step 7 - Review and Finalize/i }));
+    await user.click(screen.getByRole("button", { name: /Step 4 - Review and Finalize/i }));
     expect(await screen.findByText("Visit window timing")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "More actions" }));
@@ -534,31 +552,38 @@ describe("Workflow pipeline pages", () => {
     expect(stepApi.importStep7DeviationsWorkbook).toHaveBeenCalledWith("MY-STUDY", file);
   });
 
-  it("runs backend steps in order and opens the DM revision grid", async () => {
+  it("runs processing chain then review auto-run", async () => {
     const stepApi = await import("../services/stepApi");
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "Extract" }));
-    expect(await screen.findByText(/Extraction completed/i)).toBeInTheDocument();
+    const runProcessing = await screen.findByRole("button", { name: /Run processing|Re-run processing/i });
+    await user.click(runProcessing);
+    expect((await screen.findAllByText(/Processing completed/i)).length).toBeGreaterThan(0);
+    expect(stepApi.runStep1Extraction).toHaveBeenCalled();
+    expect(vi.mocked(stepApi.runStep).mock.calls.map(([, stepId]) => stepId)).toEqual([
+      "index-protocol",
+      "acrf-split-toc",
+      "acrf-summary-text"
+    ]);
 
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Run to review" })).toBeEnabled();
+    });
     await user.click(screen.getByRole("button", { name: "Run to review" }));
 
     await waitFor(() => {
       expect(stepApi.runStep).toHaveBeenCalledTimes(5);
     });
-    expect(vi.mocked(stepApi.runStep).mock.calls.map(([, stepId]) => stepId)).toEqual([
-      "index-protocol",
-      "acrf-split-toc",
-      "acrf-summary-text",
+    expect(vi.mocked(stepApi.runStep).mock.calls.map(([, stepId]) => stepId).slice(3)).toEqual([
       "extract-rules",
       "extract-deviations"
     ]);
     expect(await screen.findByText("Visit window timing")).toBeInTheDocument();
-    expect(screen.getByText("Step 7 review is ready.")).toBeInTheDocument();
+    expect(screen.getByText("Review is ready.")).toBeInTheDocument();
   });
 
-  it("stops the automated run when a backend step fails", async () => {
+  it("stops processing when a backend step fails", async () => {
     const stepApi = await import("../services/stepApi");
     vi.mocked(stepApi.runStep).mockImplementationOnce(async (_studyId: string, stepId: string) => ({
       studyId: "MY-STUDY",
@@ -571,11 +596,34 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: "Extract" }));
-    await user.click(await screen.findByRole("button", { name: "Run to review" }));
+    await user.click(screen.getByRole("button", { name: /Run processing|Re-run processing/i }));
 
     expect((await screen.findAllByText("Missing aCRF source markdown.")).length).toBeGreaterThan(0);
     expect(stepApi.runStep).toHaveBeenCalledTimes(2);
     expect(screen.queryByText("Visit window timing")).not.toBeInTheDocument();
+  });
+
+  it("loads markdown preview when processing is already done", async () => {
+    const stepApi = await import("../services/stepApi");
+    vi.mocked(stepApi.fetchStep1Preview).mockResolvedValue({
+      studyId: "MY-STUDY",
+      protocolPreview: "## Inclusion\nSubject must be 18+",
+      acrfPreview: "## Visit 3\nHemoglobin field",
+      protocolPreviewPath: "output/MY-STUDY/protocol/source.md",
+      acrfPreviewPath: "output/MY-STUDY/acrf/source.md",
+      protocolExists: true,
+      acrfExists: true,
+      protocolFileName: "Protocol_v3_final.pdf",
+      acrfFileName: "aCRF_annotated.pdf",
+      extractor: "document_intelligence",
+      stepStatuses: DONE_STATUSES
+    });
+
+    render(<App />);
+
+    expect(await screen.findByText(/Protocol — Protocol_v3_final\.pdf/)).toBeInTheDocument();
+    expect(screen.getByText(/aCRF — aCRF_annotated\.pdf/)).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 2, name: "Inclusion" })).toBeInTheDocument();
+    expect(stepApi.fetchStep1Preview).toHaveBeenCalledWith("MY-STUDY");
   });
 });

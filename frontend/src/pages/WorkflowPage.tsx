@@ -2,27 +2,37 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Page } from "../components/layout/Page";
 import { Section } from "../components/layout/Section";
 import { Stack } from "../components/layout/Stack";
-import { Step1ExecutionPanel } from "../components/workflow/Step1ExecutionPanel";
+import { ProcessingPanel, type ProcessingSubProgressItem } from "../components/workflow/ProcessingPanel";
 import { Step7ReviewPanel } from "../components/workflow/Step7ReviewPanel";
 import { StepNavigation } from "../components/workflow/StepNavigation";
 import type { StepRuntimeState } from "../components/workflow/StepNavigation";
 import { StepPreview } from "../components/workflow/StepPreview";
 import { StepRunPanel } from "../components/workflow/StepRunPanel";
-import { DEFAULT_STEP_ID, PIPELINE_STEPS } from "../data/pipelineSteps";
+import { DEFAULT_STEP_ID, PIPELINE_STEPS, PROCESSING_BACKEND_STEP_IDS } from "../data/pipelineSteps";
 import { useStudyDashboard } from "../hooks/useStudyDashboard";
-import { fetchStepPreview, fetchStepStatuses, fetchStudies, runStep, type StepStatus, type StudyOption } from "../services/stepApi";
+import {
+  fetchStepPreview,
+  fetchStepStatuses,
+  fetchStudies,
+  runStep,
+  runStep1Extraction,
+  type Step1PdfExtractor,
+  type StepStatus,
+  type StudyOption
+} from "../services/stepApi";
 import { StudySelector } from "../components/ui/StudySelector";
+import { deriveNavStatuses } from "../utils/processingStatus";
 
-type AutoRunStepState = "pending" | "running" | "done" | "failed";
+type SubStepState = "pending" | "running" | "done" | "failed";
 
-interface AutoRunProgressItem {
-  stepId: string;
-  title: string;
-  status: AutoRunStepState;
-  message: string;
-}
+const REVIEW_AUTO_RUN_STEP_IDS = ["extract-rules", "extract-deviations"] as const;
 
-const AUTO_RUN_STEP_IDS = ["index-protocol", "acrf-split-toc", "acrf-summary-text", "extract-rules", "extract-deviations"] as const;
+const PROCESSING_SUB_STEPS: Array<{ stepId: (typeof PROCESSING_BACKEND_STEP_IDS)[number]; title: string }> = [
+  { stepId: "extract-inputs", title: "Extract PDFs" },
+  { stepId: "index-protocol", title: "Index protocol" },
+  { stepId: "acrf-split-toc", title: "Split aCRF TOC" },
+  { stepId: "acrf-summary-text", title: "Merge aCRF summary" }
+];
 
 function getStepIdFromHash(hash: string): string | null {
   const value = hash.replace("#", "").replace("/", "").trim();
@@ -32,12 +42,21 @@ function getStepIdFromHash(hash: string): string | null {
   return PIPELINE_STEPS.some((step) => step.id === value) ? value : null;
 }
 
-function defaultStatuses(): Record<string, StepStatus> {
-  return Object.fromEntries(PIPELINE_STEPS.map((step) => [step.id, "pending"])) as Record<string, StepStatus>;
+function defaultNavStatuses(): Record<string, StepStatus> {
+  return deriveNavStatuses({});
 }
 
-function initialAutoRunProgress(): AutoRunProgressItem[] {
-  return AUTO_RUN_STEP_IDS.map((stepId) => {
+function initialProcessingProgress(): ProcessingSubProgressItem[] {
+  return PROCESSING_SUB_STEPS.map(({ stepId, title }) => ({
+    stepId,
+    title,
+    status: "pending",
+    message: "Waiting"
+  }));
+}
+
+function initialReviewAutoRunProgress(): Array<{ stepId: string; title: string; status: SubStepState; message: string }> {
+  return REVIEW_AUTO_RUN_STEP_IDS.map((stepId) => {
     const step = PIPELINE_STEPS.find((candidate) => candidate.id === stepId);
     return {
       stepId,
@@ -48,13 +67,13 @@ function initialAutoRunProgress(): AutoRunProgressItem[] {
   });
 }
 
-function runtimeFromStatuses(statuses: Record<string, StepStatus>): Record<string, StepRuntimeState> {
+function runtimeFromNavStatuses(navStatuses: Record<string, StepStatus>): Record<string, StepRuntimeState> {
   return Object.fromEntries(
     PIPELINE_STEPS.map((step) => [
       step.id,
       {
-        status: statuses[step.id] === "done" ? "done" : "pending",
-        message: statuses[step.id] === "done" ? "Done" : "Pending"
+        status: navStatuses[step.id] === "done" ? "done" : "pending",
+        message: navStatuses[step.id] === "done" ? "Done" : "Pending"
       }
     ])
   ) as Record<string, StepRuntimeState>;
@@ -63,21 +82,42 @@ function runtimeFromStatuses(statuses: Record<string, StepStatus>): Record<strin
 export function WorkflowPage(): JSX.Element {
   const { studyId, setStudyId, data, isLoading, refresh } = useStudyDashboard("MY-STUDY");
   const [activeStepId, setActiveStepId] = useState<string>(getStepIdFromHash(window.location.hash) ?? DEFAULT_STEP_ID);
-  const [stepStatuses, setStepStatuses] = useState<Record<string, StepStatus>>(defaultStatuses());
+  const [backendStatuses, setBackendStatuses] = useState<Record<string, StepStatus>>({});
   const [stepRunMessage, setStepRunMessage] = useState("");
   const [stepRunError, setStepRunError] = useState("");
   const [isRunningStep, setIsRunningStep] = useState(false);
   const [serverPreviewItems, setServerPreviewItems] = useState<Array<{ title: string; body: string; highlight?: boolean }>>([]);
   const [isNavCollapsed, setIsNavCollapsed] = useState(false);
-  const [autoRunProgress, setAutoRunProgress] = useState<AutoRunProgressItem[]>(initialAutoRunProgress);
+  const [processingProgress, setProcessingProgress] = useState<ProcessingSubProgressItem[]>(initialProcessingProgress);
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [processingMessage, setProcessingMessage] = useState("");
+  const [processingError, setProcessingError] = useState("");
+  const [, setReviewAutoRunProgress] = useState(initialReviewAutoRunProgress);
   const [isAutoRunning, setIsAutoRunning] = useState(false);
   const [autoRunMessage, setAutoRunMessage] = useState("");
   const [autoRunError, setAutoRunError] = useState("");
-  const [runtimeStates, setRuntimeStates] = useState<Record<string, StepRuntimeState>>(runtimeFromStatuses(defaultStatuses()));
+  const [runtimeStates, setRuntimeStates] = useState<Record<string, StepRuntimeState>>(runtimeFromNavStatuses(defaultNavStatuses()));
   const [studies, setStudies] = useState<StudyOption[]>([]);
   const [isLoadingStudies, setIsLoadingStudies] = useState(false);
   const [studyListError, setStudyListError] = useState("");
   const [extractionLlmInstructions, setExtractionLlmInstructions] = useState("");
+
+  const navStatuses = useMemo(() => deriveNavStatuses(backendStatuses), [backendStatuses]);
+
+  const applyBackendStatuses = useCallback((statuses: Record<string, StepStatus>): void => {
+    setBackendStatuses(statuses);
+    const nav = deriveNavStatuses(statuses);
+    setRuntimeStates((previous) => {
+      const next = runtimeFromNavStatuses(nav);
+      for (const stepId of PIPELINE_STEPS.map((s) => s.id)) {
+        const runtime = previous[stepId];
+        if (runtime?.status === "running" || runtime?.status === "failed") {
+          next[stepId] = runtime;
+        }
+      }
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     const onHashChange = (): void => {
@@ -96,39 +136,38 @@ export function WorkflowPage(): JSX.Element {
   useEffect(() => {
     async function loadStatuses(): Promise<void> {
       if (!studyId.trim()) {
-        setStepStatuses(defaultStatuses());
+        setBackendStatuses({});
         return;
       }
       try {
         const status = await fetchStepStatuses(studyId.trim());
         const normalized = Object.fromEntries(status.steps.map((step) => [step.stepId, step.status])) as Record<string, StepStatus>;
-        setStepStatuses((previous) => ({ ...previous, ...normalized }));
-        setRuntimeStates(runtimeFromStatuses({ ...defaultStatuses(), ...normalized }));
+        applyBackendStatuses(normalized);
       } catch {
         // Keep default/past statuses when API is unavailable.
       }
     }
 
     void loadStatuses();
-  }, [studyId]);
+  }, [studyId, applyBackendStatuses]);
 
   useEffect(() => {
     async function loadPreview(): Promise<void> {
-      if (!studyId.trim() || activeStepId === "extract-inputs" || activeStepId === "review-and-finalize") {
+      if (!studyId.trim() || activeStepId === "processing" || activeStepId === "review-and-finalize") {
         setServerPreviewItems([]);
         return;
       }
       try {
         const preview = await fetchStepPreview(studyId.trim(), activeStepId);
         setServerPreviewItems(preview.previews);
-        setStepStatuses((previous) => ({ ...previous, ...preview.stepStatuses }));
+        applyBackendStatuses(preview.stepStatuses);
       } catch {
         setServerPreviewItems([]);
       }
     }
 
     void loadPreview();
-  }, [studyId, activeStepId]);
+  }, [studyId, activeStepId, applyBackendStatuses]);
 
   const activeStep = useMemo(
     () => PIPELINE_STEPS.find((step) => step.id === activeStepId) ?? PIPELINE_STEPS[0],
@@ -136,7 +175,7 @@ export function WorkflowPage(): JSX.Element {
   );
 
   const canCollapseNav = activeStep.id === "review-and-finalize";
-  const stepStatus = stepStatuses[activeStep.id] ?? "pending";
+  const stepStatus = navStatuses[activeStep.id] ?? "pending";
   const hasRunStep = stepStatus === "done";
 
   const loadStudies = useCallback(async (): Promise<void> => {
@@ -147,12 +186,10 @@ export function WorkflowPage(): JSX.Element {
       setStudies(response.studies);
       const current = response.studies.find((study) => study.studyId === studyId.trim());
       if (current) {
-        setStepStatuses((previous) => ({ ...previous, ...current.stepStatuses }));
-        setRuntimeStates(runtimeFromStatuses({ ...defaultStatuses(), ...current.stepStatuses }));
+        applyBackendStatuses(current.stepStatuses);
       } else if (!studyId.trim() && response.studies.length > 0) {
         setStudyId(response.studies[0].studyId);
-        setStepStatuses((previous) => ({ ...previous, ...response.studies[0].stepStatuses }));
-        setRuntimeStates(runtimeFromStatuses({ ...defaultStatuses(), ...response.studies[0].stepStatuses }));
+        applyBackendStatuses(response.studies[0].stepStatuses);
       }
     } catch (studyError) {
       setStudyListError(studyError instanceof Error ? studyError.message : "Unable to load blob projects.");
@@ -160,7 +197,7 @@ export function WorkflowPage(): JSX.Element {
     } finally {
       setIsLoadingStudies(false);
     }
-  }, [setStudyId, studyId]);
+  }, [applyBackendStatuses, setStudyId, studyId]);
 
   useEffect(() => {
     setExtractionLlmInstructions("");
@@ -181,26 +218,91 @@ export function WorkflowPage(): JSX.Element {
   }
 
   function handleStudyChange(nextStudyId: string): void {
-    setStudyId(nextStudyId);
-    const knownStudy = studies.find((study) => study.studyId === nextStudyId);
-    if (knownStudy) {
-      setStepStatuses((previous) => ({ ...previous, ...knownStudy.stepStatuses }));
-      setRuntimeStates(runtimeFromStatuses({ ...defaultStatuses(), ...knownStudy.stepStatuses }));
+    const trimmed = nextStudyId.trim();
+    if (!trimmed) {
+      return;
     }
-    setAutoRunProgress(initialAutoRunProgress());
+    setStudyId(trimmed);
+    const knownStudy = studies.find((study) => study.studyId === trimmed);
+    if (knownStudy) {
+      applyBackendStatuses(knownStudy.stepStatuses);
+    } else {
+      applyBackendStatuses({});
+      void fetchStepStatuses(trimmed)
+        .then((status) => {
+          const normalized = Object.fromEntries(status.steps.map((step) => [step.stepId, step.status])) as Record<
+            string,
+            StepStatus
+          >;
+          applyBackendStatuses(normalized);
+        })
+        .catch(() => {
+          // Keep empty statuses for new projects until API responds.
+        });
+    }
+    setProcessingProgress(initialProcessingProgress());
+    setReviewAutoRunProgress(initialReviewAutoRunProgress());
+    setProcessingMessage("");
+    setProcessingError("");
     setAutoRunMessage("");
     setAutoRunError("");
   }
 
-  function moveToNextStep(): void {
-    const currentIndex = PIPELINE_STEPS.findIndex((step) => step.id === activeStep.id);
-    if (currentIndex >= 0 && currentIndex < PIPELINE_STEPS.length - 1) {
-      handleSelectStep(PIPELINE_STEPS[currentIndex + 1].id);
+  async function handleRunProcessing(extractor: Step1PdfExtractor): Promise<void> {
+    const trimmedStudyId = studyId.trim();
+    if (!trimmedStudyId || isProcessing) {
+      return;
+    }
+
+    setProcessingProgress(initialProcessingProgress());
+    setProcessingMessage("Starting processing.");
+    setProcessingError("");
+    setIsProcessing(true);
+    setRuntimeStates((previous) => ({ ...previous, processing: { status: "running", message: "Running" } }));
+
+    try {
+      for (const { stepId } of PROCESSING_SUB_STEPS) {
+        setProcessingProgress((previous) =>
+          previous.map((item) => (item.stepId === stepId ? { ...item, status: "running", message: "Running" } : item))
+        );
+
+        let summary: string;
+        if (stepId === "extract-inputs") {
+          const extract = await runStep1Extraction(trimmedStudyId, extractor);
+          applyBackendStatuses(extract.stepStatuses);
+          summary = extract.message;
+        } else {
+          const response = await runStep(trimmedStudyId, stepId);
+          applyBackendStatuses(response.stepStatuses);
+          summary = response.summary;
+        }
+
+        setProcessingProgress((previous) =>
+          previous.map((item) => (item.stepId === stepId ? { ...item, status: "done", message: summary } : item))
+        );
+      }
+
+      const status = await fetchStepStatuses(trimmedStudyId);
+      const normalized = Object.fromEntries(status.steps.map((step) => [step.stepId, step.status])) as Record<string, StepStatus>;
+      applyBackendStatuses(normalized);
+      setRuntimeStates((previous) => ({ ...previous, processing: { status: "done", message: "Done" } }));
+      setProcessingMessage("Processing completed.");
+    } catch (processingFailure) {
+      const message = processingFailure instanceof Error ? processingFailure.message : "Processing failed.";
+      setProcessingError(message);
+      setProcessingMessage("");
+      setProcessingProgress((previous) =>
+        previous.map((item) => (item.status === "running" ? { ...item, status: "failed", message } : item))
+      );
+      setRuntimeStates((previous) => ({ ...previous, processing: { status: "failed", message } }));
+      throw processingFailure;
+    } finally {
+      setIsProcessing(false);
     }
   }
 
   async function handleRunCurrentStep(): Promise<void> {
-    if (!studyId.trim() || activeStep.id === "extract-inputs") {
+    if (!studyId.trim() || activeStep.id === "processing") {
       return;
     }
     setStepRunError("");
@@ -214,14 +316,14 @@ export function WorkflowPage(): JSX.Element {
           : undefined;
       const response = await runStep(studyId.trim(), activeStep.id, runOpts);
       setStepRunMessage(response.summary);
-      setStepStatuses((previous) => ({ ...previous, ...response.stepStatuses }));
-      setRuntimeStates({
-        ...runtimeFromStatuses({ ...stepStatuses, ...response.stepStatuses }),
+      applyBackendStatuses(response.stepStatuses);
+      setRuntimeStates((previous) => ({
+        ...previous,
         [activeStep.id]: { status: "done", message: response.summary }
-      });
+      }));
       const preview = await fetchStepPreview(studyId.trim(), activeStep.id);
       setServerPreviewItems(preview.previews);
-      setStepStatuses((previous) => ({ ...previous, ...preview.stepStatuses }));
+      applyBackendStatuses({ ...response.stepStatuses, ...preview.stepStatuses });
     } catch (runError) {
       const message = runError instanceof Error ? runError.message : "Step run failed.";
       setStepRunError(message);
@@ -237,7 +339,7 @@ export function WorkflowPage(): JSX.Element {
       return;
     }
 
-    setAutoRunProgress(initialAutoRunProgress());
+    setReviewAutoRunProgress(initialReviewAutoRunProgress());
     setAutoRunMessage("Starting automated run to DM revision.");
     setAutoRunError("");
     setStepRunMessage("");
@@ -245,41 +347,33 @@ export function WorkflowPage(): JSX.Element {
     setIsAutoRunning(true);
 
     try {
-      for (const stepId of AUTO_RUN_STEP_IDS) {
-        setAutoRunProgress((previous) =>
-          previous.map((item) =>
-            item.stepId === stepId ? { ...item, status: "running", message: "Running" } : item
-          )
+      for (const stepId of REVIEW_AUTO_RUN_STEP_IDS) {
+        setReviewAutoRunProgress((previous) =>
+          previous.map((item) => (item.stepId === stepId ? { ...item, status: "running", message: "Running" } : item))
         );
         setRuntimeStates((previous) => ({ ...previous, [stepId]: { status: "running", message: "Running" } }));
         const response = await runStep(trimmedStudyId, stepId);
-        setStepStatuses((previous) => ({ ...previous, ...response.stepStatuses }));
-        setAutoRunProgress((previous) =>
-          previous.map((item) =>
-            item.stepId === stepId ? { ...item, status: "done", message: response.summary } : item
-          )
+        applyBackendStatuses(response.stepStatuses);
+        setReviewAutoRunProgress((previous) =>
+          previous.map((item) => (item.stepId === stepId ? { ...item, status: "done", message: response.summary } : item))
         );
         setRuntimeStates((previous) => ({
           ...previous,
-          ...runtimeFromStatuses({ ...stepStatuses, ...response.stepStatuses }),
           [stepId]: { status: "done", message: response.summary }
         }));
       }
 
       const status = await fetchStepStatuses(trimmedStudyId);
       const normalized = Object.fromEntries(status.steps.map((step) => [step.stepId, step.status])) as Record<string, StepStatus>;
-      setStepStatuses((previous) => ({ ...previous, ...normalized }));
-      setRuntimeStates(runtimeFromStatuses({ ...defaultStatuses(), ...normalized }));
-      setAutoRunMessage("Step 7 review is ready.");
+      applyBackendStatuses(normalized);
+      setAutoRunMessage("Review is ready.");
       handleSelectStep("review-and-finalize");
     } catch (autoRunFailure) {
       const message = autoRunFailure instanceof Error ? autoRunFailure.message : "Automated run failed.";
       setAutoRunError(message);
       setAutoRunMessage("");
-      setAutoRunProgress((previous) =>
-        previous.map((item) =>
-          item.status === "running" ? { ...item, status: "failed", message } : item
-        )
+      setReviewAutoRunProgress((previous) =>
+        previous.map((item) => (item.status === "running" ? { ...item, status: "failed", message } : item))
       );
     } finally {
       setIsAutoRunning(false);
@@ -333,13 +427,13 @@ export function WorkflowPage(): JSX.Element {
             <StepNavigation
               steps={PIPELINE_STEPS}
               activeStepId={activeStep.id}
-              statuses={stepStatuses}
+              statuses={navStatuses}
               runtimeStates={runtimeStates}
               onSelectStep={handleSelectStep}
             />
           </aside>
           <div className="workflow-content">
-            {activeStep.id !== "extract-inputs" && autoRunMessage ? <p className="step1-status">{autoRunMessage}</p> : null}
+            {activeStep.id !== "processing" && autoRunMessage ? <p className="step1-status">{autoRunMessage}</p> : null}
             {runtimeStates[activeStep.id]?.status === "running" ? (
               <p className="step1-status">Running {activeStep.title}…</p>
             ) : null}
@@ -347,19 +441,23 @@ export function WorkflowPage(): JSX.Element {
               <p className="step1-error">{runtimeStates[activeStep.id]?.message}</p>
             ) : null}
 
-            {activeStep.id === "extract-inputs" ? (
-              <Step1ExecutionPanel
+            {activeStep.id === "processing" ? (
+              <ProcessingPanel
                 studyId={studyId}
-                onMoveNext={moveToNextStep}
-                onStatusesChange={setStepStatuses}
+                backendStatuses={backendStatuses}
+                onStatusesChange={applyBackendStatuses}
+                onRunProcessing={handleRunProcessing}
                 onRunToDmReview={handleAutoRunToDmReview}
-                autoRunProgress={autoRunProgress}
+                processingProgress={processingProgress}
+                isProcessing={isProcessing}
+                processingMessage={processingMessage}
+                processingError={processingError}
                 isAutoRunning={isAutoRunning}
                 autoRunMessage={autoRunMessage}
                 autoRunError={autoRunError}
               />
             ) : activeStep.id === "review-and-finalize" ? (
-              <Step7ReviewPanel studyId={studyId} onStepStatusesChange={setStepStatuses} />
+              <Step7ReviewPanel studyId={studyId} onStepStatusesChange={applyBackendStatuses} />
             ) : (
               <section className="workflow-panel">
                 <StepRunPanel
