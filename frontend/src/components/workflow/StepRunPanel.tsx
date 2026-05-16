@@ -9,7 +9,11 @@ interface StepRunPanelProps {
   runMessage: string;
   runError: string;
   onRun: () => void;
+  llmInstructions?: string;
+  onLlmInstructionsChange?: (value: string) => void;
 }
+
+const LLM_NOTE_STEPS = new Set(["extract-rules", "extract-deviations"]);
 
 export function StepRunPanel({
   stepTitle,
@@ -19,13 +23,28 @@ export function StepRunPanel({
   isRunning,
   runMessage,
   runError,
-  onRun
+  onRun,
+  llmInstructions = "",
+  onLlmInstructionsChange
 }: StepRunPanelProps): JSX.Element {
   const isDone = stepStatus === "done";
   const runLabel = isRunning ? "Running..." : isDone ? "Re-run" : "Run this step";
+  const showLlmField = LLM_NOTE_STEPS.has(stepId);
 
   return (
     <section className="workflow-panel step-run-panel" aria-label={`Run ${stepTitle}`}>
+      {showLlmField && onLlmInstructionsChange ? (
+        <details className="step-run-llm-details">
+          <summary className="step-run-llm-summary">Additional instructions for the model</summary>
+          <textarea
+            className="step-run-llm-textarea input"
+            value={llmInstructions}
+            onChange={(event) => onLlmInstructionsChange(event.target.value)}
+            placeholder="Optional context or focus areas for extraction (prepended into the LLM user prompt)."
+            rows={4}
+          />
+        </details>
+      ) : null}
       <div className="step-run-actions">
         <button
           className={`button ${isDone ? "button-secondary" : "button-primary"}`}

@@ -13,3 +13,6 @@ Protocol paragraphs (cite only paragraph ids from this context):
 Quality requirement for DEVIATION_TEXT:
 - Restate concrete protocol constraints explicitly (timing windows, sequence anchors, thresholds, conditions) instead of referring to them indirectly.
 - Avoid vague phrasing like "without compliance to protocol-defined timing/procedures" unless the exact timing/procedure is also stated.
+
+Additional instructions from the operator:
+{additional_instructions}

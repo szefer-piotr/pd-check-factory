@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "../App";
 import type { StepStatus } from "../services/stepApi";
@@ -52,7 +52,7 @@ vi.mock("../services/stepApi", () => ({
       "review-and-finalize": "pending"
     }
   })),
-  runStep: vi.fn(async (_studyId: string, stepId: string) => {
+  runStep: vi.fn(async (_studyId: string, stepId: string, _options?: { llmInstructions?: string }) => {
     const summaries: Record<string, string> = {
       "index-protocol": "Indexed 25 protocol paragraphs.",
       "acrf-split-toc": "Split aCRF markdown into 12 TOC section files.",
@@ -405,13 +405,35 @@ describe("Workflow pipeline pages", () => {
     await user.click(screen.getByText("dev-0001"));
     expect(await screen.findByRole("heading", { name: "dev-0001" })).toBeInTheDocument();
     expect(screen.getByText("Visit must happen inside window")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "To review" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Decline" })).toBeInTheDocument();
 
-    const input = screen.getByPlaceholderText("Add DM instruction...");
+    const input = screen.getByPlaceholderText(/Message the model/i);
     await user.clear(input);
     await user.type(input, "please revise");
     await user.click(screen.getByRole("button", { name: "Send" }));
-    expect(await screen.findByText("Updated deviation from your message.")).toBeInTheDocument();
+    const transcript = screen.getByRole("log", { name: "Chat transcript" });
+    expect(await within(transcript).findByText("Updated deviation from your message.")).toBeInTheDocument();
+  });
+
+  it("sends llmInstructions when running rule extraction", async () => {
+    const stepApi = await import("../services/stepApi");
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /Step 5 - Rule Extractions/i }));
+    expect(await screen.findByRole("heading", { name: "Preview" })).toBeInTheDocument();
+
+    await user.click(screen.getByText("Additional instructions for the model"));
+    const textarea = screen.getByPlaceholderText(/Optional context/i);
+    await user.type(textarea, "Emphasize dosing");
+    await user.click(screen.getByRole("button", { name: "Run this step" }));
+
+    await waitFor(() => {
+      expect(stepApi.runStep).toHaveBeenCalled();
+    });
+    const call = vi.mocked(stepApi.runStep).mock.calls.find(([_, id]) => id === "extract-rules");
+    expect(call).toBeDefined();
+    expect(call![2]).toEqual({ llmInstructions: "Emphasize dosing" });
   });
 
   it("disables pseudo logic generation when no row is accepted, then enables it after acceptance", async () => {

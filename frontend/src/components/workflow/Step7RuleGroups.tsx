@@ -63,7 +63,7 @@ export function Step7RuleGroups({ groups, selectedId, onSelect }: Step7RuleGroup
             {group.deviations.map((row) => (
               <li key={row.deviation_id}>
                 <div
-                  className={`step7-deviation-row step7-popover-anchor ${selectedId === row.deviation_id ? "step7-deviation-row-selected" : ""}`}
+                  className={`step7-deviation-row ${selectedId === row.deviation_id ? "step7-deviation-row-selected" : ""}`}
                   role="button"
                   tabIndex={0}
                   onClick={() => onSelect(row.deviation_id)}
@@ -77,22 +77,6 @@ export function Step7RuleGroups({ groups, selectedId, onSelect }: Step7RuleGroup
                   <span className="step7-deviation-id">{row.deviation_id}</span>
                   <p className="step7-deviation-snippet">{truncate(row.deviation_text)}</p>
                   <span className={`step7-status step7-status-${row.status}`}>{row.status}</span>
-                  <div className="step7-popover" role="tooltip">
-                    <h6>Rule</h6>
-                    <p>{row.rule_text || group.ruleText || "No rule text."}</p>
-                    <h6>Supporting sentences</h6>
-                    {(row.supporting_sentences ?? []).length > 0 ? (
-                      (row.supporting_sentences ?? []).map((sentence) => (
-                        <p key={sentence.ref}>
-                          <strong>{sentence.ref}:</strong> {sentence.text || "—"}
-                        </p>
-                      ))
-                    ) : (
-                      <p>None</p>
-                    )}
-                    <h6>Data support</h6>
-                    <p>{row.data_support_note || "None"}</p>
-                  </div>
                 </div>
               </li>
             ))}

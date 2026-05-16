@@ -236,11 +236,20 @@ export async function fetchStep1Preview(studyId: string): Promise<Step1PreviewRe
   return parseApiResponse<Step1PreviewResponse>(response);
 }
 
-export async function runStep(studyId: string, stepId: string): Promise<StepRunResponse> {
+export async function runStep(
+  studyId: string,
+  stepId: string,
+  options?: { llmInstructions?: string }
+): Promise<StepRunResponse> {
+  const body: Record<string, string> = {};
+  const note = options?.llmInstructions?.trim();
+  if (note) {
+    body.llmInstructions = note;
+  }
   const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/steps/${encodeURIComponent(stepId)}/run`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({})
+    body: JSON.stringify(body)
   });
   return parseApiResponse<StepRunResponse>(response);
 }

@@ -214,14 +214,18 @@ def step1_acrf_summary_text(study_id: str, output_dir: Path) -> Dict[str, Any]:
     return merged
 
 
-def step3_extract_rules(study_id: str, output_dir: Path) -> Dict[str, Any]:
+def step3_extract_rules(study_id: str, output_dir: Path, *, additional_instructions: str = "") -> Dict[str, Any]:
     index_obj = read_json(paths.local_protocol_paragraph_index_json(study_id, output_dir))
     numbered = _numbered_protocol_text(index_obj)
     valid_ids = {p["paragraph_id"] for p in index_obj.get("paragraphs", [])}
+    extra = additional_instructions.strip() or "(none)"
     reply = llm.chat_text_repairs(
         system=load_prompt("rules_v2_system"),
         user=load_prompt("rules_v2_user").format(
-            study_id=study_id, now=_iso_now(), protocol_paragraphs=numbered[:180000]
+            study_id=study_id,
+            now=_iso_now(),
+            protocol_paragraphs=numbered[:180000],
+            additional_instructions=extra,
         ),
         validate_reply=_validate_rules_reply,
         max_repairs=2,
@@ -268,12 +272,13 @@ def _protocol_paragraph_text(study_id: str, output_dir: Path) -> str:
     return _numbered_protocol_text(index_obj)
 
 
-def step4_5_extract_deviations(study_id: str, output_dir: Path) -> Dict[str, Any]:
+def step4_5_extract_deviations(study_id: str, output_dir: Path, *, additional_instructions: str = "") -> Dict[str, Any]:
     rules_obj = read_json(paths.local_rules_parsed_json(study_id, output_dir))
     index_obj = read_json(paths.local_protocol_paragraph_index_json(study_id, output_dir))
     valid_ids = {p["paragraph_id"] for p in index_obj.get("paragraphs", [])}
     protocol_paragraphs = _numbered_protocol_text(index_obj)[:180000]
     acrf_summary = _acrf_summary_text(study_id, output_dir)[:50000]
+    extra = additional_instructions.strip() or "(none)"
     system = load_prompt("deviations_v2_system")
     user_t = load_prompt("deviations_v2_user")
     all_raw: List[str] = []
@@ -288,6 +293,7 @@ def step4_5_extract_deviations(study_id: str, output_dir: Path) -> Dict[str, Any
             rule_paragraph_refs=", ".join(rule["paragraph_refs"]),
             acrf_summary=acrf_summary,
             protocol_paragraphs=protocol_paragraphs,
+            additional_instructions=extra,
         )
         reply = llm.chat_text_repairs(
             system=system,

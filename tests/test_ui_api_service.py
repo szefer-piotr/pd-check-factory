@@ -20,6 +20,33 @@ def test_parse_json_body_rejects_non_object() -> None:
     assert exc.value.code == "BAD_JSON"
 
 
+def test_run_step_forwards_llm_instructions_to_extract_rules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pdcheck_factory import pipeline_v2
+
+    captured: dict[str, str] = {}
+
+    def fake_rules(sid: str, output_dir: Path, *, additional_instructions: str = "") -> dict:
+        captured["additional_instructions"] = additional_instructions
+        out_path = paths.local_rules_parsed_json(sid, output_dir)
+        _touch(out_path, '{"rules": []}')
+        return {"rules": []}
+
+    monkeypatch.setattr(pipeline_v2, "step3_extract_rules", fake_rules)
+
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "MY-STUDY"
+
+    proto = extraction_resolve.resolve_protocol_rendered_source_md(study_id, tmp_path)
+    acrf = extraction_resolve.resolve_acrf_rendered_source_md(study_id, tmp_path)
+    _touch(proto)
+    _touch(acrf)
+    pindex = paths.local_protocol_paragraph_index_json(study_id, tmp_path)
+    _touch(pindex, '{"paragraphs": []}')
+
+    service.run_step(study_id, "extract-rules", llm_instructions="  Focus oncology  ")
+    assert captured["additional_instructions"] == "Focus oncology"
+
+
 def test_status_progression_and_dependency_guard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = UiStepService(output_dir=tmp_path)
     study_id = "MY-STUDY"
@@ -43,7 +70,7 @@ def test_status_progression_and_dependency_guard(tmp_path: Path, monkeypatch: py
         _touch(out, '{"paragraphs": []}')
         return {"paragraphs": []}
 
-    def fake_rules(sid: str, output_dir: Path):
+    def fake_rules(sid: str, output_dir: Path, *args, **kwargs):
         called["rules"] = True
         out = output_dir / sid / "pipeline" / "rules" / "rules_parsed.json"
         _touch(out, '{"rules": []}')
@@ -63,7 +90,7 @@ def test_status_progression_and_dependency_guard(tmp_path: Path, monkeypatch: py
             _touch(manifest, '{"sections": []}')
         return 1, manifest
 
-    def fake_dev(sid: str, output_dir: Path):
+    def fake_dev(sid: str, output_dir: Path, *args, **kwargs):
         called["dev"] = True
         out = output_dir / sid / "pipeline" / "deviations" / "deviations_parsed.json"
         _touch(out, '{"deviations": []}')

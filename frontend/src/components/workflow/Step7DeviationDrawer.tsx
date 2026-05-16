@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   fetchStep7DeviationChat,
   generateStep7PseudoLogic,
@@ -30,6 +30,14 @@ function refsFromText(value: string): string[] {
     .filter(Boolean);
 }
 
+function formatChatTime(ts: string): string {
+  try {
+    return new Intl.DateTimeFormat(undefined, { timeStyle: "short", dateStyle: "short" }).format(new Date(ts));
+  } catch {
+    return "";
+  }
+}
+
 export function Step7DeviationDrawer({
   studyId,
   row,
@@ -44,6 +52,8 @@ export function Step7DeviationDrawer({
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState<Step7DeviationPayload | null>(null);
   const [error, setError] = useState("");
+
+  const threadRef = useRef<HTMLDivElement>(null);
 
   const deviationId = row?.deviation_id ?? "";
 
@@ -65,6 +75,14 @@ export function Step7DeviationDrawer({
     }
     void loadChat();
   }, [deviationId, studyId]);
+
+  useEffect(() => {
+    const el = threadRef.current;
+    if (!el) {
+      return;
+    }
+    el.scrollTop = el.scrollHeight;
+  }, [messages, isSending]);
 
   if (!row) {
     return null;
@@ -103,6 +121,12 @@ export function Step7DeviationDrawer({
         currentRow = pseudo.row;
         onRowUpdated(currentRow);
         onStepStatusesChange(pseudo.stepStatuses);
+        try {
+          const refreshed = await fetchStep7DeviationChat(studyId.trim(), activeRow.deviation_id);
+          setMessages(refreshed.messages);
+        } catch {
+          /* keep refine messages */
+        }
       }
     } catch (sendError) {
       setError(sendError instanceof Error ? sendError.message : "Unable to process message.");
@@ -118,6 +142,12 @@ export function Step7DeviationDrawer({
       const result = await generateStep7PseudoLogic(studyId.trim(), activeRow.deviation_id);
       onRowUpdated(result.row);
       onStepStatusesChange(result.stepStatuses);
+      try {
+        const refreshed = await fetchStep7DeviationChat(studyId.trim(), activeRow.deviation_id);
+        setMessages(refreshed.messages);
+      } catch {
+        /* preserve existing transcript */
+      }
     } catch (generateError) {
       setError(generateError instanceof Error ? generateError.message : "Unable to generate pseudo logic.");
     } finally {
@@ -156,133 +186,266 @@ export function Step7DeviationDrawer({
   return (
     <aside className="step7-drawer" aria-label={`Deviation ${row.deviation_id}`}>
       <header className="step7-drawer-header">
-        <div>
+        <div className="step7-drawer-titleblock">
           <h4>{row.deviation_id}</h4>
           <p className="step7-muted">{row.rule_title || row.rule_id}</p>
         </div>
-        <button className="button button-ghost" type="button" onClick={onClose} aria-label="Close">
-          Close
-        </button>
-      </header>
-
-      {error ? <p className="step1-error">{error}</p> : null}
-
-      <section className="step7-drawer-section">
-        <h5>Status</h5>
-        <div className="step7-chat-actions">
-          <button className="button button-primary" type="button" onClick={() => void handleStatusUpdate("accepted")}>
+        <div className="step7-drawer-header-actions">
+          <button
+            className="button button-step7-subtle button-step7-subtle-accent"
+            type="button"
+            onClick={() => void handleStatusUpdate("accepted")}
+          >
             Accept
           </button>
-          <button className="button button-optional" type="button" onClick={() => void handleStatusUpdate("to_review")}>
-            To review
+          <button
+            className="button button-step7-subtle button-step7-subtle-danger"
+            type="button"
+            onClick={() => void handleStatusUpdate("rejected")}
+          >
+            Decline
           </button>
-          <button className="button button-danger" type="button" onClick={() => void handleStatusUpdate("rejected")}>
-            Reject
+          <button className="button button-ghost" type="button" onClick={onClose} aria-label="Close">
+            Close
           </button>
         </div>
-      </section>
+      </header>
 
-      <section className="step7-drawer-section">
-        <h5>Deviation</h5>
-        {isEditing && editForm ? (
-          <div className="step7-form-grid">
-            <textarea
-              className="step7-chat-input"
-              value={editForm.text}
-              onChange={(event) => setEditForm((previous) => (previous ? { ...previous, text: event.target.value } : previous))}
-            />
-            <input
-              className="input"
-              value={refsToText(editForm.paragraph_refs)}
-              onChange={(event) =>
-                setEditForm((previous) =>
-                  previous ? { ...previous, paragraph_refs: refsFromText(event.target.value) } : previous
-                )
-              }
-              placeholder="paragraph refs"
-            />
-            <textarea
-              className="step7-chat-input"
-              value={editForm.data_support_note}
-              onChange={(event) =>
-                setEditForm((previous) => (previous ? { ...previous, data_support_note: event.target.value } : previous))
-              }
-              placeholder="data support note"
-            />
-            <div className="step7-chat-actions">
-              <button className="button button-primary" type="button" onClick={() => void handleSaveEdit()}>
-                Save
-              </button>
-              <button className="button button-ghost" type="button" onClick={() => setIsEditing(false)}>
-                Cancel
-              </button>
+      {error ? <p className="step1-error step7-drawer-error">{error}</p> : null}
+
+      <div className="step7-drawer-body">
+        <div className="step7-drawer-upper-scroll">
+          <details className="step7-drawer-collapsible">
+            <summary>Supporting evidence</summary>
+            <div className="step7-drawer-collapsible-inner">
+              <div className="step7-evidence-panel">
+                <h6>Rule</h6>
+                <p className="step7-evidence-body">{row.rule_text || "No rule text."}</p>
+                <h6>Supporting sentences</h6>
+                {(row.supporting_sentences ?? []).length > 0 ? (
+                  (row.supporting_sentences ?? []).map((sentence) => (
+                    <p key={sentence.ref} className="step7-evidence-body">
+                      <strong>{sentence.ref}:</strong> {sentence.text || "—"}
+                    </p>
+                  ))
+                ) : (
+                  <p className="step7-evidence-body">None</p>
+                )}
+                <h6>Data support note</h6>
+                <p className="step7-evidence-body">{row.data_support_note || "None"}</p>
+              </div>
             </div>
-          </div>
-        ) : (
-          <>
-            <p className="step7-drawer-text">{row.deviation_text}</p>
-            <p className="step7-muted">Refs: {row.paragraph_refs_text || "—"}</p>
-            {row.data_support_note ? <p className="step7-muted">Data: {row.data_support_note}</p> : null}
-            <button className="button button-ghost" type="button" onClick={startEdit}>
-              Edit deviation
-            </button>
-          </>
-        )}
-      </section>
+          </details>
 
-      <section className="step7-drawer-section">
-        <h5>Pseudo logic</h5>
-        {row.pseudo_logic ? (
-          <pre className="step7-drawer-text">{row.pseudo_logic}</pre>
-        ) : (
-          <p className="step7-muted">Not generated yet.</p>
-        )}
-        {row.programmable !== null ? (
-          <p className="step7-muted">
-            <span className={`step7-pill step7-pill-${row.programmable ? "yes" : "no"}`}>
-              programmable: {row.programmable ? "yes" : "no"}
-            </span>
-            {row.programmability_note ? ` — ${row.programmability_note}` : null}
-          </p>
-        ) : null}
-        <button
-          className="button button-optional"
-          type="button"
-          onClick={() => void handleGeneratePseudo()}
-          disabled={row.status !== "accepted" || isSending}
+          <details className="step7-drawer-collapsible" open>
+            <summary>Deviation text</summary>
+            <div className="step7-drawer-collapsible-inner">
+              {isEditing && editForm ? (
+                <div className="step7-form-grid">
+                  <textarea
+                    className="step7-chat-input"
+                    value={editForm.text}
+                    onChange={(event) =>
+                      setEditForm((previous) => (previous ? { ...previous, text: event.target.value } : previous))
+                    }
+                  />
+                  <input
+                    className="input"
+                    value={refsToText(editForm.paragraph_refs)}
+                    onChange={(event) =>
+                      setEditForm((previous) =>
+                        previous ? { ...previous, paragraph_refs: refsFromText(event.target.value) } : previous
+                      )
+                    }
+                    placeholder="paragraph refs"
+                  />
+                  <textarea
+                    className="step7-chat-input"
+                    value={editForm.data_support_note}
+                    onChange={(event) =>
+                      setEditForm((previous) =>
+                        previous ? { ...previous, data_support_note: event.target.value } : previous
+                      )
+                    }
+                    placeholder="data support note"
+                  />
+                  <div className="step7-chat-actions">
+                    <button className="button button-primary" type="button" onClick={() => void handleSaveEdit()}>
+                      Save
+                    </button>
+                    <button className="button button-ghost" type="button" onClick={() => setIsEditing(false)}>
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="step7-drawer-deviation-body">
+                    <p className="step7-drawer-text step7-drawer-text-full">{row.deviation_text}</p>
+                  </div>
+                  <button className="button button-ghost" type="button" onClick={startEdit}>
+                    Edit deviation
+                  </button>
+                </>
+              )}
+            </div>
+          </details>
+
+          <details className="step7-drawer-collapsible">
+            <summary>Pseudo logic</summary>
+            <div className="step7-drawer-collapsible-inner">
+              <div className="step7-pseudo-panel">
+                {row.pseudo_logic ? (
+                  <pre className="step7-drawer-code">{row.pseudo_logic}</pre>
+                ) : (
+                  <p className="step7-muted">Not generated yet.</p>
+                )}
+                {row.programmable !== null ? (
+                  <p className="step7-muted">
+                    <span className={`step7-pill step7-pill-${row.programmable ? "yes" : "no"}`}>
+                      programmable: {row.programmable ? "yes" : "no"}
+                    </span>
+                    {row.programmability_note ? ` — ${row.programmability_note}` : null}
+                  </p>
+                ) : null}
+                <button
+                  className="button button-optional"
+                  type="button"
+                  onClick={() => void handleGeneratePseudo()}
+                  disabled={row.status !== "accepted" || isSending}
+                >
+                  Generate pseudo logic
+                </button>
+              </div>
+            </div>
+          </details>
+        </div>
+
+        <section
+          className="step7-drawer-chat-block step7-chatgpt-shell"
+          aria-label="Refinement chat"
         >
-          Generate pseudo logic
-        </button>
-      </section>
-
-      <section className="step7-drawer-section">
-        <h5>Chat</h5>
-        <div className="step7-chat-log">
-          {messages.map((message, index) => (
-            <div
-              key={`${message.ts}-${index}`}
-              className={`step7-chat-bubble step7-chat-bubble-${message.role === "dm" ? "dm" : "assistant"}`}
-            >
-              {message.text}
+          <header className="step7-chatgpt-head">
+            <div className="step7-chatgpt-head-text">
+              <h5 className="step7-chatgpt-title">Messages</h5>
+              {messages.length === 0 ? (
+                <p className="step7-chatgpt-sub">Thread preview — new instructions will show up here.</p>
+              ) : (
+                <p
+                  className="step7-chatgpt-sub step7-chatgpt-preview-line"
+                  title={messages[messages.length - 1].text}
+                >
+                  <span className="step7-chatgpt-preview-label">Latest</span>
+                  {messages[messages.length - 1].text.replace(/\s+/g, " ").trim()}
+                </p>
+              )}
             </div>
-          ))}
-        </div>
-        <textarea
-          className="step7-chat-input"
-          value={chatInput}
-          onChange={(event) => setChatInput(event.target.value)}
-          placeholder="Add DM instruction..."
-        />
-        <label className="step7-chat-checkbox">
-          <input type="checkbox" checked={alsoPseudo} onChange={(event) => setAlsoPseudo(event.target.checked)} />
-          Generate pseudo logic after refine (when accepted)
-        </label>
-        <div className="step7-chat-actions">
-          <button className="button button-primary" type="button" onClick={() => void handleSend()} disabled={isSending || !chatInput.trim()}>
-            {isSending ? "Sending..." : "Send"}
-          </button>
-        </div>
-      </section>
+            <span className="step7-chatgpt-count" aria-label={`${messages.length} messages in thread`}>
+              {messages.length}
+            </span>
+          </header>
+
+          <div
+            ref={threadRef}
+            className="step7-chatgpt-thread"
+            role="log"
+            aria-label="Chat transcript"
+            aria-live="polite"
+          >
+            {messages.length === 0 ? (
+              <div className="step7-chatgpt-empty">
+                <p className="step7-chatgpt-empty-title">No messages yet</p>
+                <p className="step7-chatgpt-empty-hint">Describe the change you want for this deviation.</p>
+              </div>
+            ) : (
+              messages.map((message, index) => {
+                const isUser = message.role === "dm";
+                return (
+                  <div
+                    key={`${message.ts}-${index}`}
+                    className={`step7-chatgpt-turn step7-chatgpt-turn-${isUser ? "user" : "assistant"}`}
+                  >
+                    <span className="step7-chatgpt-role">{isUser ? "You" : "Assistant"}</span>
+                    <div
+                      className={`step7-chatgpt-bubble step7-chatgpt-bubble-${isUser ? "user" : "assistant"}`}
+                    >
+                      <p className="step7-chatgpt-bubble-text">{message.text}</p>
+                    </div>
+                    {message.ts ? (
+                      <time className="step7-chatgpt-time" dateTime={message.ts}>
+                        {formatChatTime(message.ts)}
+                      </time>
+                    ) : null}
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          <footer className="step7-chatgpt-footer">
+            <label className="step7-chatgpt-option">
+              <input type="checkbox" checked={alsoPseudo} onChange={(event) => setAlsoPseudo(event.target.checked)} />
+              <span>Generate pseudo logic after refine (when accepted)</span>
+            </label>
+            <div className="step7-chatgpt-composer-area">
+              <div className="step7-chatgpt-composer">
+                <textarea
+                  className="step7-chatgpt-input"
+                  rows={2}
+                  value={chatInput}
+                  disabled={isSending}
+                  placeholder="Message the model..."
+                  onChange={(event) => setChatInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter") {
+                      return;
+                    }
+                    if (event.shiftKey) {
+                      return;
+                    }
+                    event.preventDefault();
+                    if (!chatInput.trim() || isSending) {
+                      return;
+                    }
+                    void handleSend();
+                  }}
+                />
+                <button
+                  className="step7-chatgpt-send"
+                  type="button"
+                  disabled={isSending || !chatInput.trim()}
+                  onClick={() => void handleSend()}
+                  aria-busy={isSending}
+                  title="Send"
+                >
+                  <span className="visually-hidden">{isSending ? "Sending" : "Send"}</span>
+                  {isSending ? (
+                    <span className="step7-chatgpt-send-spinner" aria-hidden />
+                  ) : (
+                    <svg
+                      className="step7-chatgpt-send-icon"
+                      width="20"
+                      height="20"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      aria-hidden
+                    >
+                      <path
+                        d="m5 12 7-9 11 14-11 3L5 12Z"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinejoin="round"
+                        fill="rgba(255,255,255,0.08)"
+                      />
+                    </svg>
+                  )}
+                </button>
+              </div>
+              <p className="step7-chatgpt-composer-hint">Enter to send · Shift+Enter new line</p>
+            </div>
+          </footer>
+        </section>
+      </div>
     </aside>
   );
 }

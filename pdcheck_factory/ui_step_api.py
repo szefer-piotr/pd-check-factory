@@ -146,7 +146,12 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 data = self.service.generate_step7_pseudo_logic_for_deviation(study_id, deviation_id)
             elif tail.startswith("steps/") and tail.endswith("/run"):
                 step_id = tail[len("steps/") : -len("/run")]
-                data = self.service.run_step(study_id, step_id)
+                length = int(self.headers.get("Content-Length", "0"))
+                llm_instructions: str | None = None
+                if length > 0:
+                    payload = parse_json_body(self.rfile.read(length))
+                    llm_instructions = str(payload.get("llmInstructions", "") or "")
+                data = self.service.run_step(study_id, step_id, llm_instructions=llm_instructions)
             else:
                 raise UiApiError("NOT_FOUND", "Not found", 404)
 

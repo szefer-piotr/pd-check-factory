@@ -465,13 +465,21 @@ class UiStepService:
             "nextStepId": next((step_id for step_id in STEP_ORDER if statuses[step_id] != "done"), None),
         }
 
-    def run_step(self, study_id: str, step_id: str) -> Dict[str, Any]:
+    def run_step(
+        self,
+        study_id: str,
+        step_id: str,
+        *,
+        llm_instructions: str | None = None,
+    ) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         if step_id not in STEP_ORDER:
             raise UiApiError("NOT_FOUND", f"Unknown stepId '{step_id}'", 404)
 
         statuses = self._step_statuses(study_id)
         self._assert_step_dependencies(statuses, step_id)
+
+        extra = (llm_instructions or "").strip()
 
         if step_id == "index-protocol":
             result = pipeline_v2.step2_protocol_paragraph_index(study_id, self.output_dir)
@@ -492,10 +500,14 @@ class UiStepService:
             result = pipeline_v2.step1_acrf_summary_text(study_id, self.output_dir)
             summary = f"Merged aCRF summary text with {len(result.get('datasets', []))} datasets."
         elif step_id == "extract-rules":
-            result = pipeline_v2.step3_extract_rules(study_id, self.output_dir)
+            result = pipeline_v2.step3_extract_rules(
+                study_id, self.output_dir, additional_instructions=extra
+            )
             summary = f"Extracted {len(result.get('rules', []))} rules."
         elif step_id == "extract-deviations":
-            result = pipeline_v2.step4_5_extract_deviations(study_id, self.output_dir)
+            result = pipeline_v2.step4_5_extract_deviations(
+                study_id, self.output_dir, additional_instructions=extra
+            )
             pipeline_v2.initialize_review_states(study_id, self.output_dir)
             summary = f"Extracted {len(result.get('deviations', []))} deviations and initialized review state."
         elif step_id == "review-and-finalize":
@@ -551,6 +563,15 @@ class UiStepService:
                     "highlight": True,
                 }
             )
+            if p.acrf_sections_toc_dir.exists():
+                section_files = sorted(p.acrf_sections_toc_dir.glob("*.md"))[:30]
+                previews.append(
+                    {
+                        "title": "Section files",
+                        "body": "\n".join(file.name for file in section_files)
+                        or "No section markdown files found.",
+                    }
+                )
         elif step_id == "acrf-summary-text":
             previews.append(
                 {

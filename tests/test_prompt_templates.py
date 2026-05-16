@@ -70,8 +70,21 @@ class PromptTemplateTests(unittest.TestCase):
             rule_paragraph_refs="p1",
             acrf_summary='{"datasets":[]}',
             protocol_paragraphs="p1: Visit Day 3 to Day 5 after dose.",
+            additional_instructions="Focus oncology visits only.",
         )
         self.assertIn("Restate concrete protocol constraints explicitly", rendered)
+        self.assertIn("Focus oncology visits only.", rendered)
+
+    def test_rules_v2_user_formats_with_additional_instructions(self) -> None:
+        template = load_prompt("rules_v2_user")
+        rendered = template.format(
+            study_id="study-x",
+            now="2026-04-14T00:00:00+00:00",
+            protocol_paragraphs="p1: text",
+            additional_instructions="Emphasize dosing rules.",
+        )
+        self.assertIn("Additional instructions", rendered)
+        self.assertIn("Emphasize dosing rules.", rendered)
 
 
 if __name__ == "__main__":

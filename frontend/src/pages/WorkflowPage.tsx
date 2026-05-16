@@ -77,6 +77,7 @@ export function WorkflowPage(): JSX.Element {
   const [studies, setStudies] = useState<StudyOption[]>([]);
   const [isLoadingStudies, setIsLoadingStudies] = useState(false);
   const [studyListError, setStudyListError] = useState("");
+  const [extractionLlmInstructions, setExtractionLlmInstructions] = useState("");
 
   useEffect(() => {
     const onHashChange = (): void => {
@@ -162,6 +163,10 @@ export function WorkflowPage(): JSX.Element {
   }, [setStudyId, studyId]);
 
   useEffect(() => {
+    setExtractionLlmInstructions("");
+  }, [activeStepId]);
+
+  useEffect(() => {
     void loadStudies();
   }, [loadStudies]);
 
@@ -203,7 +208,11 @@ export function WorkflowPage(): JSX.Element {
     setIsRunningStep(true);
     setRuntimeStates((previous) => ({ ...previous, [activeStep.id]: { status: "running", message: "Running" } }));
     try {
-      const response = await runStep(studyId.trim(), activeStep.id);
+      const runOpts =
+        activeStep.id === "extract-rules" || activeStep.id === "extract-deviations"
+          ? { llmInstructions: extractionLlmInstructions }
+          : undefined;
+      const response = await runStep(studyId.trim(), activeStep.id, runOpts);
       setStepRunMessage(response.summary);
       setStepStatuses((previous) => ({ ...previous, ...response.stepStatuses }));
       setRuntimeStates({
@@ -362,6 +371,8 @@ export function WorkflowPage(): JSX.Element {
                   runMessage={stepRunMessage}
                   runError={stepRunError}
                   onRun={() => void handleRunCurrentStep()}
+                  llmInstructions={extractionLlmInstructions}
+                  onLlmInstructionsChange={setExtractionLlmInstructions}
                 />
                 <StepPreview stepId={activeStep.id} previews={serverPreviewItems} hasRun={hasRunStep} />
               </section>
