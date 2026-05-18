@@ -1,6 +1,7 @@
 """Blob and local path conventions for the MVP pipeline."""
 
 from pathlib import Path
+from typing import List
 
 
 def raw_protocol_blob(study_id: str) -> str:
@@ -9,6 +10,28 @@ def raw_protocol_blob(study_id: str) -> str:
 
 def raw_acrf_blob(study_id: str) -> str:
     return f"raw/{study_id}/acrf.pdf"
+
+
+def study_blob_list_prefixes(study_id: str) -> List[str]:
+    """Blob path prefixes for all artifacts belonging to a study."""
+    return [
+        f"raw/{study_id}/",
+        f"extractions/{study_id}/",
+        f"pipeline/{study_id}/",
+        f"review/{study_id}/",
+    ]
+
+
+def raw_protocol_reference_blob(study_id: str, safe_filename: str) -> str:
+    return f"raw/{study_id}/reference/protocol/{safe_filename}"
+
+
+def raw_acrf_reference_blob(study_id: str, safe_filename: str) -> str:
+    return f"raw/{study_id}/reference/acrf/{safe_filename}"
+
+
+def ui_upload_manifest_blob(study_id: str) -> str:
+    return f"pipeline/{study_id}/ui_upload_manifest.json"
 
 
 def extraction_layout_prefix(study_id: str, doc_role: str) -> str:
@@ -79,6 +102,10 @@ def local_study_root(study_id: str, output_dir: Path) -> Path:
 
 def local_ui_upload_manifest(study_id: str, output_dir: Path) -> Path:
     return local_study_root(study_id, output_dir) / "ui_upload_manifest.json"
+
+
+def local_ui_pipeline_run_state(study_id: str, output_dir: Path) -> Path:
+    return local_study_root(study_id, output_dir) / "ui_pipeline_run_state.json"
 
 
 def local_extraction_layout(study_id: str, doc_role: str, output_dir: Path) -> Path:

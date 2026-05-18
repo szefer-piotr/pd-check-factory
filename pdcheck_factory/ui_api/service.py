@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shutil
 from io import BytesIO
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -88,6 +90,14 @@ class UiStepService:
             raise UiApiError("VALIDATION_ERROR", "studyId is required", 400)
         return normalized
 
+    def _assert_safe_study_id(self, study_id: str) -> None:
+        if "/" in study_id or "\\" in study_id or ".." in study_id:
+            raise UiApiError(
+                "VALIDATION_ERROR",
+                "studyId must not contain path separators or '..'",
+                400,
+            )
+
     def _assert_step_dependencies(self, statuses: Dict[str, str], step_id: str) -> None:
         for dependency in STEP_DEPENDENCIES.get(step_id, []):
             if statuses.get(dependency) != "done":
@@ -121,37 +131,230 @@ class UiStepService:
         return paths.local_ui_upload_manifest(study_id, self.output_dir)
 
     def _read_upload_filenames(self, study_id: str) -> Dict[str, str]:
+        obj = self._read_upload_manifest_obj(study_id)
+        protocol = str(obj.get("protocolFileName") or "").strip()
+        acrf = str(obj.get("acrfFileName") or "").strip()
+        return {
+            "protocolFileName": protocol or "protocol.pdf",
+            "acrfFileName": acrf or "acrf.pdf",
+        }
+
+    def _sanitize_reference_filename(self, file_name: str) -> str:
+        base = Path(file_name).name.strip()
+        safe = re.sub(r"[^\w.\- ()]", "_", base)
+        return safe or "document.pdf"
+
+    def _read_upload_manifest_obj(self, study_id: str) -> Dict[str, Any]:
         manifest_path = self._ui_upload_manifest_path(study_id)
         if manifest_path.is_file():
-            obj = read_json(manifest_path)
-            protocol = str(obj.get("protocolFileName") or "").strip()
-            acrf = str(obj.get("acrfFileName") or "").strip()
-            if protocol and acrf:
-                return {"protocolFileName": protocol, "acrfFileName": acrf}
-        return {
-            "protocolFileName": "protocol.pdf",
-            "acrfFileName": "acrf.pdf",
-        }
+            return read_json(manifest_path)
+        try:
+            blob_service = blob_io.blob_service_from_env()
+            container = blob_io.container_from_env()
+            blob_path = paths.ui_upload_manifest_blob(study_id)
+            if blob_io.blob_exists(
+                blob_service=blob_service,
+                container_name=container,
+                blob_path=blob_path,
+            ):
+                raw = blob_io.download_blob_bytes(
+                    blob_service=blob_service,
+                    container_name=container,
+                    blob_path=blob_path,
+                )
+                return json.loads(raw.decode("utf-8"))
+        except Exception:  # noqa: BLE001
+            pass
+        return {}
 
     def _write_upload_manifest(
         self,
         study_id: str,
         *,
-        protocol_file_name: str,
-        acrf_file_name: str,
-    ) -> None:
+        protocol_file_name: str | None = None,
+        acrf_file_name: str | None = None,
+        protocol_size: int | None = None,
+        acrf_size: int | None = None,
+    ) -> Dict[str, Any]:
+        existing = self._read_upload_manifest_obj(study_id)
+        manifest = {
+            "schema_version": "1.0.0",
+            "study_id": study_id,
+            "protocolFileName": protocol_file_name
+            or existing.get("protocolFileName")
+            or "protocol.pdf",
+            "acrfFileName": acrf_file_name or existing.get("acrfFileName") or "acrf.pdf",
+            "uploadedAt": datetime.now(timezone.utc).isoformat(),
+        }
+        if protocol_size is not None:
+            manifest["protocolSize"] = protocol_size
+        elif "protocolSize" in existing:
+            manifest["protocolSize"] = existing["protocolSize"]
+        if acrf_size is not None:
+            manifest["acrfSize"] = acrf_size
+        elif "acrfSize" in existing:
+            manifest["acrfSize"] = existing["acrfSize"]
+
         manifest_path = self._ui_upload_manifest_path(study_id)
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        write_json(
-            manifest_path,
-            {
-                "schema_version": "1.0.0",
-                "study_id": study_id,
-                "protocolFileName": protocol_file_name or "protocol.pdf",
-                "acrfFileName": acrf_file_name or "acrf.pdf",
-                "uploadedAt": datetime.now(timezone.utc).isoformat(),
-            },
+        write_json(manifest_path, manifest)
+
+        try:
+            blob_service = blob_io.blob_service_from_env()
+            container = blob_io.container_from_env()
+            blob_io.upload_blob_bytes(
+                blob_service=blob_service,
+                container_name=container,
+                blob_path=paths.ui_upload_manifest_blob(study_id),
+                data=json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8"),
+                content_type="application/json",
+            )
+        except Exception:  # noqa: BLE001
+            pass
+        return manifest
+
+    def _blob_has_upload(self, study_id: str, role: str) -> bool:
+        try:
+            blob_service = blob_io.blob_service_from_env()
+            container = blob_io.container_from_env()
+            blob_path = paths.raw_protocol_blob(study_id) if role == "protocol" else paths.raw_acrf_blob(study_id)
+            return blob_io.blob_exists(
+                blob_service=blob_service,
+                container_name=container,
+                blob_path=blob_path,
+            )
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _upload_reference_copy(self, study_id: str, role: str, data: bytes, file_name: str) -> str:
+        safe_name = self._sanitize_reference_filename(file_name)
+        blob_path = (
+            paths.raw_protocol_reference_blob(study_id, safe_name)
+            if role == "protocol"
+            else paths.raw_acrf_reference_blob(study_id, safe_name)
         )
+        blob_service = blob_io.blob_service_from_env()
+        container = blob_io.container_from_env()
+        blob_io.upload_blob_bytes(
+            blob_service=blob_service,
+            container_name=container,
+            blob_path=blob_path,
+            data=data,
+            content_type="application/pdf",
+        )
+        return blob_path
+
+    def get_step1_upload_status(self, study_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        manifest = self._read_upload_manifest_obj(study_id)
+        protocol_uploaded = self._blob_has_upload(study_id, "protocol")
+        acrf_uploaded = self._blob_has_upload(study_id, "acrf")
+
+        def slot(role: str, uploaded: bool) -> Dict[str, Any]:
+            name_key = "protocolFileName" if role == "protocol" else "acrfFileName"
+            size_key = "protocolSize" if role == "protocol" else "acrfSize"
+            default_name = "protocol.pdf" if role == "protocol" else "acrf.pdf"
+            return {
+                "uploaded": uploaded,
+                "fileName": str(manifest.get(name_key) or default_name),
+                "size": int(manifest.get(size_key) or 0) if uploaded else 0,
+                "blob": paths.raw_protocol_blob(study_id) if role == "protocol" else paths.raw_acrf_blob(study_id),
+            }
+
+        return {
+            "studyId": study_id,
+            "protocol": slot("protocol", protocol_uploaded),
+            "acrf": slot("acrf", acrf_uploaded),
+            "bothUploaded": protocol_uploaded and acrf_uploaded,
+            "stepStatuses": self._step_statuses(study_id),
+        }
+
+    def _assert_both_uploads_ready(self, study_id: str) -> None:
+        status = self.get_step1_upload_status(study_id)
+        if not status["bothUploaded"]:
+            raise UiApiError(
+                "UPLOAD_REQUIRED",
+                "Upload both protocol and aCRF PDFs before running extraction.",
+                409,
+            )
+
+    def _pipeline_run_state_path(self, study_id: str) -> Path:
+        return paths.local_ui_pipeline_run_state(study_id, self.output_dir)
+
+    def _read_pipeline_run_state(self, study_id: str) -> Dict[str, Any]:
+        path = self._pipeline_run_state_path(study_id)
+        if path.is_file():
+            return read_json(path)
+        return {
+            "schema_version": "1.0.0",
+            "study_id": study_id,
+            "status": "idle",
+            "currentStage": "",
+            "currentSubStepId": "",
+            "message": "",
+            "error": "",
+            "startedAt": "",
+            "finishedAt": "",
+            "logs": [],
+        }
+
+    def _append_pipeline_log(
+        self,
+        study_id: str,
+        text: str,
+        *,
+        level: str = "info",
+    ) -> None:
+        state = self._read_pipeline_run_state(study_id)
+        logs = list(state.get("logs", []))
+        logs.append(
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "level": level,
+                "text": text,
+            }
+        )
+        state["logs"] = logs[-500:]
+        path = self._pipeline_run_state_path(study_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(path, state)
+
+    def _write_pipeline_run_state(self, study_id: str, **updates: Any) -> Dict[str, Any]:
+        state = self._read_pipeline_run_state(study_id)
+        state.update(updates)
+        path = self._pipeline_run_state_path(study_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(path, state)
+        return state
+
+    def get_step1_run_state(self, study_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        state = self._read_pipeline_run_state(study_id)
+        stale_hours = 2
+        if state.get("status") == "running" and state.get("startedAt"):
+            try:
+                started = datetime.fromisoformat(str(state["startedAt"]))
+                age = datetime.now(timezone.utc) - started.replace(tzinfo=timezone.utc)
+                if age.total_seconds() > stale_hours * 3600:
+                    state = self._write_pipeline_run_state(
+                        study_id,
+                        status="failed",
+                        message="Run may have been interrupted.",
+                        error="Extraction run timed out in UI state.",
+                    )
+            except ValueError:
+                pass
+        return {
+            "studyId": study_id,
+            "status": state.get("status", "idle"),
+            "currentStage": state.get("currentStage", ""),
+            "currentSubStepId": state.get("currentSubStepId", ""),
+            "message": state.get("message", ""),
+            "error": state.get("error", ""),
+            "startedAt": state.get("startedAt", ""),
+            "finishedAt": state.get("finishedAt", ""),
+            "logs": list(state.get("logs", [])),
+        }
 
     def _load_state(self, study_id: str) -> Dict[str, Any]:
         path = paths.local_deviations_review_state(study_id, self.output_dir)
@@ -399,60 +602,125 @@ class UiStepService:
                 )
         return {"studies": studies}
 
+    def delete_study(self, study_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        self._assert_safe_study_id(study_id)
+
+        blob_service = blob_io.blob_service_from_env()
+        container = blob_io.container_from_env()
+        blob_names: List[str] = []
+        prefixes_scanned: List[str] = []
+        for prefix in paths.study_blob_list_prefixes(study_id):
+            names = blob_io.list_blob_names_with_prefix(
+                blob_service=blob_service,
+                container_name=container,
+                prefix=prefix,
+            )
+            if names:
+                prefixes_scanned.append(prefix)
+            blob_names.extend(names)
+
+        unique_blob_names = sorted(set(blob_names))
+        deleted_blob_count = 0
+        if unique_blob_names:
+            deleted_blob_count = blob_io.delete_blobs(
+                blob_service=blob_service,
+                container_name=container,
+                blob_paths=unique_blob_names,
+            )
+
+        local_root = paths.local_study_root(study_id, self.output_dir)
+        local_output_removed = False
+        if local_root.exists():
+            shutil.rmtree(local_root)
+            local_output_removed = True
+
+        return {
+            "studyId": study_id,
+            "deletedBlobCount": deleted_blob_count,
+            "totalBlobCount": len(unique_blob_names),
+            "blobPrefixes": prefixes_scanned,
+            "localOutputRemoved": local_output_removed,
+            "message": (
+                f"Deleted {deleted_blob_count} blob object(s) for study {study_id!r}."
+                if unique_blob_names
+                else f"No blob objects found for study {study_id!r}."
+            ),
+        }
+
     def upload_step1_files(
         self,
         study_id: str,
-        protocol_bytes: bytes,
-        acrf_bytes: bytes,
+        protocol_bytes: bytes | None = None,
+        acrf_bytes: bytes | None = None,
         *,
         protocol_file_name: str | None = None,
         acrf_file_name: str | None = None,
     ) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
-        if not protocol_bytes or not acrf_bytes:
-            raise UiApiError("VALIDATION_ERROR", "protocolFile and acrfFile must not be empty", 400)
+        if not protocol_bytes and not acrf_bytes:
+            raise UiApiError(
+                "VALIDATION_ERROR",
+                "At least one of protocolFile or acrfFile must be provided",
+                400,
+            )
 
         max_mb = int(os.getenv("UI_UPLOAD_MAX_MB", "100"))
         max_bytes = max_mb * 1024 * 1024
-        if len(protocol_bytes) > max_bytes or len(acrf_bytes) > max_bytes:
-            raise UiApiError("VALIDATION_ERROR", f"Uploaded files must be <= {max_mb}MB each", 400)
+        if protocol_bytes and len(protocol_bytes) > max_bytes:
+            raise UiApiError("VALIDATION_ERROR", f"Protocol file must be <= {max_mb}MB", 400)
+        if acrf_bytes and len(acrf_bytes) > max_bytes:
+            raise UiApiError("VALIDATION_ERROR", f"aCRF file must be <= {max_mb}MB", 400)
 
         blob_service = blob_io.blob_service_from_env()
         container = blob_io.container_from_env()
         protocol_blob = paths.raw_protocol_blob(study_id)
         acrf_blob = paths.raw_acrf_blob(study_id)
-
-        blob_io.upload_blob_bytes(
-            blob_service=blob_service,
-            container_name=container,
-            blob_path=protocol_blob,
-            data=protocol_bytes,
-            content_type="application/pdf",
-        )
-        blob_io.upload_blob_bytes(
-            blob_service=blob_service,
-            container_name=container,
-            blob_path=acrf_blob,
-            data=acrf_bytes,
-            content_type="application/pdf",
-        )
-
         protocol_name = (protocol_file_name or "").strip() or "protocol.pdf"
         acrf_name = (acrf_file_name or "").strip() or "acrf.pdf"
-        self._write_upload_manifest(
+        protocol_size: int | None = None
+        acrf_size: int | None = None
+
+        if protocol_bytes:
+            blob_io.upload_blob_bytes(
+                blob_service=blob_service,
+                container_name=container,
+                blob_path=protocol_blob,
+                data=protocol_bytes,
+                content_type="application/pdf",
+            )
+            self._upload_reference_copy(study_id, "protocol", protocol_bytes, protocol_name)
+            protocol_size = len(protocol_bytes)
+
+        if acrf_bytes:
+            blob_io.upload_blob_bytes(
+                blob_service=blob_service,
+                container_name=container,
+                blob_path=acrf_blob,
+                data=acrf_bytes,
+                content_type="application/pdf",
+            )
+            self._upload_reference_copy(study_id, "acrf", acrf_bytes, acrf_name)
+            acrf_size = len(acrf_bytes)
+
+        manifest = self._write_upload_manifest(
             study_id,
-            protocol_file_name=protocol_name,
-            acrf_file_name=acrf_name,
+            protocol_file_name=protocol_name if protocol_bytes else None,
+            acrf_file_name=acrf_name if acrf_bytes else None,
+            protocol_size=protocol_size,
+            acrf_size=acrf_size,
         )
 
+        upload_status = self.get_step1_upload_status(study_id)
         return {
             "studyId": study_id,
             "protocolBlob": protocol_blob,
             "acrfBlob": acrf_blob,
-            "protocolFileName": protocol_name,
-            "acrfFileName": acrf_name,
-            "protocolSize": len(protocol_bytes),
-            "acrfSize": len(acrf_bytes),
+            "protocolFileName": manifest["protocolFileName"],
+            "acrfFileName": manifest["acrfFileName"],
+            "protocolSize": int(manifest.get("protocolSize") or 0),
+            "acrfSize": int(manifest.get("acrfSize") or 0),
+            "bothUploaded": upload_status["bothUploaded"],
             "stepStatuses": self._step_statuses(study_id),
         }
 
@@ -460,6 +728,8 @@ class UiStepService:
         from pdcheck_factory.cli import run_extract
 
         study_id = self._require_study_id(study_id)
+        self._assert_both_uploads_ready(study_id)
+
         raw = (extractor or "").strip().lower()
         if not raw:
             mode = extraction_resolve.UI_EXTRACTOR_BOTH
@@ -475,22 +745,57 @@ class UiStepService:
         run_odl = mode != extraction_resolve.UI_EXTRACTOR_DI
         odl_only = mode == extraction_resolve.UI_EXTRACTOR_OPEN
 
-        run_extract(
-            study_id=study_id,
-            protocol_blob=None,
-            acrf_blob=None,
-            output_dir=self.output_dir,
-            model_id=None,
-            sas_ttl=int(os.getenv("DI_SAS_TTL_MINUTES", "15")),
-            upload=True,
-            skip_acrf=False,
-            skip_protocol=False,
-            upload_only=False,
-            run_opendataloader_ocr=run_odl,
-            opendataloader_only=odl_only,
-            debug_blob=False,
+        started_at = datetime.now(timezone.utc).isoformat()
+        self._write_pipeline_run_state(
+            study_id,
+            status="running",
+            currentStage="extract",
+            currentSubStepId="extract-inputs",
+            message="Extracting PDFs — this may take several minutes.",
+            error="",
+            startedAt=started_at,
+            finishedAt="",
+            logs=[],
         )
-        extraction_resolve.write_ui_extractor_choice(study_id, self.output_dir, mode)
+        self._append_pipeline_log(study_id, f"Starting extraction (extractor={mode})")
+
+        try:
+            run_extract(
+                study_id=study_id,
+                protocol_blob=None,
+                acrf_blob=None,
+                output_dir=self.output_dir,
+                model_id=None,
+                sas_ttl=int(os.getenv("DI_SAS_TTL_MINUTES", "15")),
+                upload=True,
+                skip_acrf=False,
+                skip_protocol=False,
+                upload_only=False,
+                run_opendataloader_ocr=run_odl,
+                opendataloader_only=odl_only,
+                debug_blob=False,
+            )
+            extraction_resolve.write_ui_extractor_choice(study_id, self.output_dir, mode)
+            self._append_pipeline_log(study_id, "PDF extraction completed")
+            self._write_pipeline_run_state(
+                study_id,
+                status="done",
+                currentStage="complete",
+                currentSubStepId="extract-inputs",
+                message="Extraction completed",
+                finishedAt=datetime.now(timezone.utc).isoformat(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._append_pipeline_log(study_id, f"Extraction failed: {exc}", level="error")
+            self._write_pipeline_run_state(
+                study_id,
+                status="failed",
+                message="Extraction failed",
+                error=str(exc),
+                finishedAt=datetime.now(timezone.utc).isoformat(),
+            )
+            raise
+
         return {
             "studyId": study_id,
             "message": "Extraction completed",
@@ -541,7 +846,57 @@ class UiStepService:
         self._assert_step_dependencies(statuses, step_id)
 
         extra = (llm_instructions or "").strip()
+        stage_labels = {
+            "index-protocol": "index",
+            "acrf-split-toc": "acrf_split",
+            "acrf-summary-text": "acrf_merge",
+            "extract-rules": "rules",
+            "extract-deviations": "deviations",
+            "review-and-finalize": "finalize",
+        }
+        self._write_pipeline_run_state(
+            study_id,
+            status="running",
+            currentStage=stage_labels.get(step_id, step_id),
+            currentSubStepId=step_id,
+            message=f"Running {step_id}…",
+            error="",
+            startedAt=datetime.now(timezone.utc).isoformat(),
+            finishedAt="",
+        )
+        self._append_pipeline_log(study_id, f"Starting step {step_id}")
 
+        try:
+            summary = self._execute_run_step(study_id, step_id, extra=extra)
+        except Exception as exc:  # noqa: BLE001
+            self._append_pipeline_log(study_id, f"Step {step_id} failed: {exc}", level="error")
+            self._write_pipeline_run_state(
+                study_id,
+                status="failed",
+                message=f"Step {step_id} failed",
+                error=str(exc),
+                finishedAt=datetime.now(timezone.utc).isoformat(),
+            )
+            raise
+
+        self._append_pipeline_log(study_id, summary)
+        self._write_pipeline_run_state(
+            study_id,
+            status="done",
+            currentStage="complete",
+            currentSubStepId=step_id,
+            message=summary,
+            finishedAt=datetime.now(timezone.utc).isoformat(),
+        )
+
+        return {
+            "studyId": study_id,
+            "stepId": step_id,
+            "summary": summary,
+            "stepStatuses": self._step_statuses(study_id),
+        }
+
+    def _execute_run_step(self, study_id: str, step_id: str, *, extra: str) -> str:
         if step_id == "index-protocol":
             result = pipeline_v2.step2_protocol_paragraph_index(study_id, self.output_dir)
             summary = f"Indexed {len(result.get('paragraphs', []))} protocol paragraphs."
@@ -593,12 +948,7 @@ class UiStepService:
         else:
             raise UiApiError("STEP_BLOCKED", f"Step '{step_id}' must be run via dedicated endpoint.", 409)
 
-        return {
-            "studyId": study_id,
-            "stepId": step_id,
-            "summary": summary,
-            "stepStatuses": self._step_statuses(study_id),
-        }
+        return summary
 
     def get_step_preview(self, study_id: str, step_id: str) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
@@ -908,6 +1258,7 @@ class UiStepService:
         deviation_id: str,
         dm_comment: str,
         run_revision_cycle: bool = True,
+        also_generate_pseudo: bool = False,
     ) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         dev_id = str(deviation_id).strip()
@@ -923,6 +1274,12 @@ class UiStepService:
 
         chat_obj = self._load_chat_state(study_id)
         self._append_chat_message(chat_obj, dev_id, role="dm", text=comment.strip() or "(empty)")
+        dev_chat = chat_obj.get("deviations", {}).get(dev_id, {})
+        prior_messages = list(dev_chat.get("messages", []))[:-1]
+        chat_history = [
+            {"role": str(m.get("role", "")), "text": str(m.get("text", ""))}
+            for m in prior_messages[-10:]
+        ]
         try:
             revised_row, audit = pipeline_v2.refine_single_deviation_with_comment(
                 study_id=study_id,
@@ -930,8 +1287,13 @@ class UiStepService:
                 row=row,
                 dm_comment=comment,
                 run_revision_cycle=run_revision_cycle,
+                chat_history=chat_history,
+                also_generate_pseudo=also_generate_pseudo,
             )
-            self._append_chat_message(chat_obj, dev_id, role="assistant", text="Updated deviation from your message.")
+            assistant_text = str(audit.get("assistant_message", "")).strip()
+            if not assistant_text:
+                assistant_text = "Processed your message."
+            self._append_chat_message(chat_obj, dev_id, role="assistant", text=assistant_text)
         except Exception as exc:
             self._append_chat_message(chat_obj, dev_id, role="assistant", text=f"Refinement failed: {exc}")
             self._save_chat_state(study_id, chat_obj)
@@ -942,9 +1304,33 @@ class UiStepService:
         self._save_chat_state(study_id, chat_obj)
 
         pseudo_obj = self._load_pseudo_state(study_id)
+        pseudo_item = audit.get("pseudo_item")
+        if isinstance(pseudo_item, dict) and pseudo_item.get("deviation_id"):
+            items = list(pseudo_obj.get("items", []))
+            replaced = False
+            for idx, existing in enumerate(items):
+                if str(existing.get("deviation_id", "")) == dev_id:
+                    items[idx] = pseudo_item
+                    replaced = True
+                    break
+            if not replaced:
+                items.append(pseudo_item)
+            pseudo_obj["schema_version"] = pseudo_obj.get("schema_version", "1.0.0")
+            pseudo_obj["study_id"] = study_id
+            pseudo_obj["generated_at"] = datetime.now(timezone.utc).isoformat()
+            pseudo_obj["items"] = items
+            write_json(paths.local_pseudo_logic_review_state(study_id, self.output_dir), pseudo_obj)
+            write_json(paths.local_pseudo_logic_validated_json(study_id, self.output_dir), pseudo_obj)
+
         rules_obj = read_json(paths.local_rules_parsed_json(study_id, self.output_dir))
         pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in pseudo_obj.get("items", [])}
         rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
+
+        agent_reason = ""
+        agent_block = audit.get("agent") or {}
+        decision_block = agent_block.get("decision") if isinstance(agent_block, dict) else None
+        if isinstance(decision_block, dict):
+            agent_reason = str(decision_block.get("reason", "")).strip()
 
         return {
             "studyId": study_id,
@@ -952,6 +1338,9 @@ class UiStepService:
             "row": self._normalized_step7_row(revised_row, pseudo_by_dev, rule_by_id),
             "messages": list(chat_obj.get("deviations", {}).get(dev_id, {}).get("messages", []))[-25:],
             "audit": audit,
+            "responseType": str(audit.get("response_type", "")),
+            "agentReason": agent_reason,
+            "missingCaveats": list(audit.get("missing_caveats", [])),
             "stepStatuses": self._step_statuses(study_id),
         }
 

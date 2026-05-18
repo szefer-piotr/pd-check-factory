@@ -52,6 +52,7 @@ export function Step7DeviationDrawer({
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState<Step7DeviationPayload | null>(null);
   const [error, setError] = useState("");
+  const [lastMissingCaveats, setLastMissingCaveats] = useState<string[]>([]);
 
   const threadRef = useRef<HTMLDivElement>(null);
 
@@ -65,6 +66,7 @@ export function Step7DeviationDrawer({
     setIsEditing(false);
     setEditForm(null);
     setChatInput("");
+    setLastMissingCaveats([]);
     async function loadChat(): Promise<void> {
       try {
         const chat = await fetchStep7DeviationChat(studyId.trim(), deviationId);
@@ -109,14 +111,21 @@ export function Step7DeviationDrawer({
     setIsSending(true);
     setError("");
     try {
-      const result = await refineStep7Deviation(studyId.trim(), activeRow.deviation_id, message, true);
+      const result = await refineStep7Deviation(
+        studyId.trim(),
+        activeRow.deviation_id,
+        message,
+        true,
+        alsoPseudo
+      );
       let currentRow = result.row;
       setMessages(result.messages);
+      setLastMissingCaveats(result.missingCaveats ?? []);
       setChatInput("");
       onRowUpdated(currentRow);
       onStepStatusesChange(result.stepStatuses);
 
-      if (alsoPseudo && currentRow.status === "accepted") {
+      if (alsoPseudo && currentRow.status === "accepted" && !currentRow.pseudo_logic) {
         const pseudo = await generateStep7PseudoLogic(studyId.trim(), activeRow.deviation_id);
         currentRow = pseudo.row;
         onRowUpdated(currentRow);
@@ -214,6 +223,135 @@ export function Step7DeviationDrawer({
       {error ? <p className="step1-error step7-drawer-error">{error}</p> : null}
 
       <div className="step7-drawer-body">
+        <section className="step7-drawer-chat-block step7-chatgpt-shell" aria-label="Refinement chat">
+          <header className="step7-chatgpt-head">
+            <div className="step7-chatgpt-head-text">
+              <h5 className="step7-chatgpt-title">Messages</h5>
+              {messages.length === 0 ? (
+                <p className="step7-chatgpt-sub">Thread preview — new instructions will show up here.</p>
+              ) : (
+                <p
+                  className="step7-chatgpt-sub step7-chatgpt-preview-line"
+                  title={messages[messages.length - 1].text}
+                >
+                  <span className="step7-chatgpt-preview-label">Latest</span>
+                  {messages[messages.length - 1].text.replace(/\s+/g, " ").trim()}
+                </p>
+              )}
+            </div>
+            <span className="step7-chatgpt-count" aria-label={`${messages.length} messages in thread`}>
+              {messages.length}
+            </span>
+          </header>
+
+          <div
+            ref={threadRef}
+            className="step7-chatgpt-thread"
+            role="log"
+            aria-label="Chat transcript"
+            aria-live="polite"
+          >
+            {messages.length === 0 ? (
+              <div className="step7-chatgpt-empty">
+                <p className="step7-chatgpt-empty-title">No messages yet</p>
+                <p className="step7-chatgpt-empty-hint">Describe the change you want for this deviation.</p>
+              </div>
+            ) : (
+              messages.map((message, index) => {
+                const isUser = message.role === "dm";
+                const isLastAssistant =
+                  !isUser && index === messages.length - 1 && message.role === "assistant";
+                return (
+                  <div
+                    key={`${message.ts}-${index}`}
+                    className={`step7-chatgpt-turn step7-chatgpt-turn-${isUser ? "user" : "assistant"}`}
+                  >
+                    <span className="step7-chatgpt-role">{isUser ? "You" : "Assistant"}</span>
+                    <div
+                      className={`step7-chatgpt-bubble step7-chatgpt-bubble-${isUser ? "user" : "assistant"}`}
+                    >
+                      <p className="step7-chatgpt-bubble-text">{message.text}</p>
+                    </div>
+                    {isLastAssistant && lastMissingCaveats.length > 0 ? (
+                      <p className="step7-chatgpt-composer-hint" role="note">
+                        Evidence caveats: {lastMissingCaveats.slice(0, 3).join("; ")}
+                      </p>
+                    ) : null}
+                    {message.ts ? (
+                      <time className="step7-chatgpt-time" dateTime={message.ts}>
+                        {formatChatTime(message.ts)}
+                      </time>
+                    ) : null}
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          <footer className="step7-chatgpt-footer">
+            <label className="step7-chatgpt-option">
+              <input type="checkbox" checked={alsoPseudo} onChange={(event) => setAlsoPseudo(event.target.checked)} />
+              <span>Generate pseudo logic after refine (when accepted)</span>
+            </label>
+            <div className="step7-chatgpt-composer-area">
+              <div className="step7-chatgpt-composer">
+                <textarea
+                  className="step7-chatgpt-input"
+                  rows={2}
+                  value={chatInput}
+                  disabled={isSending}
+                  placeholder="Message the model..."
+                  onChange={(event) => setChatInput(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter") {
+                      return;
+                    }
+                    if (event.shiftKey) {
+                      return;
+                    }
+                    event.preventDefault();
+                    if (!chatInput.trim() || isSending) {
+                      return;
+                    }
+                    void handleSend();
+                  }}
+                />
+                <button
+                  className="step7-chatgpt-send"
+                  type="button"
+                  disabled={isSending || !chatInput.trim()}
+                  onClick={() => void handleSend()}
+                  aria-busy={isSending}
+                  title="Send"
+                >
+                  <span className="visually-hidden">{isSending ? "Sending" : "Send"}</span>
+                  {isSending ? (
+                    <span className="step7-chatgpt-send-spinner" aria-hidden />
+                  ) : (
+                    <svg
+                      className="step7-chatgpt-send-icon"
+                      width="20"
+                      height="20"
+                      viewBox="0 0 24 24"
+                      fill="none"
+                      aria-hidden
+                    >
+                      <path
+                        d="m5 12 7-9 11 14-11 3L5 12Z"
+                        stroke="currentColor"
+                        strokeWidth="2"
+                        strokeLinejoin="round"
+                        fill="rgba(255,255,255,0.08)"
+                      />
+                    </svg>
+                  )}
+                </button>
+              </div>
+              <p className="step7-chatgpt-composer-hint">Enter to send · Shift+Enter new line</p>
+            </div>
+          </footer>
+        </section>
+
         <div className="step7-drawer-upper-scroll">
           <details className="step7-drawer-collapsible">
             <summary>Supporting evidence</summary>
@@ -321,130 +459,6 @@ export function Step7DeviationDrawer({
           </details>
         </div>
 
-        <section
-          className="step7-drawer-chat-block step7-chatgpt-shell"
-          aria-label="Refinement chat"
-        >
-          <header className="step7-chatgpt-head">
-            <div className="step7-chatgpt-head-text">
-              <h5 className="step7-chatgpt-title">Messages</h5>
-              {messages.length === 0 ? (
-                <p className="step7-chatgpt-sub">Thread preview — new instructions will show up here.</p>
-              ) : (
-                <p
-                  className="step7-chatgpt-sub step7-chatgpt-preview-line"
-                  title={messages[messages.length - 1].text}
-                >
-                  <span className="step7-chatgpt-preview-label">Latest</span>
-                  {messages[messages.length - 1].text.replace(/\s+/g, " ").trim()}
-                </p>
-              )}
-            </div>
-            <span className="step7-chatgpt-count" aria-label={`${messages.length} messages in thread`}>
-              {messages.length}
-            </span>
-          </header>
-
-          <div
-            ref={threadRef}
-            className="step7-chatgpt-thread"
-            role="log"
-            aria-label="Chat transcript"
-            aria-live="polite"
-          >
-            {messages.length === 0 ? (
-              <div className="step7-chatgpt-empty">
-                <p className="step7-chatgpt-empty-title">No messages yet</p>
-                <p className="step7-chatgpt-empty-hint">Describe the change you want for this deviation.</p>
-              </div>
-            ) : (
-              messages.map((message, index) => {
-                const isUser = message.role === "dm";
-                return (
-                  <div
-                    key={`${message.ts}-${index}`}
-                    className={`step7-chatgpt-turn step7-chatgpt-turn-${isUser ? "user" : "assistant"}`}
-                  >
-                    <span className="step7-chatgpt-role">{isUser ? "You" : "Assistant"}</span>
-                    <div
-                      className={`step7-chatgpt-bubble step7-chatgpt-bubble-${isUser ? "user" : "assistant"}`}
-                    >
-                      <p className="step7-chatgpt-bubble-text">{message.text}</p>
-                    </div>
-                    {message.ts ? (
-                      <time className="step7-chatgpt-time" dateTime={message.ts}>
-                        {formatChatTime(message.ts)}
-                      </time>
-                    ) : null}
-                  </div>
-                );
-              })
-            )}
-          </div>
-
-          <footer className="step7-chatgpt-footer">
-            <label className="step7-chatgpt-option">
-              <input type="checkbox" checked={alsoPseudo} onChange={(event) => setAlsoPseudo(event.target.checked)} />
-              <span>Generate pseudo logic after refine (when accepted)</span>
-            </label>
-            <div className="step7-chatgpt-composer-area">
-              <div className="step7-chatgpt-composer">
-                <textarea
-                  className="step7-chatgpt-input"
-                  rows={2}
-                  value={chatInput}
-                  disabled={isSending}
-                  placeholder="Message the model..."
-                  onChange={(event) => setChatInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key !== "Enter") {
-                      return;
-                    }
-                    if (event.shiftKey) {
-                      return;
-                    }
-                    event.preventDefault();
-                    if (!chatInput.trim() || isSending) {
-                      return;
-                    }
-                    void handleSend();
-                  }}
-                />
-                <button
-                  className="step7-chatgpt-send"
-                  type="button"
-                  disabled={isSending || !chatInput.trim()}
-                  onClick={() => void handleSend()}
-                  aria-busy={isSending}
-                  title="Send"
-                >
-                  <span className="visually-hidden">{isSending ? "Sending" : "Send"}</span>
-                  {isSending ? (
-                    <span className="step7-chatgpt-send-spinner" aria-hidden />
-                  ) : (
-                    <svg
-                      className="step7-chatgpt-send-icon"
-                      width="20"
-                      height="20"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      aria-hidden
-                    >
-                      <path
-                        d="m5 12 7-9 11 14-11 3L5 12Z"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinejoin="round"
-                        fill="rgba(255,255,255,0.08)"
-                      />
-                    </svg>
-                  )}
-                </button>
-              </div>
-              <p className="step7-chatgpt-composer-hint">Enter to send · Shift+Enter new line</p>
-            </div>
-          </footer>
-        </section>
       </div>
     </aside>
   );

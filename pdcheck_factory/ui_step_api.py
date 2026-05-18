@@ -76,6 +76,10 @@ class StepApiHandler(BaseHTTPRequestHandler):
             study_id, tail = v1
             if tail == "step1/preview":
                 data = self.service.get_step1_preview(study_id)
+            elif tail == "step1/upload-status":
+                data = self.service.get_step1_upload_status(study_id)
+            elif tail == "step1/run-state":
+                data = self.service.get_step1_run_state(study_id)
             elif tail == "steps/status":
                 data = self.service.get_status(study_id)
             elif tail == "step7/deviations":
@@ -217,7 +221,9 @@ class StepApiHandler(BaseHTTPRequestHandler):
             if v1 is None:
                 raise UiApiError("NOT_FOUND", "Not found", 404)
             study_id, tail = v1
-            if tail.startswith("step7/deviations/"):
+            if tail == "":
+                data = self.service.delete_study(study_id)
+            elif tail.startswith("step7/deviations/"):
                 deviation_id = tail[len("step7/deviations/") :]
                 data = self.service.delete_step7_deviation(study_id, deviation_id)
             elif tail.startswith("step7/rules/"):
@@ -257,13 +263,17 @@ class StepApiHandler(BaseHTTPRequestHandler):
         study_id = str(form.getvalue("studyId") or "")
         protocol_item = form["protocolFile"] if "protocolFile" in form else None
         acrf_item = form["acrfFile"] if "acrfFile" in form else None
-        if protocol_item is None or acrf_item is None:
-            raise UiApiError("VALIDATION_ERROR", "protocolFile and acrfFile are required", 400)
+        if protocol_item is None and acrf_item is None:
+            raise UiApiError(
+                "VALIDATION_ERROR",
+                "At least one of protocolFile or acrfFile is required",
+                400,
+            )
 
-        protocol_bytes = protocol_item.file.read()
-        acrf_bytes = acrf_item.file.read()
-        protocol_name = getattr(protocol_item, "filename", None) or None
-        acrf_name = getattr(acrf_item, "filename", None) or None
+        protocol_bytes = protocol_item.file.read() if protocol_item is not None else None
+        acrf_bytes = acrf_item.file.read() if acrf_item is not None else None
+        protocol_name = getattr(protocol_item, "filename", None) if protocol_item is not None else None
+        acrf_name = getattr(acrf_item, "filename", None) if acrf_item is not None else None
         return self.service.upload_step1_files(
             study_id,
             protocol_bytes,
@@ -296,13 +306,17 @@ class StepApiHandler(BaseHTTPRequestHandler):
         )
         protocol_item = form["protocolFile"] if "protocolFile" in form else None
         acrf_item = form["acrfFile"] if "acrfFile" in form else None
-        if protocol_item is None or acrf_item is None:
-            raise UiApiError("VALIDATION_ERROR", "protocolFile and acrfFile are required", 400)
+        if protocol_item is None and acrf_item is None:
+            raise UiApiError(
+                "VALIDATION_ERROR",
+                "At least one of protocolFile or acrfFile is required",
+                400,
+            )
 
-        protocol_bytes = protocol_item.file.read()
-        acrf_bytes = acrf_item.file.read()
-        protocol_name = getattr(protocol_item, "filename", None) or None
-        acrf_name = getattr(acrf_item, "filename", None) or None
+        protocol_bytes = protocol_item.file.read() if protocol_item is not None else None
+        acrf_bytes = acrf_item.file.read() if acrf_item is not None else None
+        protocol_name = getattr(protocol_item, "filename", None) if protocol_item is not None else None
+        acrf_name = getattr(acrf_item, "filename", None) if acrf_item is not None else None
         return self.service.upload_step1_files(
             study_id,
             protocol_bytes,
@@ -330,6 +344,7 @@ class StepApiHandler(BaseHTTPRequestHandler):
             deviation_id=deviation_id,
             dm_comment=str(payload.get("message", "")),
             run_revision_cycle=bool(payload.get("runRevisionCycle", True)),
+            also_generate_pseudo=bool(payload.get("alsoPseudo", False)),
         )
 
     def _parse_step7_deviation_create(self, study_id: str) -> Dict[str, Any]:
@@ -381,10 +396,13 @@ class StepApiHandler(BaseHTTPRequestHandler):
         prefix = "/api/v1/studies/"
         if not path.startswith(prefix):
             return None
-        rest = path[len(prefix) :]
-        if "/" not in rest:
+        rest = path[len(prefix) :].strip("/")
+        if not rest:
             return None
-        study_id, tail = rest.split("/", 1)
+        if "/" in rest:
+            study_id, tail = rest.split("/", 1)
+        else:
+            study_id, tail = rest, ""
         if not study_id:
             return None
         return study_id, tail

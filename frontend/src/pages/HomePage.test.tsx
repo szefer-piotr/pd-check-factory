@@ -25,6 +25,14 @@ vi.mock("../services/stepApi", () => ({
       }
     ]
   })),
+  deleteStudy: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    deletedBlobCount: 2,
+    totalBlobCount: 2,
+    blobPrefixes: ["raw/MY-STUDY/"],
+    localOutputRemoved: true,
+    message: "Deleted 2 blob object(s) for study 'MY-STUDY'."
+  })),
   fetchStepStatuses: vi.fn(async () => ({
     studyId: "MY-STUDY",
     steps: [
@@ -312,6 +320,45 @@ vi.mock("../services/stepApi", () => ({
   updateStep7Rule: vi.fn(async () => ({ studyId: "MY-STUDY", rule: { rule_id: "rule-001", title: "Edited rule", text: "Edited body" }, stepStatuses: DONE_STATUSES })),
   deleteStep7Rule: vi.fn(async () => ({ studyId: "MY-STUDY", deletedRuleId: "rule-unused", stepStatuses: DONE_STATUSES })),
   uploadStep1Files: vi.fn(),
+  uploadStep1File: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    protocolBlob: "raw/MY-STUDY/protocol.pdf",
+    acrfBlob: "raw/MY-STUDY/acrf.pdf",
+    protocolFileName: "protocol.pdf",
+    acrfFileName: "acrf.pdf",
+    protocolSize: 100,
+    acrfSize: 100,
+    bothUploaded: true,
+    stepStatuses: DONE_STATUSES
+  })),
+  fetchStep1UploadStatus: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    protocol: {
+      uploaded: true,
+      fileName: "protocol.pdf",
+      size: 100,
+      blob: "raw/MY-STUDY/protocol.pdf"
+    },
+    acrf: {
+      uploaded: true,
+      fileName: "acrf.pdf",
+      size: 100,
+      blob: "raw/MY-STUDY/acrf.pdf"
+    },
+    bothUploaded: true,
+    stepStatuses: DONE_STATUSES
+  })),
+  fetchStep1RunState: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    status: "idle",
+    currentStage: "",
+    currentSubStepId: "",
+    message: "",
+    error: "",
+    startedAt: "",
+    finishedAt: "",
+    logs: []
+  })),
   runStep1Extraction: vi.fn(async () => ({
     studyId: "MY-STUDY",
     message: "Extraction completed.",
@@ -364,7 +411,7 @@ describe("Workflow pipeline pages", () => {
 
     expect(await screen.findByText(/1 blob project/)).toBeInTheDocument();
     expect(screen.getAllByText("Step 1 - Processing").length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: /Run processing|Re-run processing/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Run extraction pipeline|Re-run extraction pipeline/i })).toBeInTheDocument();
     expect(screen.getByText("PDF extractor")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Use ID" })).toBeInTheDocument();
     expect(screen.getByPlaceholderText(/Type a new project ID/i)).toBeInTheDocument();
@@ -557,7 +604,8 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    const runProcessing = await screen.findByRole("button", { name: /Run processing|Re-run processing/i });
+    const runProcessing = await screen.findByRole("button", { name: /Run extraction pipeline|Re-run extraction pipeline/i });
+    await waitFor(() => expect(runProcessing).toBeEnabled());
     await user.click(runProcessing);
     expect((await screen.findAllByText(/Processing completed/i)).length).toBeGreaterThan(0);
     expect(stepApi.runStep1Extraction).toHaveBeenCalled();
@@ -596,7 +644,9 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /Run processing|Re-run processing/i }));
+    const runBtn = await screen.findByRole("button", { name: /Run extraction pipeline|Re-run extraction pipeline/i });
+    await waitFor(() => expect(runBtn).toBeEnabled());
+    await user.click(runBtn);
 
     expect((await screen.findAllByText("Missing aCRF source markdown.")).length).toBeGreaterThan(0);
     expect(stepApi.runStep).toHaveBeenCalledTimes(2);
@@ -618,12 +668,48 @@ describe("Workflow pipeline pages", () => {
       extractor: "document_intelligence",
       stepStatuses: DONE_STATUSES
     });
+    vi.mocked(stepApi.fetchStep1UploadStatus).mockResolvedValue({
+      studyId: "MY-STUDY",
+      protocol: {
+        uploaded: true,
+        fileName: "Protocol_v3_final.pdf",
+        size: 100,
+        blob: "raw/MY-STUDY/protocol.pdf"
+      },
+      acrf: {
+        uploaded: true,
+        fileName: "aCRF_annotated.pdf",
+        size: 100,
+        blob: "raw/MY-STUDY/acrf.pdf"
+      },
+      bothUploaded: true,
+      stepStatuses: DONE_STATUSES
+    });
 
     render(<App />);
 
-    expect(await screen.findByText(/Protocol — Protocol_v3_final\.pdf/)).toBeInTheDocument();
-    expect(screen.getByText(/aCRF — aCRF_annotated\.pdf/)).toBeInTheDocument();
+    expect(await screen.findByText(/Protocol — Protocol_v3_final\.pdf/i)).toBeInTheDocument();
+    expect(await screen.findByText(/aCRF — aCRF_annotated\.pdf/i)).toBeInTheDocument();
     expect(screen.getByRole("heading", { level: 2, name: "Inclusion" })).toBeInTheDocument();
     expect(stepApi.fetchStep1Preview).toHaveBeenCalledWith("MY-STUDY");
+  });
+
+  it("deletes the active study after confirmation", async () => {
+    const user = userEvent.setup();
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    render(<App />);
+
+    const deleteButton = await screen.findByRole("button", { name: /delete study/i });
+    await user.click(deleteButton);
+
+    const stepApi = await import("../services/stepApi");
+    expect(confirmSpy).toHaveBeenCalled();
+    await waitFor(() => {
+      expect(stepApi.deleteStudy).toHaveBeenCalledWith("MY-STUDY");
+    });
+    expect(await screen.findByText(/Deleted 2 blob object/i)).toBeInTheDocument();
+
+    confirmSpy.mockRestore();
   });
 });

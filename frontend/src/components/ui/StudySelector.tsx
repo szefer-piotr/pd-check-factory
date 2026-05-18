@@ -4,8 +4,11 @@ import type { StudyOption } from "../../services/stepApi";
 interface StudySelectorProps {
   value: string;
   onChange: (next: string) => void;
+  onNewStudy?: () => void;
+  onDeleteStudy?: () => void;
   studies: StudyOption[];
   isLoading?: boolean;
+  isDeleting?: boolean;
   error?: string;
   onReload?: () => void;
 }
@@ -14,7 +17,17 @@ function normalizeStudyId(raw: string): string {
   return raw.trim();
 }
 
-export function StudySelector({ value, onChange, studies, isLoading = false, error = "", onReload }: StudySelectorProps): JSX.Element {
+export function StudySelector({
+  value,
+  onChange,
+  onNewStudy,
+  onDeleteStudy,
+  studies,
+  isLoading = false,
+  isDeleting = false,
+  error = "",
+  onReload
+}: StudySelectorProps): JSX.Element {
   const datalistId = useId();
   const [draftId, setDraftId] = useState(value);
   const normalizedValue = normalizeStudyId(value);
@@ -75,6 +88,27 @@ export function StudySelector({ value, onChange, studies, isLoading = false, err
           >
             Use ID
           </button>
+          {onNewStudy ? (
+            <button
+              className="button button-primary"
+              type="button"
+              onClick={onNewStudy}
+              disabled={isLoading || isDeleting}
+            >
+              New study
+            </button>
+          ) : null}
+          {onDeleteStudy ? (
+            <button
+              className="button button-danger"
+              type="button"
+              onClick={onDeleteStudy}
+              disabled={isLoading || isDeleting || !normalizedValue}
+              title={normalizedValue ? `Delete all blob data for ${normalizedValue}` : "Enter a study ID to delete"}
+            >
+              {isDeleting ? "Deleting…" : "Delete study"}
+            </button>
+          ) : null}
         </div>
         {studies.length > 0 ? (
           <label className="control-group study-selector-quick-pick" htmlFor="study-id-quick-pick">

@@ -162,6 +162,64 @@ def test_list_studies_discovers_raw_blob_pairs(tmp_path: Path, monkeypatch: pyte
     assert payload["studies"][0]["stepStatuses"]["extract-inputs"] == "pending"
 
 
+def test_delete_study_removes_all_blob_prefixes_and_local_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "STUDY-DEL"
+
+    def fake_list(**kwargs: object) -> list[str]:
+        prefix = kwargs["prefix"]
+        if prefix == f"raw/{study_id}/":
+            return [
+                f"raw/{study_id}/protocol.pdf",
+                f"raw/{study_id}/reference/protocol_v2.pdf",
+            ]
+        if prefix == f"extractions/{study_id}/":
+            return [f"extractions/{study_id}/protocol/opendataloader/rendered/source.md"]
+        if prefix == f"pipeline/{study_id}/":
+            return [f"pipeline/{study_id}/ui_upload_manifest.json"]
+        return []
+
+    deleted_paths: list[str] = []
+
+    def fake_delete(**kwargs: object) -> int:
+        paths_arg = kwargs["blob_paths"]
+        deleted_paths.extend(paths_arg)
+        return len(paths_arg)
+
+    monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
+    monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
+    monkeypatch.setattr(blob_io, "list_blob_names_with_prefix", fake_list)
+    monkeypatch.setattr(blob_io, "delete_blobs", fake_delete)
+
+    local_root = paths.local_study_root(study_id, tmp_path)
+    _touch(local_root / "marker.txt", "local")
+
+    result = service.delete_study(study_id)
+
+    assert result["deletedBlobCount"] == 4
+    assert result["totalBlobCount"] == 4
+    assert result["localOutputRemoved"] is True
+    assert not local_root.exists()
+    assert sorted(deleted_paths) == sorted(
+        [
+            f"raw/{study_id}/protocol.pdf",
+            f"raw/{study_id}/reference/protocol_v2.pdf",
+            f"extractions/{study_id}/protocol/opendataloader/rendered/source.md",
+            f"pipeline/{study_id}/ui_upload_manifest.json",
+        ]
+    )
+    assert f"raw/{study_id}/" in result["blobPrefixes"]
+
+
+def test_delete_study_rejects_unsafe_study_id(tmp_path: Path) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    with pytest.raises(UiApiError) as exc:
+        service.delete_study("../evil")
+    assert exc.value.code == "VALIDATION_ERROR"
+
+
 def test_step7_deviations_chat_and_refine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = UiStepService(output_dir=tmp_path)
     study_id = "MY-STUDY"
@@ -195,7 +253,16 @@ def test_step7_deviations_chat_and_refine(tmp_path: Path, monkeypatch: pytest.Mo
 
     from pdcheck_factory import pipeline_v2
 
-    def fake_refine(*, study_id: str, output_dir: Path, row: dict, dm_comment: str, run_revision_cycle: bool):
+    def fake_refine(
+        *,
+        study_id: str,
+        output_dir: Path,
+        row: dict,
+        dm_comment: str,
+        run_revision_cycle: bool,
+        chat_history=None,
+        also_generate_pseudo: bool = False,
+    ):
         updated = dict(row)
         updated["text"] = f"{row.get('text')} :: refined"
         updated["dm_comment"] = dm_comment
@@ -206,6 +273,9 @@ def test_step7_deviations_chat_and_refine(tmp_path: Path, monkeypatch: pytest.Mo
             "updated_rows": 1,
             "revised_rows": 1,
             "run_revision_cycle": run_revision_cycle,
+            "assistant_message": "Updated deviation based on your note.",
+            "response_type": "revision",
+            "missing_caveats": [],
         }
 
     monkeypatch.setattr(pipeline_v2, "refine_single_deviation_with_comment", fake_refine)
@@ -230,6 +300,8 @@ def test_step7_deviations_chat_and_refine(tmp_path: Path, monkeypatch: pytest.Mo
     assert len(refined["messages"]) == 2
     assert refined["messages"][0]["role"] == "dm"
     assert refined["messages"][1]["role"] == "assistant"
+    assert "Updated deviation" in refined["messages"][1]["text"]
+    assert refined.get("responseType") == "revision"
 
     updated = service.update_step7_deviation(
         study_id=study_id,
@@ -511,6 +583,59 @@ def test_get_step1_preview_filename_fallback_without_manifest(tmp_path: Path) ->
     preview = service.get_step1_preview(study_id)
     assert preview["protocolFileName"] == "protocol.pdf"
     assert preview["acrfFileName"] == "acrf.pdf"
+
+
+def test_get_step1_upload_status_reflects_blob_presence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "US-S"
+
+    def fake_exists(*, blob_path: str, **_kwargs: object) -> bool:
+        return blob_path.endswith("protocol.pdf")
+
+    monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
+    monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
+    monkeypatch.setattr(blob_io, "blob_exists", fake_exists)
+
+    status = service.get_step1_upload_status(study_id)
+    assert status["protocol"]["uploaded"] is True
+    assert status["acrf"]["uploaded"] is False
+    assert status["bothUploaded"] is False
+
+
+def test_upload_step1_single_file_partial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "PART-S"
+    uploaded: list[str] = []
+
+    def fake_upload(*, blob_path: str, **_kwargs: object) -> None:
+        uploaded.append(blob_path)
+
+    monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
+    monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
+    monkeypatch.setattr(blob_io, "blob_exists", lambda **_kwargs: False)
+    monkeypatch.setattr(blob_io, "upload_blob_bytes", fake_upload)
+
+    out = service.upload_step1_files(
+        study_id,
+        protocol_bytes=b"proto",
+        acrf_bytes=None,
+        protocol_file_name="My Protocol.pdf",
+    )
+    assert out["bothUploaded"] is False
+    assert out["protocolFileName"] == "My Protocol.pdf"
+    assert any("protocol.pdf" in path for path in uploaded)
+
+
+def test_run_step1_extract_requires_uploads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
+    monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
+    monkeypatch.setattr(blob_io, "blob_exists", lambda **_kwargs: False)
+
+    with pytest.raises(UiApiError) as exc:
+        service.run_step1_extract("NO-UP", extractor="both")
+    assert exc.value.code == "UPLOAD_REQUIRED"
+    assert exc.value.status_code == 409
 
 
 def test_run_step1_extract_invalid_extractor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -2,7 +2,9 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Page } from "../components/layout/Page";
 import { Section } from "../components/layout/Section";
 import { Stack } from "../components/layout/Stack";
-import { ProcessingPanel, type ProcessingSubProgressItem } from "../components/workflow/ProcessingPanel";
+import type { ProcessingSubProgressItem } from "../components/workflow/ProcessingPanel";
+import { StudyPipelineView } from "../components/workflow/StudyPipelineView";
+import { useStudyPipelineState } from "../hooks/useStudyPipelineState";
 import { Step7ReviewPanel } from "../components/workflow/Step7ReviewPanel";
 import { StepNavigation } from "../components/workflow/StepNavigation";
 import type { StepRuntimeState } from "../components/workflow/StepNavigation";
@@ -11,6 +13,7 @@ import { StepRunPanel } from "../components/workflow/StepRunPanel";
 import { DEFAULT_STEP_ID, PIPELINE_STEPS, PROCESSING_BACKEND_STEP_IDS } from "../data/pipelineSteps";
 import { useStudyDashboard } from "../hooks/useStudyDashboard";
 import {
+  deleteStudy,
   fetchStepPreview,
   fetchStepStatuses,
   fetchStudies,
@@ -100,6 +103,9 @@ export function WorkflowPage(): JSX.Element {
   const [studies, setStudies] = useState<StudyOption[]>([]);
   const [isLoadingStudies, setIsLoadingStudies] = useState(false);
   const [studyListError, setStudyListError] = useState("");
+  const [isDeletingStudy, setIsDeletingStudy] = useState(false);
+  const [deleteStudyMessage, setDeleteStudyMessage] = useState("");
+  const [deleteStudyError, setDeleteStudyError] = useState("");
   const [extractionLlmInstructions, setExtractionLlmInstructions] = useState("");
 
   const navStatuses = useMemo(() => deriveNavStatuses(backendStatuses), [backendStatuses]);
@@ -118,6 +124,8 @@ export function WorkflowPage(): JSX.Element {
       return next;
     });
   }, []);
+
+  const pipelineState = useStudyPipelineState(studyId, applyBackendStatuses);
 
   useEffect(() => {
     const onHashChange = (): void => {
@@ -224,6 +232,15 @@ export function WorkflowPage(): JSX.Element {
     }
     setStudyId(trimmed);
     const knownStudy = studies.find((study) => study.studyId === trimmed);
+    setReviewAutoRunProgress(initialReviewAutoRunProgress());
+    setProcessingMessage("");
+    setProcessingError("");
+    setAutoRunMessage("");
+    setAutoRunError("");
+    if (!isProcessing) {
+      setProcessingProgress(initialProcessingProgress());
+    }
+    pipelineState.resetForStudy();
     if (knownStudy) {
       applyBackendStatuses(knownStudy.stepStatuses);
     } else {
@@ -240,12 +257,45 @@ export function WorkflowPage(): JSX.Element {
           // Keep empty statuses for new projects until API responds.
         });
     }
-    setProcessingProgress(initialProcessingProgress());
-    setReviewAutoRunProgress(initialReviewAutoRunProgress());
-    setProcessingMessage("");
-    setProcessingError("");
-    setAutoRunMessage("");
-    setAutoRunError("");
+    void pipelineState.refreshUploadStatus(trimmed);
+    void pipelineState.refreshRunState(trimmed);
+    setDeleteStudyMessage("");
+    setDeleteStudyError("");
+  }
+
+  async function handleDeleteStudy(): Promise<void> {
+    const trimmed = studyId.trim();
+    if (!trimmed || isDeletingStudy) {
+      return;
+    }
+
+    const confirmed = window.confirm(
+      `Delete study "${trimmed}"?\n\nThis permanently removes all blob files and local artifacts for this study. This cannot be undone.`
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setIsDeletingStudy(true);
+    setDeleteStudyMessage("");
+    setDeleteStudyError("");
+    try {
+      const result = await deleteStudy(trimmed);
+      sessionStorage.removeItem(`pd-pipeline:${trimmed}`);
+      setDeleteStudyMessage(result.message);
+      setStudies((previous) => previous.filter((study) => study.studyId !== trimmed));
+      applyBackendStatuses({});
+      pipelineState.resetForStudy();
+      setStudyId("");
+      setProcessingProgress(initialProcessingProgress());
+      setProcessingMessage("");
+      setProcessingError("");
+      await loadStudies();
+    } catch (deleteFailure) {
+      setDeleteStudyError(deleteFailure instanceof Error ? deleteFailure.message : "Unable to delete study.");
+    } finally {
+      setIsDeletingStudy(false);
+    }
   }
 
   async function handleRunProcessing(extractor: Step1PdfExtractor): Promise<void> {
@@ -255,13 +305,32 @@ export function WorkflowPage(): JSX.Element {
     }
 
     setProcessingProgress(initialProcessingProgress());
-    setProcessingMessage("Starting processing.");
+    setProcessingMessage("Starting extraction pipeline.");
     setProcessingError("");
     setIsProcessing(true);
     setRuntimeStates((previous) => ({ ...previous, processing: { status: "running", message: "Running" } }));
+    pipelineState.setExtraction({
+      status: "running",
+      currentStage: "extract",
+      currentSubStepId: "extract-inputs",
+      message: "Extracting PDFs — please wait…",
+      error: "",
+      logs: []
+    });
 
     try {
-      for (const { stepId } of PROCESSING_SUB_STEPS) {
+      for (const { stepId, title } of PROCESSING_SUB_STEPS) {
+        const stageMap: Record<string, string> = {
+          "extract-inputs": "extract",
+          "index-protocol": "index",
+          "acrf-split-toc": "acrf_split",
+          "acrf-summary-text": "acrf_merge"
+        };
+        pipelineState.setExtraction({
+          currentSubStepId: stepId,
+          currentStage: stageMap[stepId] ?? stepId,
+          message: `Running: ${title}…`
+        });
         setProcessingProgress((previous) =>
           previous.map((item) => (item.stepId === stepId ? { ...item, status: "running", message: "Running" } : item))
         );
@@ -280,6 +349,7 @@ export function WorkflowPage(): JSX.Element {
         setProcessingProgress((previous) =>
           previous.map((item) => (item.stepId === stepId ? { ...item, status: "done", message: summary } : item))
         );
+        await pipelineState.refreshRunState();
       }
 
       const status = await fetchStepStatuses(trimmedStudyId);
@@ -287,6 +357,7 @@ export function WorkflowPage(): JSX.Element {
       applyBackendStatuses(normalized);
       setRuntimeStates((previous) => ({ ...previous, processing: { status: "done", message: "Done" } }));
       setProcessingMessage("Processing completed.");
+      pipelineState.setExtraction({ status: "done", currentStage: "complete", message: "Processing completed." });
     } catch (processingFailure) {
       const message = processingFailure instanceof Error ? processingFailure.message : "Processing failed.";
       setProcessingError(message);
@@ -295,10 +366,20 @@ export function WorkflowPage(): JSX.Element {
         previous.map((item) => (item.status === "running" ? { ...item, status: "failed", message } : item))
       );
       setRuntimeStates((previous) => ({ ...previous, processing: { status: "failed", message } }));
-      throw processingFailure;
+      pipelineState.setExtraction({ status: "failed", error: message });
+      await pipelineState.refreshRunState();
     } finally {
       setIsProcessing(false);
     }
+  }
+
+  function handleNewStudy(): void {
+    const draft = window.prompt("Enter a new study ID:");
+    if (!draft?.trim()) {
+      return;
+    }
+    handleStudyChange(draft.trim());
+    handleSelectStep("processing");
   }
 
   async function handleRunCurrentStep(): Promise<void> {
@@ -388,11 +469,15 @@ export function WorkflowPage(): JSX.Element {
             <StudySelector
               value={studyId}
               onChange={handleStudyChange}
+              onNewStudy={handleNewStudy}
+              onDeleteStudy={() => void handleDeleteStudy()}
               studies={studies}
               isLoading={isLoadingStudies}
-              error={studyListError}
+              isDeleting={isDeletingStudy}
+              error={studyListError || deleteStudyError}
               onReload={() => void loadStudies()}
             />
+            {deleteStudyMessage ? <p className="step7-muted study-delete-message">{deleteStudyMessage}</p> : null}
             <div className="study-chips">
               <span className="chip">
                 Total <strong>{data?.overview.totalDeviations ?? "—"}</strong>
@@ -442,12 +527,14 @@ export function WorkflowPage(): JSX.Element {
             ) : null}
 
             {activeStep.id === "processing" ? (
-              <ProcessingPanel
+              <StudyPipelineView
                 studyId={studyId}
                 backendStatuses={backendStatuses}
+                pipelineState={pipelineState}
                 onStatusesChange={applyBackendStatuses}
                 onRunProcessing={handleRunProcessing}
                 onRunToDmReview={handleAutoRunToDmReview}
+                onNavigateToStep={handleSelectStep}
                 processingProgress={processingProgress}
                 isProcessing={isProcessing}
                 processingMessage={processingMessage}

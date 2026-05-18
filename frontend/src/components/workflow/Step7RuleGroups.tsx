@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import type { Step7DeviationRow } from "../../services/stepApi";
 
 export interface RuleGroup {
@@ -11,13 +12,6 @@ interface Step7RuleGroupsProps {
   groups: RuleGroup[];
   selectedId: string | null;
   onSelect: (deviationId: string) => void;
-}
-
-function truncate(text: string, max = 72): string {
-  if (text.length <= max) {
-    return text;
-  }
-  return `${text.slice(0, max)}…`;
 }
 
 export function groupDeviationsByRule(rows: Step7DeviationRow[]): RuleGroup[] {
@@ -42,6 +36,15 @@ export function groupDeviationsByRule(rows: Step7DeviationRow[]): RuleGroup[] {
 }
 
 export function Step7RuleGroups({ groups, selectedId, onSelect }: Step7RuleGroupsProps): JSX.Element {
+  const selectedRowRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!selectedId) {
+      return;
+    }
+    selectedRowRef.current?.scrollIntoView?.({ block: "nearest", behavior: "smooth" });
+  }, [selectedId]);
+
   if (groups.length === 0) {
     return <p className="step7-muted">No deviations to review.</p>;
   }
@@ -63,6 +66,7 @@ export function Step7RuleGroups({ groups, selectedId, onSelect }: Step7RuleGroup
             {group.deviations.map((row) => (
               <li key={row.deviation_id}>
                 <div
+                  ref={selectedId === row.deviation_id ? selectedRowRef : undefined}
                   className={`step7-deviation-row ${selectedId === row.deviation_id ? "step7-deviation-row-selected" : ""}`}
                   role="button"
                   tabIndex={0}
@@ -75,7 +79,7 @@ export function Step7RuleGroups({ groups, selectedId, onSelect }: Step7RuleGroup
                   }}
                 >
                   <span className="step7-deviation-id">{row.deviation_id}</span>
-                  <p className="step7-deviation-snippet">{truncate(row.deviation_text)}</p>
+                  <p className="step7-deviation-snippet">{row.deviation_text}</p>
                   <span className={`step7-status step7-status-${row.status}`}>{row.status}</span>
                 </div>
               </li>

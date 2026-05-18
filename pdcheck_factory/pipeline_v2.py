@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from openpyxl import Workbook
 
-from pdcheck_factory import extraction_resolve, llm, paths, text_parse
+from pdcheck_factory import document_chat_agent, extraction_resolve, llm, paths, text_parse
 from pdcheck_factory.json_util import load_schema, read_json, validate, write_json
 from pdcheck_factory.prompt_loader import load_prompt
 
@@ -622,9 +622,11 @@ def refine_single_deviation_with_comment(
     row: Dict[str, Any],
     dm_comment: str,
     run_revision_cycle: bool = True,
+    chat_history: Optional[List[Dict[str, str]]] = None,
+    also_generate_pseudo: bool = False,
 ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
     """
-    Refine one deviation row using DM comment and return (updated_row, audit).
+    Run Step 7 document-chat agent for one deviation and return (updated_row, audit).
     """
     updated_row = dict(row)
     updated_row["dm_comment"] = dm_comment
@@ -632,22 +634,47 @@ def refine_single_deviation_with_comment(
     updated_row["status"] = status
 
     revised = False
+    assistant_message = ""
+    response_type = "answer"
+    agent_audit: Dict[str, Any] = {}
+    missing_caveats: List[str] = []
+    pseudo_item: Optional[Dict[str, Any]] = None
+
     if run_revision_cycle and dm_comment.strip():
-        protocol_text = _protocol_paragraph_text(study_id, output_dir)
-        acrf_summary_text = _acrf_summary_text(study_id, output_dir)
-        revised_text, revised_refs = revise_text_with_comment(
-            study_id=study_id,
-            item_type="deviations",
-            original_text=str(updated_row.get("text", "")),
-            paragraph_refs=list(updated_row.get("paragraph_refs", [])),
-            dm_comment=dm_comment,
-            protocol_paragraphs=protocol_text,
-            acrf_summary=acrf_summary_text,
+        rules_obj = read_json(paths.local_rules_parsed_json(study_id, output_dir))
+        rule_by_id = {str(r.get("rule_id", "")): r for r in rules_obj.get("rules", [])}
+        rule_row = rule_by_id.get(str(updated_row.get("rule_id", "")), {})
+        index_obj = read_json(paths.local_protocol_paragraph_index_json(study_id, output_dir))
+        paragraph_by_ref = {str(p.get("paragraph_id", "")): p for p in index_obj.get("paragraphs", [])}
+        valid_ids = set(paragraph_by_ref.keys())
+        reference_sentences = document_chat_agent.build_reference_sentences(
+            deviation_row=updated_row,
+            rule_row=rule_row,
+            paragraph_by_ref=paragraph_by_ref,
         )
-        updated_row["text"] = revised_text
-        if revised_refs:
-            updated_row["paragraph_refs"] = revised_refs
-        revised = True
+        result = document_chat_agent.run_step7_message(
+            study_id=study_id,
+            user_question=dm_comment,
+            deviation_row=updated_row,
+            rule_row=rule_row,
+            reference_sentences=reference_sentences,
+            full_document=_protocol_paragraph_text(study_id, output_dir),
+            acrf_summary=_acrf_summary_text(study_id, output_dir),
+            chat_history=chat_history,
+            valid_paragraph_ids=valid_ids,
+            also_generate_pseudo=also_generate_pseudo,
+        )
+        assistant_message = result.assistant_message
+        response_type = result.response_type
+        agent_audit = result.to_audit_dict()
+        missing_caveats = list(result.missing_caveats)
+        if result.updated_row is not None:
+            updated_row = dict(result.updated_row)
+            updated_row["dm_comment"] = dm_comment
+            updated_row["status"] = status
+            revised = True
+        if result.updated_pseudo is not None:
+            pseudo_item = result.updated_pseudo
 
     audit = {
         "study_id": study_id,
@@ -656,7 +683,13 @@ def refine_single_deviation_with_comment(
         "updated_rows": 1,
         "revised_rows": 1 if revised else 0,
         "run_revision_cycle": run_revision_cycle,
+        "assistant_message": assistant_message,
+        "response_type": response_type,
+        "agent": agent_audit,
+        "missing_caveats": missing_caveats if run_revision_cycle and dm_comment.strip() else [],
     }
+    if pseudo_item is not None:
+        audit["pseudo_item"] = pseudo_item
     return updated_row, audit
 
 

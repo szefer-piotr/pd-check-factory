@@ -37,6 +37,15 @@ export interface StudiesResponse {
   studies: StudyOption[];
 }
 
+export interface DeleteStudyResponse {
+  studyId: string;
+  deletedBlobCount: number;
+  totalBlobCount: number;
+  blobPrefixes: string[];
+  localOutputRemoved: boolean;
+  message: string;
+}
+
 export interface StepPreviewItem {
   title: string;
   body: string;
@@ -58,7 +67,41 @@ export interface Step1UploadResponse {
   acrfFileName?: string;
   protocolSize: number;
   acrfSize: number;
+  bothUploaded?: boolean;
   stepStatuses: Record<string, StepStatus>;
+}
+
+export interface Step1UploadSlotStatus {
+  uploaded: boolean;
+  fileName: string;
+  size: number;
+  blob: string;
+}
+
+export interface Step1UploadStatusResponse {
+  studyId: string;
+  protocol: Step1UploadSlotStatus;
+  acrf: Step1UploadSlotStatus;
+  bothUploaded: boolean;
+  stepStatuses: Record<string, StepStatus>;
+}
+
+export interface PipelineLogLine {
+  ts: string;
+  level: "info" | "warn" | "error";
+  text: string;
+}
+
+export interface Step1RunStateResponse {
+  studyId: string;
+  status: "idle" | "running" | "done" | "failed";
+  currentStage: string;
+  currentSubStepId: string;
+  message: string;
+  error: string;
+  startedAt: string;
+  finishedAt: string;
+  logs: PipelineLogLine[];
 }
 
 export type Step1PdfExtractor = "opendataloader" | "document_intelligence" | "both";
@@ -151,6 +194,9 @@ export interface Step7RefineResponse {
   row: Step7DeviationRow;
   messages: Step7ChatMessage[];
   audit: Record<string, unknown>;
+  responseType?: string;
+  agentReason?: string;
+  missingCaveats?: string[];
   stepStatuses: Record<string, StepStatus>;
 }
 
@@ -216,6 +262,13 @@ export async function fetchStudies(): Promise<StudiesResponse> {
   return parseApiResponse<StudiesResponse>(response);
 }
 
+export async function deleteStudy(studyId: string): Promise<DeleteStudyResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}`, {
+    method: "DELETE"
+  });
+  return parseApiResponse<DeleteStudyResponse>(response);
+}
+
 export async function uploadStep1Files(studyId: string, protocolFile: File, acrfFile: File): Promise<Step1UploadResponse> {
   const formData = new FormData();
   formData.append("protocolFile", protocolFile);
@@ -226,6 +279,31 @@ export async function uploadStep1Files(studyId: string, protocolFile: File, acrf
     body: formData
   });
   return parseApiResponse<Step1UploadResponse>(response);
+}
+
+export async function uploadStep1File(
+  studyId: string,
+  slot: "protocol" | "acrf",
+  file: File
+): Promise<Step1UploadResponse> {
+  const formData = new FormData();
+  formData.append(slot === "protocol" ? "protocolFile" : "acrfFile", file);
+
+  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step1/upload`, {
+    method: "POST",
+    body: formData
+  });
+  return parseApiResponse<Step1UploadResponse>(response);
+}
+
+export async function fetchStep1UploadStatus(studyId: string): Promise<Step1UploadStatusResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step1/upload-status`);
+  return parseApiResponse<Step1UploadStatusResponse>(response);
+}
+
+export async function fetchStep1RunState(studyId: string): Promise<Step1RunStateResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step1/run-state`);
+  return parseApiResponse<Step1RunStateResponse>(response);
 }
 
 export async function runStep1Extraction(studyId: string, extractor: Step1PdfExtractor): Promise<Step1ExtractResponse> {
@@ -283,14 +361,15 @@ export async function refineStep7Deviation(
   studyId: string,
   deviationId: string,
   message: string,
-  runRevisionCycle = true
+  runRevisionCycle = true,
+  alsoPseudo = false
 ): Promise<Step7RefineResponse> {
   const response = await fetch(
     `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/${encodeURIComponent(deviationId)}/refine`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, runRevisionCycle })
+      body: JSON.stringify({ message, runRevisionCycle, alsoPseudo })
     }
   );
   return parseApiResponse<Step7RefineResponse>(response);
