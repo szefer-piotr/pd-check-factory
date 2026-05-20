@@ -35,6 +35,25 @@ def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: Dict[s
     handler.wfile.write(body)
 
 
+def _file_response(
+    handler: BaseHTTPRequestHandler,
+    *,
+    status: int,
+    body: bytes,
+    content_type: str,
+    content_disposition: str,
+) -> None:
+    handler.send_response(status)
+    handler.send_header("Content-Type", content_type)
+    handler.send_header("Content-Length", str(len(body)))
+    handler.send_header("Content-Disposition", content_disposition)
+    handler.send_header("Access-Control-Allow-Origin", "*")
+    handler.send_header("Access-Control-Allow-Headers", "Content-Type")
+    handler.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
+    handler.end_headers()
+    handler.wfile.write(body)
+
+
 class StepApiHandler(BaseHTTPRequestHandler):
     service = UiStepService(output_dir=Path("output"))
 
@@ -84,6 +103,16 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 data = self.service.get_status(study_id)
             elif tail == "step7/deviations":
                 data = self.service.get_step7_deviations(study_id)
+            elif tail == "step7/deviations/export":
+                export_payload = self.service.export_step7_deviations_xlsx(study_id)
+                _file_response(
+                    self,
+                    status=HTTPStatus.OK,
+                    body=export_payload["content"],
+                    content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    content_disposition=f'attachment; filename="{export_payload["fileName"]}"',
+                )
+                return
             elif tail.startswith("step7/deviations/") and tail.endswith("/chat"):
                 deviation_id = tail[len("step7/deviations/") : -len("/chat")]
                 data = self.service.get_step7_deviation_chat(study_id, deviation_id)
@@ -145,6 +174,8 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 data = self._parse_step7_deviation_create(study_id)
             elif tail == "step7/rules":
                 data = self._parse_step7_rule_create(study_id)
+            elif tail == "step7/deviations/accept-all":
+                data = self.service.accept_step7_deviations_bulk(study_id)
             elif tail == "step7/pseudo-logic/generate-all":
                 data = self.service.generate_step7_pseudo_logic_bulk(study_id)
             elif tail.startswith("step7/deviations/") and tail.endswith("/pseudo-logic"):

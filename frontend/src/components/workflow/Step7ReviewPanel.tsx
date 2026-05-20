@@ -4,8 +4,10 @@ import {
   createStep7Rule,
   deleteStep7Deviation,
   deleteStep7Rule,
+  acceptStep7DeviationsAll,
   fetchStep7Deviations,
   generateStep7PseudoLogicAll,
+  exportStep7DeviationsWorkbook,
   importStep7DeviationsWorkbook,
   type Step7DeviationPayload,
   type Step7DeviationRow,
@@ -53,8 +55,12 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [isBulkAccepting, setIsBulkAccepting] = useState(false);
   const [isBulkGenerating, setIsBulkGenerating] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+  const [acceptStatus, setAcceptStatus] = useState("");
   const [bulkStatus, setBulkStatus] = useState("");
+  const [exportStatus, setExportStatus] = useState("");
   const [mutationStatus, setMutationStatus] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
   const [deviationForm, setDeviationForm] = useState<Step7DeviationPayload>(EMPTY_DEVIATION_FORM);
@@ -77,6 +83,7 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
   }, [rows]);
 
   const acceptedCount = statusCounts.accepted;
+  const acceptAllCount = statusCounts.pending + statusCounts.to_review;
 
   useEffect(() => {
     async function loadRows(): Promise<void> {
@@ -102,6 +109,49 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
 
   function handleRowUpdated(row: Step7DeviationRow): void {
     setRows((previous) => previous.map((item) => (item.deviation_id === row.deviation_id ? row : item)));
+  }
+
+  async function handleExportWorkbook(): Promise<void> {
+    if (!studyId.trim()) {
+      return;
+    }
+    setIsExporting(true);
+    setError("");
+    setExportStatus("");
+    try {
+      const result = await exportStep7DeviationsWorkbook(studyId.trim());
+      const url = URL.createObjectURL(result.blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = result.fileName;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setExportStatus(`Downloaded ${result.fileName}.`);
+    } catch (exportError) {
+      setError(exportError instanceof Error ? exportError.message : "Unable to generate Excel.");
+    } finally {
+      setIsExporting(false);
+    }
+  }
+
+  async function handleAcceptAll(): Promise<void> {
+    setIsBulkAccepting(true);
+    setError("");
+    setAcceptStatus("");
+    try {
+      const result = await acceptStep7DeviationsAll(studyId.trim());
+      setRows(result.rows);
+      onStepStatusesChange(result.stepStatuses);
+      setAcceptStatus(
+        result.accepted === 0
+          ? "All deviations are already accepted or rejected."
+          : `Accepted ${result.accepted} deviation${result.accepted === 1 ? "" : "s"}.`
+      );
+    } catch (acceptError) {
+      setError(acceptError instanceof Error ? acceptError.message : "Unable to accept deviations.");
+    } finally {
+      setIsBulkAccepting(false);
+    }
   }
 
   async function handleGenerateAllPseudoLogic(): Promise<void> {
@@ -216,15 +266,33 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
 
       {error ? <p className="step1-error">{error}</p> : null}
       {mutationStatus ? <p className="step1-status">{mutationStatus}</p> : null}
+      {acceptStatus ? <p className="step7-muted">{acceptStatus}</p> : null}
       {bulkStatus ? <p className="step7-muted">{bulkStatus}</p> : null}
+      {exportStatus ? <p className="step7-muted">{exportStatus}</p> : null}
       {isLoading ? <p className="step7-muted">Loading deviations...</p> : null}
 
       <div className="step7-toolbar">
         <button
+          className="button button-primary"
+          type="button"
+          onClick={() => void handleExportWorkbook()}
+          disabled={isExporting || isLoading || !studyId.trim()}
+        >
+          {isExporting ? "Generating Excel..." : "Generate Excel"}
+        </button>
+        <button
+          className="button button-optional"
+          type="button"
+          onClick={() => void handleAcceptAll()}
+          disabled={isBulkAccepting || isLoading || acceptAllCount === 0 || !studyId.trim()}
+        >
+          {isBulkAccepting ? "Accepting..." : `Accept all (${acceptAllCount})`}
+        </button>
+        <button
           className="button button-optional"
           type="button"
           onClick={() => void handleGenerateAllPseudoLogic()}
-          disabled={isBulkGenerating || acceptedCount === 0}
+          disabled={isBulkGenerating || isBulkAccepting || acceptedCount === 0}
         >
           {isBulkGenerating ? "Generating..." : `Generate all pseudo (${acceptedCount})`}
         </button>

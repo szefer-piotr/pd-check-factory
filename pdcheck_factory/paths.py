@@ -250,6 +250,10 @@ def local_deviations_review_audit_json(study_id: str, output_dir: Path) -> Path:
     return local_review_dir(study_id, output_dir) / "deviations_review_audit.json"
 
 
+def local_deviations_review_export_xlsx(study_id: str, output_dir: Path) -> Path:
+    return local_review_dir(study_id, output_dir) / "deviations_review_export.xlsx"
+
+
 def local_pseudo_logic_dir(study_id: str, output_dir: Path) -> Path:
     return local_pipeline_v2_dir(study_id, output_dir) / "pseudo_logic"
 

@@ -1,5 +1,6 @@
 import { useEffect, useId, useState } from "react";
 import type { StudyOption } from "../../services/stepApi";
+import { BlobProjectPicker } from "./BlobProjectPicker";
 
 interface StudySelectorProps {
   value: string;
@@ -11,6 +12,9 @@ interface StudySelectorProps {
   isDeleting?: boolean;
   error?: string;
   onReload?: () => void;
+  /** When true, show the blob project dropdown first (for Step 1). */
+  showBlobPickerFirst?: boolean;
+  blobPickerId?: string;
 }
 
 function normalizeStudyId(raw: string): string {
@@ -26,9 +30,13 @@ export function StudySelector({
   isLoading = false,
   isDeleting = false,
   error = "",
-  onReload
+  onReload,
+  showBlobPickerFirst = false,
+  blobPickerId
 }: StudySelectorProps): JSX.Element {
   const datalistId = useId();
+  const generatedPickerId = useId();
+  const quickPickId = blobPickerId ?? generatedPickerId;
   const [draftId, setDraftId] = useState(value);
   const normalizedValue = normalizeStudyId(value);
   const normalizedDraft = normalizeStudyId(draftId);
@@ -52,10 +60,23 @@ export function StudySelector({
     onChange(nextStudyId);
   }
 
+  const blobPicker = (
+    <BlobProjectPicker
+      id={quickPickId}
+      value={value}
+      studies={studies}
+      isLoading={isLoading}
+      error={error}
+      onChange={handleQuickPick}
+      onReload={onReload}
+    />
+  );
+
   return (
-    <div className="study-selector">
+    <div className={`study-selector ${showBlobPickerFirst ? "study-selector-step1" : ""}`}>
+      {showBlobPickerFirst ? blobPicker : null}
       <label className="control-group" htmlFor="study-id-input">
-        <span className="control-label">Study ID</span>
+        {showBlobPickerFirst ? <span className="control-label">Or enter a new study ID</span> : <span className="control-label">Study ID</span>}
         <div className="study-selector-row">
           <input
             id="study-id-input"
@@ -68,7 +89,7 @@ export function StudySelector({
                 commitDraft();
               }
             }}
-            placeholder="Type a new project ID or pick below"
+            placeholder="Type a new project ID"
             autoComplete="off"
             list={studies.length > 0 ? datalistId : undefined}
             disabled={isLoading}
@@ -89,12 +110,7 @@ export function StudySelector({
             Use ID
           </button>
           {onNewStudy ? (
-            <button
-              className="button button-primary"
-              type="button"
-              onClick={onNewStudy}
-              disabled={isLoading || isDeleting}
-            >
+            <button className="button button-primary" type="button" onClick={onNewStudy} disabled={isLoading || isDeleting}>
               New study
             </button>
           ) : null}
@@ -110,43 +126,14 @@ export function StudySelector({
             </button>
           ) : null}
         </div>
-        {studies.length > 0 ? (
-          <label className="control-group study-selector-quick-pick" htmlFor="study-id-quick-pick">
-            <span className="control-label">Blob projects</span>
-            <select
-              id="study-id-quick-pick"
-              className="select"
-              value={knownIds.has(normalizedValue) ? normalizedValue : ""}
-              onChange={(event) => {
-                if (event.target.value) {
-                  handleQuickPick(event.target.value);
-                }
-              }}
-              disabled={isLoading}
-            >
-              <option value="">Select existing project…</option>
-              {studies.map((study) => (
-                <option key={study.studyId} value={study.studyId}>
-                  {study.studyId}
-                </option>
-              ))}
-            </select>
-          </label>
-        ) : null}
-        <span className="step7-muted">
-          {isLoading
-            ? "Loading projects from blob..."
-            : error ||
-              (studies.length > 0
-                ? `${studies.length} blob project${studies.length === 1 ? "" : "s"} available — type a new ID and click Use ID`
-                : "Type a project ID and click Use ID")}
-          {isCustomProject ? " · Custom project (not in blob list yet)" : ""}
-        </span>
-        {onReload ? (
-          <button className="button button-secondary" type="button" onClick={onReload} disabled={isLoading}>
-            Reload projects
-          </button>
-        ) : null}
+        {!showBlobPickerFirst ? (
+          <>
+            {blobPicker}
+            <span className="step7-muted">{isCustomProject ? "Custom project (not in blob list yet)" : ""}</span>
+          </>
+        ) : (
+          <span className="step7-muted">{isCustomProject ? "Custom project (not in blob list yet)" : ""}</span>
+        )}
       </label>
     </div>
   );

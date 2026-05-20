@@ -29,6 +29,7 @@ export interface StudyOption {
   acrfBlob: string;
   protocolFileName?: string;
   acrfFileName?: string;
+  bothUploaded?: boolean;
   stepStatuses: Record<string, StepStatus>;
   nextStepId: string | null;
 }
@@ -217,6 +218,13 @@ export interface Step7PseudoLogicSingleResponse {
 export interface Step7PseudoLogicBulkResponse {
   studyId: string;
   generated: number;
+  rows: Step7DeviationRow[];
+  stepStatuses: Record<string, StepStatus>;
+}
+
+export interface Step7AcceptAllResponse {
+  studyId: string;
+  accepted: number;
   rows: Step7DeviationRow[];
   stepStatuses: Record<string, StepStatus>;
 }
@@ -452,6 +460,50 @@ export async function deleteStep7Deviation(
   return parseApiResponse<Step7DeviationListMutationResponse>(response);
 }
 
+export interface Step7ExportWorkbookResult {
+  blob: Blob;
+  fileName: string;
+  rowCount?: number;
+}
+
+function parseContentDispositionFileName(header: string | null, fallback: string): string {
+  if (!header) {
+    return fallback;
+  }
+  const utf8Match = /filename\*=UTF-8''([^;]+)/i.exec(header);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      return utf8Match[1];
+    }
+  }
+  const plainMatch = /filename="?([^";]+)"?/i.exec(header);
+  return plainMatch?.[1]?.trim() || fallback;
+}
+
+export async function exportStep7DeviationsWorkbook(studyId: string): Promise<Step7ExportWorkbookResult> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/export`
+  );
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`;
+    try {
+      const parsed = (await response.json()) as ApiEnvelope<unknown>;
+      message = parsed.error?.message ?? message;
+    } catch {
+      // ignore non-JSON error bodies
+    }
+    throw new Error(message);
+  }
+  const blob = await response.blob();
+  const fileName = parseContentDispositionFileName(
+    response.headers.get("Content-Disposition"),
+    `${studyId}_deviations_review.xlsx`
+  );
+  return { blob, fileName };
+}
+
 export async function importStep7DeviationsWorkbook(
   studyId: string,
   workbook: File
@@ -507,6 +559,18 @@ export async function generateStep7PseudoLogic(
     }
   );
   return parseApiResponse<Step7PseudoLogicSingleResponse>(response);
+}
+
+export async function acceptStep7DeviationsAll(studyId: string): Promise<Step7AcceptAllResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/accept-all`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({})
+    }
+  );
+  return parseApiResponse<Step7AcceptAllResponse>(response);
 }
 
 export async function generateStep7PseudoLogicAll(studyId: string): Promise<Step7PseudoLogicBulkResponse> {

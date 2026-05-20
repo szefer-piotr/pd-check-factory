@@ -20,6 +20,7 @@ vi.mock("../services/stepApi", () => ({
         studyId: "MY-STUDY",
         protocolBlob: "raw/MY-STUDY/protocol.pdf",
         acrfBlob: "raw/MY-STUDY/acrf.pdf",
+        bothUploaded: true,
         stepStatuses: DONE_STATUSES,
         nextStepId: "review-and-finalize"
       }
@@ -212,6 +213,38 @@ vi.mock("../services/stepApi", () => ({
       "review-and-finalize": "pending"
     }
   })),
+  acceptStep7DeviationsAll: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    accepted: 1,
+    rows: [
+      {
+        rule_id: "rule-001",
+        deviation_id: "dev-0001",
+        rule_title: "Visit window timing",
+        rule_text: "Visit must happen inside window",
+        deviation_text: "Visit date outside window",
+        paragraph_refs: ["p2"],
+        paragraph_refs_text: "p2",
+        supporting_sentences: [{ ref: "p2", text: "Visit 2 must occur within 7 days." }],
+        data_support_note: "SV date supports this deviation",
+        pseudo_logic: "SELECT 1",
+        status: "accepted",
+        dm_comment: "",
+        entry_source: "extracted",
+        programmable: true,
+        programmability_note: "ok"
+      }
+    ],
+    stepStatuses: {
+      "extract-inputs": "done",
+      "index-protocol": "done",
+      "acrf-split-toc": "done",
+      "acrf-summary-text": "done",
+      "extract-rules": "done",
+      "extract-deviations": "done",
+      "review-and-finalize": "pending"
+    }
+  })),
   generateStep7PseudoLogicAll: vi.fn(async () => ({
     studyId: "MY-STUDY",
     generated: 1,
@@ -273,6 +306,12 @@ vi.mock("../services/stepApi", () => ({
     columns: ["rule_id", "deviation_id", "rule_title", "deviation_text", "paragraph_refs", "pseudo_logic"],
     rows: [],
     stepStatuses: DONE_STATUSES
+  })),
+  exportStep7DeviationsWorkbook: vi.fn(async () => ({
+    blob: new Blob(["xlsx"], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    }),
+    fileName: "MY-STUDY_deviations_review.xlsx"
   })),
   importStep7DeviationsWorkbook: vi.fn(async () => ({
     studyId: "MY-STUDY",
@@ -414,26 +453,44 @@ describe("Workflow pipeline pages", () => {
   it("renders step navigation and default step panel", async () => {
     render(<App />);
 
-    expect(await screen.findByText(/1 blob project/)).toBeInTheDocument();
+    expect((await screen.findAllByText(/1 project in blob/)).length).toBeGreaterThan(0);
     expect(screen.getAllByText("Step 1 - Processing").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: /Run extraction pipeline|Re-run extraction pipeline/i })).toBeInTheDocument();
     expect(screen.getByText("PDF extractor")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Use ID" })).toBeInTheDocument();
-    expect(screen.getByPlaceholderText(/Type a new project ID/i)).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Use ID" }).length).toBeGreaterThan(0);
+    expect(screen.getAllByPlaceholderText(/Type a new project ID/i).length).toBeGreaterThan(0);
+    const step1Picker = document.getElementById("step1-blob-project-picker");
+    expect(step1Picker).toBeInTheDocument();
+    expect(within(step1Picker!.parentElement!.parentElement!).getByRole("option", { name: "MY-STUDY" })).toBeInTheDocument();
   });
 
   it("switches to a typed project id when Use ID is clicked", async () => {
     const user = userEvent.setup();
     render(<App />);
 
-    const input = await screen.findByPlaceholderText(/Type a new project ID/i);
+    const input = (await screen.findAllByPlaceholderText(/Type a new project ID/i))[0];
     await user.click(input);
     await user.keyboard("{Control>}a{/Control}");
     await user.keyboard("NEW-STUDY");
-    await user.click(screen.getByRole("button", { name: "Use ID" }));
+    await user.click(screen.getAllByRole("button", { name: "Use ID" })[0]);
 
     expect(input).toHaveValue("NEW-STUDY");
-    expect(await screen.findByText(/Custom project/i)).toBeInTheDocument();
+    expect((await screen.findAllByText(/Custom project/i)).length).toBeGreaterThan(0);
+  });
+
+  it("selects an existing blob project from the Step 1 dropdown", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+
+    const picker = await waitFor(() => {
+      const element = document.getElementById("step1-blob-project-picker") as HTMLSelectElement | null;
+      if (!element || element.disabled) {
+        throw new Error("picker not ready");
+      }
+      return element;
+    });
+    await user.selectOptions(picker, "MY-STUDY");
+    expect(picker).toHaveValue("MY-STUDY");
   });
 
   it("switches to rule extraction page, shows preview, and runs backend step", async () => {
@@ -462,6 +519,36 @@ describe("Workflow pipeline pages", () => {
 
     await user.click(screen.getByRole("button", { name: /Step 2 - Rule Extractions/i }));
     expect(await screen.findByRole("button", { name: "Re-run" })).toBeInTheDocument();
+  });
+
+  it("exports current deviations from Step 4 review", async () => {
+    const stepApi = await import("../services/stepApi");
+    const user = userEvent.setup();
+    const createObjectURL = vi.fn(() => "blob:export");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { createObjectURL, revokeObjectURL });
+
+    const click = vi.fn();
+    const createElement = vi.spyOn(document, "createElement").mockImplementation((tagName: string) => {
+      const element = document.createElementNS("http://www.w3.org/1999/xhtml", tagName) as HTMLAnchorElement;
+      if (tagName === "a") {
+        element.click = click;
+      }
+      return element;
+    });
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: /Step 4 - Review and Finalize/i }));
+    await user.click(screen.getByRole("button", { name: "Generate Excel" }));
+
+    await waitFor(() => {
+      expect(stepApi.exportStep7DeviationsWorkbook).toHaveBeenCalledWith("MY-STUDY");
+    });
+    expect(click).toHaveBeenCalled();
+    expect(await screen.findByText(/Downloaded MY-STUDY_deviations_review\.xlsx/i)).toBeInTheDocument();
+
+    createElement.mockRestore();
+    vi.unstubAllGlobals();
   });
 
   it("renders step 7 rule groups and drawer chat", async () => {
@@ -504,6 +591,23 @@ describe("Workflow pipeline pages", () => {
     const call = vi.mocked(stepApi.runStep).mock.calls.find(([_, id]) => id === "extract-rules");
     expect(call).toBeDefined();
     expect(call![2]).toEqual({ llmInstructions: "Emphasize dosing" });
+  });
+
+  it("accepts all pending deviations in bulk and enables pseudo generation", async () => {
+    const stepApi = await import("../services/stepApi");
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /Step 4 - Review and Finalize/i }));
+    expect(await screen.findByText("Visit window timing")).toBeInTheDocument();
+
+    const acceptAllButton = screen.getByRole("button", { name: /Accept all \(1\)/i });
+    expect(screen.getByRole("button", { name: /Generate all pseudo \(0\)/i })).toBeDisabled();
+
+    await user.click(acceptAllButton);
+    expect(await screen.findByText(/Accepted 1 deviation/i)).toBeInTheDocument();
+    expect(stepApi.acceptStep7DeviationsAll).toHaveBeenCalledWith("MY-STUDY");
+    expect(await screen.findByRole("button", { name: /Generate all pseudo \(1\)/i })).toBeEnabled();
   });
 
   it("disables pseudo logic generation when no row is accepted, then enables it after acceptance", async () => {

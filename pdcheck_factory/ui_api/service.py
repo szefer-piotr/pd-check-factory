@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List
 
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
 from pdcheck_factory import blob_io, extraction_resolve, paths, pipeline_v2, study_artifact_sync
 from pdcheck_factory.json_util import read_json, write_json
@@ -43,6 +43,26 @@ STEP_DEPENDENCIES: Dict[str, List[str]] = {
     "extract-deviations": ["extract-rules", "acrf-summary-text"],
     "review-and-finalize": ["extract-deviations"],
 }
+
+STEP7_EXPORT_COLUMNS: List[str] = [
+    "study_id",
+    "exported_at",
+    "rule_id",
+    "rule_title",
+    "rule_text",
+    "rule_paragraph_refs",
+    "deviation_id",
+    "deviation_text",
+    "paragraph_refs",
+    "supporting_sentences",
+    "data_support_note",
+    "status",
+    "dm_comment",
+    "entry_source",
+    "programmable",
+    "programmability_note",
+    "pseudo_logic",
+]
 
 
 @dataclass(frozen=True)
@@ -585,36 +605,45 @@ class UiStepService:
     def list_studies(self) -> Dict[str, Any]:
         blob_service = blob_io.blob_service_from_env()
         container = blob_io.container_from_env()
-        names = blob_io.list_blob_names_with_prefix(
-            blob_service=blob_service,
-            container_name=container,
-            prefix="raw/",
-        )
-        by_study: Dict[str, set[str]] = {}
-        for name in names:
-            parts = name.strip("/").split("/")
-            if len(parts) != 3 or parts[0] != "raw":
-                continue
-            study_id, file_name = parts[1], parts[2]
-            if file_name in {"protocol.pdf", "acrf.pdf"}:
-                by_study.setdefault(study_id, set()).add(file_name)
+        raw_files_by_study: Dict[str, set[str]] = {}
+        study_ids: set[str] = set()
+
+        for prefix in ("raw/", "extractions/", "pipeline/", "review/"):
+            names = blob_io.list_blob_names_with_prefix(
+                blob_service=blob_service,
+                container_name=container,
+                prefix=prefix,
+            )
+            for name in names:
+                parts = name.strip("/").split("/")
+                if len(parts) < 2 or parts[0] != prefix.rstrip("/"):
+                    continue
+                study_id = parts[1]
+                if not study_id:
+                    continue
+                study_ids.add(study_id)
+                if prefix == "raw/" and len(parts) == 3:
+                    raw_files_by_study.setdefault(study_id, set()).add(parts[2])
 
         studies = []
-        for study_id in sorted(by_study):
-            if {"protocol.pdf", "acrf.pdf"}.issubset(by_study[study_id]):
-                statuses = self._step_statuses(study_id)
-                filenames = self._read_upload_filenames(study_id)
-                studies.append(
-                    {
-                        "studyId": study_id,
-                        "protocolBlob": paths.raw_protocol_blob(study_id),
-                        "acrfBlob": paths.raw_acrf_blob(study_id),
-                        "protocolFileName": filenames["protocolFileName"],
-                        "acrfFileName": filenames["acrfFileName"],
-                        "stepStatuses": statuses,
-                        "nextStepId": next((step_id for step_id in STEP_ORDER if statuses[step_id] != "done"), None),
-                    }
-                )
+        for study_id in sorted(study_ids):
+            raw_files = raw_files_by_study.get(study_id, set())
+            has_protocol = "protocol.pdf" in raw_files
+            has_acrf = "acrf.pdf" in raw_files
+            statuses = self._step_statuses(study_id)
+            filenames = self._read_upload_filenames(study_id)
+            studies.append(
+                {
+                    "studyId": study_id,
+                    "protocolBlob": paths.raw_protocol_blob(study_id),
+                    "acrfBlob": paths.raw_acrf_blob(study_id),
+                    "protocolFileName": filenames["protocolFileName"] if has_protocol else None,
+                    "acrfFileName": filenames["acrfFileName"] if has_acrf else None,
+                    "bothUploaded": has_protocol and has_acrf,
+                    "stepStatuses": statuses,
+                    "nextStepId": next((step_id for step_id in STEP_ORDER if statuses[step_id] != "done"), None),
+                }
+            )
         return {"studies": studies}
 
     def delete_study(self, study_id: str) -> Dict[str, Any]:
@@ -1216,6 +1245,98 @@ class UiStepService:
         payload["imported"] = len(imported)
         return payload
 
+    @staticmethod
+    def _format_supporting_sentences(sentences: List[Dict[str, Any]]) -> str:
+        parts: List[str] = []
+        for item in sentences:
+            ref = str(item.get("ref", "")).strip()
+            text = str(item.get("text", "")).strip()
+            if ref and text:
+                parts.append(f"{ref}: {text}")
+            elif ref:
+                parts.append(ref)
+            elif text:
+                parts.append(text)
+        return " | ".join(parts)
+
+    @staticmethod
+    def _format_programmable(value: Any) -> str:
+        if value is True:
+            return "true"
+        if value is False:
+            return "false"
+        return ""
+
+    def export_step7_deviations_xlsx(self, study_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        payload = self.get_step7_deviations(study_id)
+        rows = list(payload.get("rows", []))
+        rules_obj = self._load_rules(study_id)
+        rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
+        exported_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        timestamp_slug = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        file_name = f"{study_id}_deviations_review_{timestamp_slug}.xlsx"
+
+        workbook = Workbook()
+        sheet = workbook.active
+        sheet.title = "Deviations"
+        sheet.append(STEP7_EXPORT_COLUMNS)
+        for row in rows:
+            rule = rule_by_id.get(str(row.get("rule_id", "")), {})
+            rule_refs = rule.get("paragraph_refs") or []
+            sheet.append(
+                [
+                    study_id,
+                    exported_at,
+                    row.get("rule_id", ""),
+                    row.get("rule_title", ""),
+                    row.get("rule_text", ""),
+                    ", ".join(str(ref) for ref in rule_refs),
+                    row.get("deviation_id", ""),
+                    row.get("deviation_text", ""),
+                    row.get("paragraph_refs_text", "") or ", ".join(str(ref) for ref in row.get("paragraph_refs", [])),
+                    self._format_supporting_sentences(list(row.get("supporting_sentences", []))),
+                    row.get("data_support_note", ""),
+                    row.get("status", ""),
+                    row.get("dm_comment", ""),
+                    row.get("entry_source", ""),
+                    self._format_programmable(row.get("programmable")),
+                    row.get("programmability_note", ""),
+                    row.get("pseudo_logic", ""),
+                ]
+            )
+
+        summary = workbook.create_sheet("Summary")
+        status_counts = {"pending": 0, "to_review": 0, "accepted": 0, "rejected": 0}
+        for row in rows:
+            status = str(row.get("status", "pending"))
+            if status in status_counts:
+                status_counts[status] += 1
+        summary.append(["field", "value"])
+        summary.append(["study_id", study_id])
+        summary.append(["exported_at", exported_at])
+        summary.append(["total_deviations", len(rows)])
+        summary.append(["accepted", status_counts["accepted"]])
+        summary.append(["to_review", status_counts["to_review"]])
+        summary.append(["rejected", status_counts["rejected"]])
+        summary.append(["pending", status_counts["pending"]])
+
+        out_path = paths.local_deviations_review_export_xlsx(study_id, self.output_dir)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        workbook.save(out_path)
+
+        buffer = BytesIO()
+        workbook.save(buffer)
+        content = buffer.getvalue()
+        return {
+            "studyId": study_id,
+            "fileName": file_name,
+            "filePath": str(out_path),
+            "rowCount": len(rows),
+            "exportedAt": exported_at,
+            "content": content,
+        }
+
     def _single_step7_deviation_response(self, study_id: str, row: Dict[str, Any]) -> Dict[str, Any]:
         pseudo_obj = self._load_pseudo_state(study_id)
         rules_obj = self._load_rules(study_id)
@@ -1488,6 +1609,53 @@ class UiStepService:
             "studyId": study_id,
             "deviationId": dev_id,
             "row": self._normalized_step7_row(row, pseudo_by_dev, rule_by_id),
+            "stepStatuses": self._step_statuses(study_id),
+        }
+
+    def accept_step7_deviations_bulk(self, study_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        state_obj = self._load_state(study_id)
+        rows = list(state_obj.get("deviations", []))
+        accepted_count = 0
+        for row in rows:
+            status = str(row.get("status", "pending"))
+            if status in {"accepted", "rejected"}:
+                continue
+            row["status"] = "accepted"
+            accepted_count += 1
+        if accepted_count == 0:
+            pseudo_obj = self._load_pseudo_state(study_id)
+            rules_obj = read_json(paths.local_rules_parsed_json(study_id, self.output_dir))
+            pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in pseudo_obj.get("items", [])}
+            rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
+            normalized = [
+                self._normalized_step7_row(row, pseudo_by_dev, rule_by_id) for row in state_obj.get("deviations", [])
+            ]
+            return {
+                "studyId": study_id,
+                "accepted": 0,
+                "rows": normalized,
+                "stepStatuses": self._step_statuses(study_id),
+            }
+
+        state_obj["deviations"] = rows
+        self._persist_state(
+            study_id,
+            state_obj,
+            self._audit(study_id, action="accept_all_deviations", target_id="bulk", updated_rows=accepted_count),
+        )
+
+        pseudo_obj = self._load_pseudo_state(study_id)
+        rules_obj = read_json(paths.local_rules_parsed_json(study_id, self.output_dir))
+        pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in pseudo_obj.get("items", [])}
+        rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
+        normalized = [
+            self._normalized_step7_row(row, pseudo_by_dev, rule_by_id) for row in state_obj.get("deviations", [])
+        ]
+        return {
+            "studyId": study_id,
+            "accepted": accepted_count,
+            "rows": normalized,
             "stepStatuses": self._step_statuses(study_id),
         }
 

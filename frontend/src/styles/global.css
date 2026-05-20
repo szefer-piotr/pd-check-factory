@@ -121,6 +121,33 @@ body {
   margin-top: var(--space-sm);
 }
 
+.study-selector-step1 {
+  display: grid;
+  gap: var(--space-md);
+}
+
+.study-pipeline-project-panel {
+  padding: var(--space-md);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-elevated, var(--surface));
+}
+
+.blob-project-picker {
+  width: 100%;
+}
+
+.blob-project-picker-row {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: stretch;
+}
+
+.blob-project-picker-select {
+  flex: 1;
+  min-width: 12rem;
+}
+
 .study-delete-message {
   margin: var(--space-xs) 0 0;
 }

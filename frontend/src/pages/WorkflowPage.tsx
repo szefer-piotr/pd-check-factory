@@ -542,6 +542,12 @@ export function WorkflowPage(): JSX.Element {
                 backendStatuses={backendStatuses}
                 pipelineState={pipelineState}
                 onStatusesChange={applyBackendStatuses}
+                onStudyChange={handleStudyChange}
+                onNewStudy={handleNewStudy}
+                studies={studies}
+                isLoadingStudies={isLoadingStudies}
+                studyListError={studyListError}
+                onReloadStudies={() => void loadStudies()}
                 onRunProcessing={handleRunProcessing}
                 onRunToDmReview={handleAutoRunToDmReview}
                 onNavigateToStep={handleSelectStep}

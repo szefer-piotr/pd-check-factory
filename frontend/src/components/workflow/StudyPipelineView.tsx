@@ -13,12 +13,20 @@ import { ExtractionStatusPanel } from "./ExtractionStatusPanel";
 import { MarkdownPreview } from "./MarkdownPreview";
 import type { ProcessingSubProgressItem } from "./ProcessingPanel";
 import { PipelineStepper, type PipelineStage, type PipelineStageId } from "./PipelineStepper";
+import { StudySelector } from "../ui/StudySelector";
+import type { StudyOption } from "../../services/stepApi";
 
 interface StudyPipelineViewProps {
   studyId: string;
   backendStatuses: Record<string, StepStatus>;
   pipelineState: UseStudyPipelineStateResult;
   onStatusesChange: (statuses: Record<string, StepStatus>) => void;
+  onStudyChange: (studyId: string) => void;
+  onNewStudy?: () => void;
+  studies: StudyOption[];
+  isLoadingStudies?: boolean;
+  studyListError?: string;
+  onReloadStudies?: () => void;
   onRunProcessing: (extractor: Step1PdfExtractor) => Promise<void>;
   onRunToDmReview: () => Promise<void>;
   onNavigateToStep: (stepId: string) => void;
@@ -56,6 +64,12 @@ export function StudyPipelineView({
   backendStatuses,
   pipelineState,
   onStatusesChange,
+  onStudyChange,
+  onNewStudy,
+  studies,
+  isLoadingStudies = false,
+  studyListError = "",
+  onReloadStudies,
   onRunProcessing,
   onRunToDmReview,
   onNavigateToStep,
@@ -302,6 +316,20 @@ export function StudyPipelineView({
 
   return (
     <section className="workflow-panel study-pipeline-view" aria-label="Study pipeline setup">
+      <div className="study-pipeline-project-panel">
+        <StudySelector
+          value={studyId}
+          onChange={onStudyChange}
+          onNewStudy={onNewStudy}
+          studies={studies}
+          isLoading={isLoadingStudies}
+          error={studyListError}
+          onReload={onReloadStudies}
+          showBlobPickerFirst
+          blobPickerId="step1-blob-project-picker"
+        />
+      </div>
+
       <PipelineStepper stages={stages} onSelect={handleStepperSelect} />
 
       <div className="study-pipeline-stage">

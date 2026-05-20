@@ -2,7 +2,7 @@ from pathlib import Path
 from io import BytesIO
 
 import pytest
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 
 from pdcheck_factory import blob_io, extraction_resolve, paths
 from pdcheck_factory.json_util import read_json, write_json
@@ -157,9 +157,13 @@ def test_list_studies_discovers_raw_blob_pairs(tmp_path: Path, monkeypatch: pyte
 
     payload = service.list_studies()
 
-    assert [study["studyId"] for study in payload["studies"]] == ["STUDY-A"]
-    assert payload["studies"][0]["protocolBlob"] == "raw/STUDY-A/protocol.pdf"
-    assert payload["studies"][0]["stepStatuses"]["extract-inputs"] == "pending"
+    assert [study["studyId"] for study in payload["studies"]] == ["STUDY-A", "STUDY-B", "STUDY-C"]
+    study_a = next(study for study in payload["studies"] if study["studyId"] == "STUDY-A")
+    assert study_a["protocolBlob"] == "raw/STUDY-A/protocol.pdf"
+    assert study_a["bothUploaded"] is True
+    assert study_a["stepStatuses"]["extract-inputs"] == "pending"
+    study_b = next(study for study in payload["studies"] if study["studyId"] == "STUDY-B")
+    assert study_b["bothUploaded"] is False
 
 
 def test_delete_study_removes_all_blob_prefixes_and_local_output(
@@ -360,6 +364,56 @@ def test_step7_manual_deviation_crud_and_xlsx_import(tmp_path: Path) -> None:
     assert any(row.get("entry_source") == "imported" for row in state["deviations"])
 
 
+def test_export_step7_deviations_xlsx_writes_workbook(tmp_path: Path) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "MY-STUDY"
+    _seed_step7_state(tmp_path, study_id, status="accepted")
+
+    pseudo_path = paths.local_pseudo_logic_review_state(study_id, tmp_path)
+    pseudo_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(
+        pseudo_path,
+        {
+            "items": [
+                {
+                    "deviation_id": "dev-0001",
+                    "pseudo_logic": "SELECT 1",
+                    "programmable": True,
+                    "programmability_note": "ok",
+                }
+            ]
+        },
+    )
+
+    exported = service.export_step7_deviations_xlsx(study_id)
+    assert exported["rowCount"] == 1
+    assert exported["fileName"].endswith(".xlsx")
+
+    out_path = paths.local_deviations_review_export_xlsx(study_id, tmp_path)
+    assert out_path.is_file()
+
+    workbook = load_workbook(out_path, read_only=True, data_only=True)
+    deviations = workbook["Deviations"]
+    headers = [cell.value for cell in next(deviations.iter_rows(min_row=1, max_row=1))]
+    assert "deviation_id" in headers
+    assert "pseudo_logic" in headers
+    assert "programmable" in headers
+    assert "programmability_note" in headers
+    assert "supporting_sentences" in headers
+
+    data_row = next(deviations.iter_rows(min_row=2, max_row=2, values_only=True))
+    row_map = dict(zip(headers, data_row))
+    assert row_map["deviation_id"] == "dev-0001"
+    assert row_map["pseudo_logic"] == "SELECT 1"
+    assert row_map["programmable"] == "true"
+
+    summary = workbook["Summary"]
+    summary_rows = list(summary.iter_rows(min_row=2, values_only=True))
+    summary_map = {row[0]: row[1] for row in summary_rows if row[0]}
+    assert summary_map["total_deviations"] == 1
+    assert summary_map["accepted"] == 1
+
+
 def test_step7_manual_rule_crud(tmp_path: Path) -> None:
     service = UiStepService(output_dir=tmp_path)
     study_id = "MY-STUDY"
@@ -449,6 +503,29 @@ def test_generate_step7_pseudo_logic_for_deviation_rejects_non_accepted(
         service.generate_step7_pseudo_logic_for_deviation(study_id, "dev-0001")
     assert blocked.value.code == "STEP_BLOCKED"
     assert blocked.value.status_code == 409
+
+
+def test_accept_step7_deviations_bulk_accepts_pending_and_to_review(tmp_path: Path) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "MY-STUDY"
+    _seed_step7_state(tmp_path, study_id, status="to_review")
+
+    payload = service.accept_step7_deviations_bulk(study_id)
+    assert payload["accepted"] == 1
+    assert payload["rows"][0]["status"] == "accepted"
+
+    state = read_json(paths.local_deviations_review_state(study_id, tmp_path))
+    assert state["deviations"][0]["status"] == "accepted"
+
+
+def test_accept_step7_deviations_bulk_skips_rejected(tmp_path: Path) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "MY-STUDY"
+    _seed_step7_state(tmp_path, study_id, status="rejected")
+
+    payload = service.accept_step7_deviations_bulk(study_id)
+    assert payload["accepted"] == 0
+    assert payload["rows"][0]["status"] == "rejected"
 
 
 def test_generate_step7_pseudo_logic_bulk_returns_rows_and_count(
