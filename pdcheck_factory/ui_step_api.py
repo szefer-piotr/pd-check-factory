@@ -130,7 +130,9 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 raise UiApiError("NOT_FOUND", "Not found", 404)
 
             study_id, tail = v1
-            if tail == "step1/upload":
+            if tail == "sync":
+                data = self.service.sync_study(study_id)
+            elif tail == "step1/upload":
                 data = self._parse_step1_upload(study_id)
             elif tail == "step1/extract":
                 data = self._parse_step1_extract(study_id)

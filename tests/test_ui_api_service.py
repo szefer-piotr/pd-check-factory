@@ -498,6 +498,11 @@ def test_run_step1_extract_opendataloader_flags_and_choice(tmp_path: Path, monke
     study_id = "EX-S"
     captured: dict = {}
 
+    monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
+    monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
+    monkeypatch.setattr(blob_io, "blob_exists", lambda **_kwargs: True)
+    monkeypatch.setattr(blob_io, "upload_blob_bytes", lambda **_kwargs: None)
+
     def fake_run_extract(**kwargs: object) -> None:
         captured.update(kwargs)
 
@@ -518,6 +523,11 @@ def test_run_step1_extract_document_intelligence_flags(tmp_path: Path, monkeypat
     study_id = "EX-S"
     captured: dict = {}
 
+    monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
+    monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
+    monkeypatch.setattr(blob_io, "blob_exists", lambda **_kwargs: True)
+    monkeypatch.setattr(blob_io, "upload_blob_bytes", lambda **_kwargs: None)
+
     def fake_run_extract(**kwargs: object) -> None:
         captured.update(kwargs)
 
@@ -536,6 +546,11 @@ def test_run_step1_extract_default_both(tmp_path: Path, monkeypatch: pytest.Monk
     service = UiStepService(output_dir=tmp_path)
     study_id = "EX-S"
     captured: dict = {}
+
+    monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
+    monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
+    monkeypatch.setattr(blob_io, "blob_exists", lambda **_kwargs: True)
+    monkeypatch.setattr(blob_io, "upload_blob_bytes", lambda **_kwargs: None)
 
     def fake_run_extract(**kwargs: object) -> None:
         captured.update(kwargs)
@@ -641,6 +656,11 @@ def test_run_step1_extract_requires_uploads(tmp_path: Path, monkeypatch: pytest.
 def test_run_step1_extract_invalid_extractor(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = UiStepService(output_dir=tmp_path)
 
+    monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
+    monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
+    monkeypatch.setattr(blob_io, "blob_exists", lambda **_kwargs: True)
+    monkeypatch.setattr(blob_io, "upload_blob_bytes", lambda **_kwargs: None)
+
     def fake_run_extract(**_kwargs: object) -> None:
         raise AssertionError("run_extract should not be called")
 
@@ -650,3 +670,30 @@ def test_run_step1_extract_invalid_extractor(tmp_path: Path, monkeypatch: pytest
     with pytest.raises(UiApiError) as exc:
         service.run_step1_extract("EX-S", extractor="bogus")
     assert exc.value.code == "VALIDATION_ERROR"
+
+
+def test_sync_study_returns_report_and_statuses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pdcheck_factory import study_artifact_sync
+
+    monkeypatch.setattr(
+        study_artifact_sync,
+        "sync_study",
+        lambda *_a, **_k: study_artifact_sync.SyncReport(uploaded=2, downloaded=1, skipped=3, errors=0),
+    )
+
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "SYNC-01"
+    proto = extraction_resolve.resolve_protocol_rendered_source_md(study_id, tmp_path)
+    acrf = extraction_resolve.resolve_acrf_rendered_source_md(study_id, tmp_path)
+    proto.parent.mkdir(parents=True, exist_ok=True)
+    acrf.parent.mkdir(parents=True, exist_ok=True)
+    _touch(proto)
+    _touch(acrf)
+
+    out = service.sync_study(study_id)
+    assert out["studyId"] == study_id
+    assert out["sync"]["uploaded"] == 2
+    assert out["sync"]["downloaded"] == 1
+    assert out["sync"]["skipped"] == 3
+    assert out["sync"]["errors"] == 0
+    assert "extract-inputs" in out["stepStatuses"]

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Dict, List, Optional
 
 from azure.core.exceptions import HttpResponseError, ResourceNotFoundError
@@ -197,6 +199,90 @@ def list_blob_names_with_prefix(
     for blob in container_client.list_blobs(name_starts_with=prefix):
         names.append(blob.name)
     return sorted(names)
+
+
+@dataclass(frozen=True)
+class BlobItem:
+    """Minimal blob listing row for sync decisions."""
+
+    name: str
+    last_modified: datetime
+    size: int
+
+
+def list_blobs_with_properties(
+    *,
+    blob_service: BlobServiceClient,
+    container_name: str,
+    prefix: str,
+) -> List[BlobItem]:
+    """List blobs under ``prefix`` with last-modified time and size (files only)."""
+    container_client = blob_service.get_container_client(container_name)
+    prefix = prefix.lstrip("/")
+    out: List[BlobItem] = []
+    for blob in container_client.list_blobs(name_starts_with=prefix):
+        props = blob
+        lm = getattr(props, "last_modified", None) or datetime.now(timezone.utc)
+        if lm.tzinfo is None:
+            lm = lm.replace(tzinfo=timezone.utc)
+        else:
+            lm = lm.astimezone(timezone.utc)
+        size = int(getattr(props, "size", 0) or 0)
+        out.append(BlobItem(name=str(props.name), last_modified=lm, size=size))
+    return sorted(out, key=lambda b: b.name)
+
+
+def guess_content_type(file_path: Path) -> str:
+    suffix = file_path.suffix.lower()
+    mapping = {
+        ".json": "application/json",
+        ".md": "text/markdown",
+        ".txt": "text/plain",
+        ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        ".pdf": "application/pdf",
+        ".html": "text/html",
+        ".xml": "application/xml",
+    }
+    return mapping.get(suffix, "application/octet-stream")
+
+
+def upload_file(
+    *,
+    blob_service: BlobServiceClient,
+    container_name: str,
+    blob_path: str,
+    local_path: Path,
+    content_type: str | None = None,
+    debug: bool = False,
+) -> None:
+    """Read ``local_path`` and upload to ``blob_path``."""
+    data = local_path.read_bytes()
+    ct = content_type or guess_content_type(local_path)
+    upload_blob_bytes(
+        blob_service=blob_service,
+        container_name=container_name,
+        blob_path=blob_path,
+        data=data,
+        content_type=ct,
+        debug=debug,
+    )
+
+
+def download_file(
+    *,
+    blob_service: BlobServiceClient,
+    container_name: str,
+    blob_path: str,
+    local_path: Path,
+) -> None:
+    """Download blob bytes into ``local_path`` (creates parent directories)."""
+    data = download_blob_bytes(
+        blob_service=blob_service,
+        container_name=container_name,
+        blob_path=blob_path,
+    )
+    local_path.parent.mkdir(parents=True, exist_ok=True)
+    local_path.write_bytes(data)
 
 
 def describe_blob(

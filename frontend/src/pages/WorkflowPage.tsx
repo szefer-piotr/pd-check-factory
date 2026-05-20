@@ -19,6 +19,7 @@ import {
   fetchStudies,
   runStep,
   runStep1Extraction,
+  syncStudy,
   type Step1PdfExtractor,
   type StepStatus,
   type StudyOption
@@ -186,26 +187,35 @@ export function WorkflowPage(): JSX.Element {
   const stepStatus = navStatuses[activeStep.id] ?? "pending";
   const hasRunStep = stepStatus === "done";
 
-  const loadStudies = useCallback(async (): Promise<void> => {
-    setIsLoadingStudies(true);
-    setStudyListError("");
-    try {
-      const response = await fetchStudies();
-      setStudies(response.studies);
-      const current = response.studies.find((study) => study.studyId === studyId.trim());
-      if (current) {
-        applyBackendStatuses(current.stepStatuses);
-      } else if (!studyId.trim() && response.studies.length > 0) {
-        setStudyId(response.studies[0].studyId);
-        applyBackendStatuses(response.studies[0].stepStatuses);
+  const loadStudies = useCallback(
+    async (options?: { syncFirst?: boolean }): Promise<void> => {
+      setIsLoadingStudies(true);
+      setStudyListError("");
+      try {
+        if (options?.syncFirst) {
+          const sid = studyId.trim();
+          if (sid) {
+            await syncStudy(sid);
+          }
+        }
+        const response = await fetchStudies();
+        setStudies(response.studies);
+        const current = response.studies.find((study) => study.studyId === studyId.trim());
+        if (current) {
+          applyBackendStatuses(current.stepStatuses);
+        } else if (!studyId.trim() && response.studies.length > 0) {
+          setStudyId(response.studies[0].studyId);
+          applyBackendStatuses(response.studies[0].stepStatuses);
+        }
+      } catch (studyError) {
+        setStudyListError(studyError instanceof Error ? studyError.message : "Unable to load blob projects.");
+        setStudies([]);
+      } finally {
+        setIsLoadingStudies(false);
       }
-    } catch (studyError) {
-      setStudyListError(studyError instanceof Error ? studyError.message : "Unable to load blob projects.");
-      setStudies([]);
-    } finally {
-      setIsLoadingStudies(false);
-    }
-  }, [applyBackendStatuses, setStudyId, studyId]);
+    },
+    [applyBackendStatuses, setStudyId, studyId]
+  );
 
   useEffect(() => {
     setExtractionLlmInstructions("");
@@ -475,7 +485,7 @@ export function WorkflowPage(): JSX.Element {
               isLoading={isLoadingStudies}
               isDeleting={isDeletingStudy}
               error={studyListError || deleteStudyError}
-              onReload={() => void loadStudies()}
+              onReload={() => void loadStudies({ syncFirst: true })}
             />
             {deleteStudyMessage ? <p className="step7-muted study-delete-message">{deleteStudyMessage}</p> : null}
             <div className="study-chips">

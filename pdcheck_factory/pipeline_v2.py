@@ -7,9 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from openpyxl import Workbook
-
-from pdcheck_factory import document_chat_agent, extraction_resolve, llm, paths, text_parse
+from pdcheck_factory import document_chat_agent, extraction_resolve, llm, paths, study_artifact_sync, text_parse
+from pdcheck_factory.pd_spec_export import write_final_pd_spec_xlsx
 from pdcheck_factory.json_util import load_schema, read_json, validate, write_json
 from pdcheck_factory.prompt_loader import load_prompt
 
@@ -78,6 +77,8 @@ def step2_protocol_paragraph_index(study_id: str, output_dir: Path) -> Dict[str,
     out_md = paths.local_protocol_paragraphs_md(study_id, output_dir)
     out_md.parent.mkdir(parents=True, exist_ok=True)
     out_md.write_text("# Paragraph-numbered protocol\n\n" + "\n\n".join(numbered_lines), encoding="utf-8")
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_protocol_paragraph_index_json(study_id, output_dir))
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, out_md)
     return obj
 
 
@@ -211,6 +212,7 @@ def step1_acrf_summary_text(study_id: str, output_dir: Path) -> Dict[str, Any]:
     }
     out = paths.local_acrf_summary_text_merged(study_id, output_dir)
     write_json(out, merged)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, out)
     return merged
 
 
@@ -259,6 +261,8 @@ def step3_extract_rules(study_id: str, output_dir: Path, *, additional_instructi
     raw_out.parent.mkdir(parents=True, exist_ok=True)
     raw_out.write_text(reply, encoding="utf-8")
     write_json(paths.local_rules_parsed_json(study_id, output_dir), parsed)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, raw_out)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_rules_parsed_json(study_id, output_dir))
     return parsed
 
 
@@ -332,27 +336,9 @@ def step4_5_extract_deviations(study_id: str, output_dir: Path, *, additional_in
     raw_out.parent.mkdir(parents=True, exist_ok=True)
     raw_out.write_text("\n\n".join(all_raw), encoding="utf-8")
     write_json(paths.local_deviations_parsed_json(study_id, output_dir), parsed)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, raw_out)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_deviations_parsed_json(study_id, output_dir))
     return parsed
-
-
-def _write_simple_final_xlsx(final_obj: Dict[str, Any], out_path: Path) -> None:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Final Deviations"
-    ws.append(["rule_id", "deviation_id", "rule_title", "deviation_text", "paragraph_refs", "pseudo_logic"])
-    for item in final_obj.get("items", []):
-        ws.append(
-            [
-                item.get("rule_id", ""),
-                item.get("deviation_id", ""),
-                item.get("rule_title", ""),
-                item.get("deviation_text", ""),
-                ", ".join(item.get("paragraph_refs", [])),
-                item.get("pseudo_logic", ""),
-            ]
-        )
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(out_path)
 
 
 def step8_generate_pseudo_logic(study_id: str, output_dir: Path) -> Dict[str, Any]:
@@ -421,6 +407,9 @@ def step8_generate_pseudo_logic(study_id: str, output_dir: Path) -> Dict[str, An
     raw_path.write_text("\n\n".join(raw_chunks), encoding="utf-8")
     write_json(paths.local_pseudo_logic_validated_json(study_id, output_dir), out)
     write_json(paths.local_pseudo_logic_review_state(study_id, output_dir), out)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, raw_path)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_pseudo_logic_validated_json(study_id, output_dir))
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_pseudo_logic_review_state(study_id, output_dir))
     return out
 
 
@@ -515,7 +504,9 @@ def step10_finalize(study_id: str, output_dir: Path) -> Dict[str, Any]:
     if errs:
         raise ValueError("; ".join(errs))
     write_json(paths.local_final_deviations_json(study_id, output_dir), out)
-    _write_simple_final_xlsx(out, paths.local_final_deviations_xlsx(study_id, output_dir))
+    write_final_pd_spec_xlsx(out, paths.local_final_deviations_xlsx(study_id, output_dir))
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_final_deviations_json(study_id, output_dir))
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_final_deviations_xlsx(study_id, output_dir))
     return out
 
 
@@ -523,6 +514,8 @@ def initialize_review_states(study_id: str, output_dir: Path) -> None:
     deviations = read_json(paths.local_deviations_parsed_json(study_id, output_dir))
     write_json(paths.local_deviations_review_state(study_id, output_dir), deviations)
     write_json(paths.local_deviations_validated_json(study_id, output_dir), deviations)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_deviations_review_state(study_id, output_dir))
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_deviations_validated_json(study_id, output_dir))
 
 
 def _revision_validate(t: str) -> Optional[str]:

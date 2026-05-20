@@ -25,6 +25,11 @@ vi.mock("../services/stepApi", () => ({
       }
     ]
   })),
+  syncStudy: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    sync: { uploaded: 0, downloaded: 0, skipped: 0, errors: 0, errorMessages: [] },
+    stepStatuses: DONE_STATUSES
+  })),
   deleteStudy: vi.fn(async () => ({
     studyId: "MY-STUDY",
     deletedBlobCount: 2,

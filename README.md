@@ -54,6 +54,8 @@ Copy `.env.example` to `.env` and fill in endpoints and keys. The CLI loads `.en
 
 Local cache mirrors the same structure under `output/<study_id>/`.
 
+**UI pipeline sync:** When you run steps in the web UI, artifacts under `extractions/<study_id>/`, `pipeline/<study_id>/`, and `review/<study_id>/` are mirrored to blob after each write. **Reload projects** (with a study selected) calls `POST /api/v1/studies/{studyId}/sync` first: each file is compared by last-modified time (1s tolerance); the newer copy wins and is written to the other side. Raw PDFs remain only under `raw/<study_id>/` (upload path).
+
 ## Pipeline Commands
 
 ### Pipeline V2 (recommended)

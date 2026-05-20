@@ -257,6 +257,27 @@ export async function fetchStepStatuses(studyId: string): Promise<StepStatusesRe
   return parseApiResponse<StepStatusesResponse>(response);
 }
 
+export interface SyncStudyResponse {
+  studyId: string;
+  sync: {
+    uploaded: number;
+    downloaded: number;
+    skipped: number;
+    errors: number;
+    errorMessages: string[];
+  };
+  stepStatuses: Record<string, StepStatus>;
+}
+
+export async function syncStudy(studyId: string): Promise<SyncStudyResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/sync`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}"
+  });
+  return parseApiResponse<SyncStudyResponse>(response);
+}
+
 export async function fetchStudies(): Promise<StudiesResponse> {
   const response = await fetch(`${API_BASE}/api/v1/studies`);
   return parseApiResponse<StudiesResponse>(response);

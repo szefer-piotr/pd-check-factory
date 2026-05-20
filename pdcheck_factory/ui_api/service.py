@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 
 from openpyxl import load_workbook
 
-from pdcheck_factory import blob_io, extraction_resolve, paths, pipeline_v2
+from pdcheck_factory import blob_io, extraction_resolve, paths, pipeline_v2, study_artifact_sync
 from pdcheck_factory.json_util import read_json, write_json
 
 
@@ -64,6 +64,10 @@ class StudyPaths:
 @dataclass
 class UiStepService:
     output_dir: Path
+
+    def _mirror_upload(self, study_id: str, *local_paths: Path) -> None:
+        for p in local_paths:
+            study_artifact_sync.mirror_upload_path(study_id, self.output_dir, p)
 
     def _study_paths(self, study_id: str) -> StudyPaths:
         proto = extraction_resolve.resolve_protocol_rendered_source_md(study_id, self.output_dir)
@@ -198,6 +202,7 @@ class UiStepService:
         manifest_path = self._ui_upload_manifest_path(study_id)
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
         write_json(manifest_path, manifest)
+        self._mirror_upload(study_id, manifest_path)
 
         try:
             blob_service = blob_io.blob_service_from_env()
@@ -318,6 +323,7 @@ class UiStepService:
         path = self._pipeline_run_state_path(study_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         write_json(path, state)
+        self._mirror_upload(study_id, path)
 
     def _write_pipeline_run_state(self, study_id: str, **updates: Any) -> Dict[str, Any]:
         state = self._read_pipeline_run_state(study_id)
@@ -325,6 +331,7 @@ class UiStepService:
         path = self._pipeline_run_state_path(study_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         write_json(path, state)
+        self._mirror_upload(study_id, path)
         return state
 
     def get_step1_run_state(self, study_id: str) -> Dict[str, Any]:
@@ -390,6 +397,7 @@ class UiStepService:
         if not rules_obj.get("generated_at"):
             rules_obj["generated_at"] = datetime.now(timezone.utc).isoformat()
         write_json(paths.local_rules_parsed_json(study_id, self.output_dir), rules_obj)
+        self._mirror_upload(study_id, paths.local_rules_parsed_json(study_id, self.output_dir))
 
     def _load_paragraph_index(self, study_id: str) -> Dict[str, Dict[str, Any]]:
         path = paths.local_protocol_paragraph_index_json(study_id, self.output_dir)
@@ -430,6 +438,7 @@ class UiStepService:
     def _save_chat_state(self, study_id: str, chat_obj: Dict[str, Any]) -> None:
         chat_obj["updated_at"] = datetime.now(timezone.utc).isoformat()
         write_json(self._chat_state_path(study_id), chat_obj)
+        self._mirror_upload(study_id, self._chat_state_path(study_id))
 
     def _append_chat_message(
         self,
@@ -472,6 +481,12 @@ class UiStepService:
         write_json(paths.local_deviations_review_state(study_id, self.output_dir), state_obj)
         write_json(paths.local_deviations_validated_json(study_id, self.output_dir), state_obj)
         write_json(paths.local_deviations_review_audit_json(study_id, self.output_dir), audit_obj)
+        self._mirror_upload(
+            study_id,
+            paths.local_deviations_review_state(study_id, self.output_dir),
+            paths.local_deviations_validated_json(study_id, self.output_dir),
+            paths.local_deviations_review_audit_json(study_id, self.output_dir),
+        )
 
     def _audit(self, study_id: str, *, action: str, target_id: str, updated_rows: int) -> Dict[str, Any]:
         return {
@@ -776,6 +791,9 @@ class UiStepService:
                 debug_blob=False,
             )
             extraction_resolve.write_ui_extractor_choice(study_id, self.output_dir, mode)
+            self._mirror_upload(study_id, extraction_resolve.local_ui_extractor_choice_json(study_id, self.output_dir))
+            extractions_root = paths.local_study_root(study_id, self.output_dir) / "extractions"
+            study_artifact_sync.mirror_upload_directory(study_id, self.output_dir, extractions_root)
             self._append_pipeline_log(study_id, "PDF extraction completed")
             self._write_pipeline_run_state(
                 study_id,
@@ -829,6 +847,16 @@ class UiStepService:
             "studyId": study_id,
             "steps": [{"stepId": step_id, "status": statuses[step_id]} for step_id in STEP_ORDER],
             "nextStepId": next((step_id for step_id in STEP_ORDER if statuses[step_id] != "done"), None),
+        }
+
+    def sync_study(self, study_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        self._assert_safe_study_id(study_id)
+        report = study_artifact_sync.sync_study(study_id, self.output_dir)
+        return {
+            "studyId": study_id,
+            "sync": report.to_dict(),
+            "stepStatuses": self._step_statuses(study_id),
         }
 
     def run_step(
@@ -912,6 +940,7 @@ class UiStepService:
                 write_manifest=True,
             )
             summary = f"Split aCRF markdown into {count} TOC section files."
+            study_artifact_sync.mirror_upload_directory(study_id, self.output_dir, p.acrf_sections_toc_dir)
         elif step_id == "acrf-summary-text":
             result = pipeline_v2.step1_acrf_summary_text(study_id, self.output_dir)
             summary = f"Merged aCRF summary text with {len(result.get('datasets', []))} datasets."
@@ -933,6 +962,7 @@ class UiStepService:
                 if review_state_path.exists():
                     validated_path.parent.mkdir(parents=True, exist_ok=True)
                     validated_path.write_text(review_state_path.read_text(encoding="utf-8"), encoding="utf-8")
+                    self._mirror_upload(study_id, validated_path)
                 else:
                     raise UiApiError(
                         "STEP_BLOCKED",
@@ -1121,6 +1151,11 @@ class UiStepService:
             pseudo_obj["items"] = pseudo_items
             write_json(paths.local_pseudo_logic_review_state(study_id, self.output_dir), pseudo_obj)
             write_json(paths.local_pseudo_logic_validated_json(study_id, self.output_dir), pseudo_obj)
+            self._mirror_upload(
+                study_id,
+                paths.local_pseudo_logic_review_state(study_id, self.output_dir),
+                paths.local_pseudo_logic_validated_json(study_id, self.output_dir),
+            )
         return self.get_step7_deviations(study_id)
 
     def import_step7_deviations_xlsx(self, study_id: str, workbook_bytes: bytes) -> Dict[str, Any]:
@@ -1321,6 +1356,11 @@ class UiStepService:
             pseudo_obj["items"] = items
             write_json(paths.local_pseudo_logic_review_state(study_id, self.output_dir), pseudo_obj)
             write_json(paths.local_pseudo_logic_validated_json(study_id, self.output_dir), pseudo_obj)
+            self._mirror_upload(
+                study_id,
+                paths.local_pseudo_logic_review_state(study_id, self.output_dir),
+                paths.local_pseudo_logic_validated_json(study_id, self.output_dir),
+            )
 
         rules_obj = read_json(paths.local_rules_parsed_json(study_id, self.output_dir))
         pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in pseudo_obj.get("items", [])}
@@ -1435,6 +1475,11 @@ class UiStepService:
         pseudo_obj["items"] = items
         write_json(paths.local_pseudo_logic_review_state(study_id, self.output_dir), pseudo_obj)
         write_json(paths.local_pseudo_logic_validated_json(study_id, self.output_dir), pseudo_obj)
+        self._mirror_upload(
+            study_id,
+            paths.local_pseudo_logic_review_state(study_id, self.output_dir),
+            paths.local_pseudo_logic_validated_json(study_id, self.output_dir),
+        )
 
         rules_obj = read_json(paths.local_rules_parsed_json(study_id, self.output_dir))
         pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in items}
@@ -1460,6 +1505,7 @@ class UiStepService:
                 )
             validated_path.parent.mkdir(parents=True, exist_ok=True)
             validated_path.write_text(review_state_path.read_text(encoding="utf-8"), encoding="utf-8")
+            self._mirror_upload(study_id, validated_path)
 
         try:
             pseudo_out = pipeline_v2.step8_generate_pseudo_logic(study_id, self.output_dir)
