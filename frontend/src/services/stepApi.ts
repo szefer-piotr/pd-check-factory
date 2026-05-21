@@ -504,6 +504,28 @@ export async function exportStep7DeviationsWorkbook(studyId: string): Promise<St
   return { blob, fileName };
 }
 
+export async function exportStep7DeviationsCodingWorkbook(studyId: string): Promise<Step7ExportWorkbookResult> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/export/coding`
+  );
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`;
+    try {
+      const parsed = (await response.json()) as ApiEnvelope<unknown>;
+      message = parsed.error?.message ?? message;
+    } catch {
+      // ignore non-JSON error bodies
+    }
+    throw new Error(message);
+  }
+  const blob = await response.blob();
+  const fileName = parseContentDispositionFileName(
+    response.headers.get("Content-Disposition"),
+    `${studyId}_company_pds.xlsx`
+  );
+  return { blob, fileName };
+}
+
 export async function importStep7DeviationsWorkbook(
   studyId: string,
   workbook: File

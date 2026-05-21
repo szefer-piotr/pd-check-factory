@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 
 from openpyxl import Workbook, load_workbook
 
-from pdcheck_factory import blob_io, extraction_resolve, paths, pipeline_v2, study_artifact_sync
+from pdcheck_factory import blob_io, coding_workbook_export, extraction_resolve, paths, pipeline_v2, study_artifact_sync
 from pdcheck_factory.json_util import read_json, write_json
 
 
@@ -1327,6 +1327,34 @@ class UiStepService:
 
         buffer = BytesIO()
         workbook.save(buffer)
+        content = buffer.getvalue()
+        return {
+            "studyId": study_id,
+            "fileName": file_name,
+            "filePath": str(out_path),
+            "rowCount": len(rows),
+            "exportedAt": exported_at,
+            "content": content,
+        }
+
+    def export_step7_deviations_coding_xlsx(self, study_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        payload = self.get_step7_deviations(study_id)
+        rows = list(payload.get("rows", []))
+        exported_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        timestamp_slug = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        file_name = f"{study_id}_company_pds_{timestamp_slug}.xlsx"
+
+        out_path = paths.local_deviations_coding_export_xlsx(study_id, self.output_dir)
+        coding_workbook_export.write_coding_workbook_xlsx(
+            rows,
+            out_path,
+            study_id=study_id,
+            exported_at=exported_at,
+        )
+
+        buffer = BytesIO()
+        buffer.write(out_path.read_bytes())
         content = buffer.getvalue()
         return {
             "studyId": study_id,

@@ -313,6 +313,12 @@ vi.mock("../services/stepApi", () => ({
     }),
     fileName: "MY-STUDY_deviations_review.xlsx"
   })),
+  exportStep7DeviationsCodingWorkbook: vi.fn(async () => ({
+    blob: new Blob(["coding-xlsx"], {
+      type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    }),
+    fileName: "MY-STUDY_company_pds.xlsx"
+  })),
   importStep7DeviationsWorkbook: vi.fn(async () => ({
     studyId: "MY-STUDY",
     imported: 1,
@@ -546,6 +552,36 @@ describe("Workflow pipeline pages", () => {
     });
     expect(click).toHaveBeenCalled();
     expect(await screen.findByText(/Downloaded MY-STUDY_deviations_review\.xlsx/i)).toBeInTheDocument();
+
+    createElement.mockRestore();
+    vi.unstubAllGlobals();
+  });
+
+  it("exports company PDS workbook from Step 4 review", async () => {
+    const stepApi = await import("../services/stepApi");
+    const user = userEvent.setup();
+    const createObjectURL = vi.fn(() => "blob:coding-export");
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal("URL", { createObjectURL, revokeObjectURL });
+
+    const click = vi.fn();
+    const createElement = vi.spyOn(document, "createElement").mockImplementation((tagName: string) => {
+      const element = document.createElementNS("http://www.w3.org/1999/xhtml", tagName) as HTMLAnchorElement;
+      if (tagName === "a") {
+        element.click = click;
+      }
+      return element;
+    });
+
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: /Step 4 - Review and Finalize/i }));
+    await user.click(screen.getByRole("button", { name: "Generate Company PDS" }));
+
+    await waitFor(() => {
+      expect(stepApi.exportStep7DeviationsCodingWorkbook).toHaveBeenCalledWith("MY-STUDY");
+    });
+    expect(click).toHaveBeenCalled();
+    expect(await screen.findByText(/Downloaded MY-STUDY_company_pds\.xlsx/i)).toBeInTheDocument();
 
     createElement.mockRestore();
     vi.unstubAllGlobals();

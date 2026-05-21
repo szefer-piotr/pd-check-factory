@@ -8,6 +8,7 @@ import {
   fetchStep7Deviations,
   generateStep7PseudoLogicAll,
   exportStep7DeviationsWorkbook,
+  exportStep7DeviationsCodingWorkbook,
   importStep7DeviationsWorkbook,
   type Step7DeviationPayload,
   type Step7DeviationRow,
@@ -58,9 +59,11 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
   const [isBulkAccepting, setIsBulkAccepting] = useState(false);
   const [isBulkGenerating, setIsBulkGenerating] = useState(false);
   const [isExporting, setIsExporting] = useState(false);
+  const [isExportingCoding, setIsExportingCoding] = useState(false);
   const [acceptStatus, setAcceptStatus] = useState("");
   const [bulkStatus, setBulkStatus] = useState("");
   const [exportStatus, setExportStatus] = useState("");
+  const [exportCodingStatus, setExportCodingStatus] = useState("");
   const [mutationStatus, setMutationStatus] = useState("");
   const [menuOpen, setMenuOpen] = useState(false);
   const [deviationForm, setDeviationForm] = useState<Step7DeviationPayload>(EMPTY_DEVIATION_FORM);
@@ -131,6 +134,29 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
       setError(exportError instanceof Error ? exportError.message : "Unable to generate Excel.");
     } finally {
       setIsExporting(false);
+    }
+  }
+
+  async function handleExportCodingWorkbook(): Promise<void> {
+    if (!studyId.trim()) {
+      return;
+    }
+    setIsExportingCoding(true);
+    setError("");
+    setExportCodingStatus("");
+    try {
+      const result = await exportStep7DeviationsCodingWorkbook(studyId.trim());
+      const url = URL.createObjectURL(result.blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = result.fileName;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setExportCodingStatus(`Downloaded ${result.fileName}.`);
+    } catch (exportError) {
+      setError(exportError instanceof Error ? exportError.message : "Unable to export company PDS workbook.");
+    } finally {
+      setIsExportingCoding(false);
     }
   }
 
@@ -269,6 +295,7 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
       {acceptStatus ? <p className="step7-muted">{acceptStatus}</p> : null}
       {bulkStatus ? <p className="step7-muted">{bulkStatus}</p> : null}
       {exportStatus ? <p className="step7-muted">{exportStatus}</p> : null}
+      {exportCodingStatus ? <p className="step7-muted">{exportCodingStatus}</p> : null}
       {isLoading ? <p className="step7-muted">Loading deviations...</p> : null}
 
       <div className="step7-toolbar">
@@ -276,9 +303,17 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
           className="button button-primary"
           type="button"
           onClick={() => void handleExportWorkbook()}
-          disabled={isExporting || isLoading || !studyId.trim()}
+          disabled={isExporting || isExportingCoding || isLoading || !studyId.trim()}
         >
           {isExporting ? "Generating Excel..." : "Generate Excel"}
+        </button>
+        <button
+          className="button button-optional"
+          type="button"
+          onClick={() => void handleExportCodingWorkbook()}
+          disabled={isExporting || isExportingCoding || isLoading || !studyId.trim()}
+        >
+          {isExportingCoding ? "Generating Company PDS..." : "Generate Company PDS"}
         </button>
         <button
           className="button button-optional"

@@ -103,6 +103,16 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 data = self.service.get_status(study_id)
             elif tail == "step7/deviations":
                 data = self.service.get_step7_deviations(study_id)
+            elif tail == "step7/deviations/export/coding":
+                export_payload = self.service.export_step7_deviations_coding_xlsx(study_id)
+                _file_response(
+                    self,
+                    status=HTTPStatus.OK,
+                    body=export_payload["content"],
+                    content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    content_disposition=f'attachment; filename="{export_payload["fileName"]}"',
+                )
+                return
             elif tail == "step7/deviations/export":
                 export_payload = self.service.export_step7_deviations_xlsx(study_id)
                 _file_response(

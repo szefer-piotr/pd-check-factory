@@ -414,6 +414,52 @@ def test_export_step7_deviations_xlsx_writes_workbook(tmp_path: Path) -> None:
     assert summary_map["accepted"] == 1
 
 
+def test_export_step7_deviations_coding_xlsx_writes_workbook(tmp_path: Path) -> None:
+    from pdcheck_factory.pd_spec_export import PD_SPEC_HEADERS, PD_SPEC_SHEET_TITLE
+
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "MY-STUDY"
+    _seed_step7_state(tmp_path, study_id, status="accepted")
+
+    pseudo_path = paths.local_pseudo_logic_review_state(study_id, tmp_path)
+    pseudo_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(
+        pseudo_path,
+        {
+            "items": [
+                {
+                    "deviation_id": "dev-0001",
+                    "pseudo_logic": "SELECT 1",
+                    "programmable": True,
+                    "programmability_note": "ok",
+                }
+            ]
+        },
+    )
+
+    exported = service.export_step7_deviations_coding_xlsx(study_id)
+    assert exported["rowCount"] == 1
+    assert "company_pds" in exported["fileName"]
+
+    out_path = paths.local_deviations_coding_export_xlsx(study_id, tmp_path)
+    assert out_path.is_file()
+
+    workbook = load_workbook(out_path, read_only=True, data_only=True)
+    assert workbook.sheetnames[0] == PD_SPEC_SHEET_TITLE
+    sheet = workbook[PD_SPEC_SHEET_TITLE]
+    headers = [cell.value for cell in next(sheet.iter_rows(min_row=1, max_row=1))]
+    assert headers == PD_SPEC_HEADERS
+
+    data_row = next(sheet.iter_rows(min_row=2, max_row=2, values_only=True))
+    row_map = dict(zip(headers, data_row))
+    assert row_map["Protocol Deviation Category"] == "Visit window timing"
+    assert row_map["Protocol Deviation Classification"] == "accepted"
+    assert row_map["Manual or Programmable Deviation"] == "Programmable"
+    assert "SELECT 1" in str(row_map["Programming Information"])
+    assert "deviation_id: dev-0001" in str(row_map["Additional Information / Comments"])
+    assert row_map["Programmer Comments"] == "ok"
+
+
 def test_step7_manual_rule_crud(tmp_path: Path) -> None:
     service = UiStepService(output_dir=tmp_path)
     study_id = "MY-STUDY"
