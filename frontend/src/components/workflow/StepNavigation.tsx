@@ -14,11 +14,22 @@ interface StepNavigationProps {
   statuses: Record<string, StepStatus>;
   runtimeStates?: Record<string, StepRuntimeState>;
   onSelectStep: (stepId: string) => void;
+  variant?: "vertical" | "horizontal";
 }
 
-export function StepNavigation({ steps, activeStepId, statuses, runtimeStates = {}, onSelectStep }: StepNavigationProps): JSX.Element {
+export function StepNavigation({
+  steps,
+  activeStepId,
+  statuses,
+  runtimeStates = {},
+  onSelectStep,
+  variant = "vertical"
+}: StepNavigationProps): JSX.Element {
   return (
-    <nav className="step-navigation" aria-label="Pipeline steps">
+    <nav
+      className={`step-navigation ${variant === "horizontal" ? "step-navigation-horizontal workflow-step-tabs" : ""}`}
+      aria-label="Pipeline steps"
+    >
       {steps.map((step) => {
         const runtime = runtimeStates[step.id];
         const status = runtime?.status ?? statuses[step.id] ?? "pending";

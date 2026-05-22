@@ -15,6 +15,10 @@ BEGIN_PSEUDO = "<<<BEGIN_PSEUDO>>>"
 END_PSEUDO = "<<<END_PSEUDO>>>"
 BEGIN_REVISION = "<<<BEGIN_REVISION>>>"
 END_REVISION = "<<<END_REVISION>>>"
+BEGIN_GROUNDING = "<<<BEGIN_GROUNDING>>>"
+END_GROUNDING = "<<<END_GROUNDING>>>"
+BEGIN_IMPORT_MERGE = "<<<BEGIN_IMPORT_MERGE>>>"
+END_IMPORT_MERGE = "<<<END_IMPORT_MERGE>>>"
 
 
 def _extract_blocks(text: str, begin: str, end: str) -> List[str]:
@@ -323,3 +327,95 @@ def parse_revision_block(text: str) -> Optional[Dict[str, Any]]:
     if not revised:
         return None
     return {"revised_text": revised, "paragraph_refs": refs}
+
+
+def parse_import_grounding_block(text: str) -> Optional[Dict[str, Any]]:
+    """Parse import grounding LLM output."""
+    blocks = _extract_blocks(text or "", BEGIN_GROUNDING, END_GROUNDING)
+    if not blocks:
+        return None
+    refs: List[str] = []
+    data_note = ""
+    acrf_datasets: List[str] = []
+    error = ""
+    for line in blocks[0].splitlines():
+        stripped = line.strip()
+        if stripped.startswith("PARAGRAPH_REFS:"):
+            rest = stripped[len("PARAGRAPH_REFS:") :].strip()
+            refs = [x.strip() for x in rest.split(",") if x.strip()]
+        elif stripped.startswith("DATA_SUPPORT_NOTE:"):
+            data_note = stripped[len("DATA_SUPPORT_NOTE:") :].strip()
+        elif stripped.startswith("ACRF_DATASETS:"):
+            rest = stripped[len("ACRF_DATASETS:") :].strip()
+            acrf_datasets = [x.strip() for x in rest.split(",") if x.strip()]
+        elif stripped.startswith("GROUNDING_ERROR:"):
+            error = stripped[len("GROUNDING_ERROR:") :].strip()
+    if error:
+        return {
+            "paragraph_refs": [],
+            "data_support_note": data_note,
+            "acrf_dataset_names": acrf_datasets,
+            "grounding_error": error,
+        }
+    if not refs:
+        return {
+            "paragraph_refs": [],
+            "data_support_note": data_note,
+            "acrf_dataset_names": acrf_datasets,
+            "grounding_error": "No protocol paragraph references returned",
+        }
+    return {
+        "paragraph_refs": refs,
+        "data_support_note": data_note,
+        "acrf_dataset_names": acrf_datasets,
+        "grounding_error": "",
+    }
+
+
+def parse_import_merge_blocks(text: str) -> List[Dict[str, Any]]:
+    """Parse semantic merge output for imported deviation snapshots."""
+    blocks = _extract_blocks(text or "", BEGIN_IMPORT_MERGE, END_IMPORT_MERGE)
+    out: List[Dict[str, Any]] = []
+    for raw in blocks:
+        deviation_id = ""
+        merge_action = ""
+        source_ids: List[str] = []
+        text = ""
+        refs: List[str] = []
+        data_note = ""
+        category = ""
+        sub_category = ""
+        for line in raw.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("DEVIATION_ID:"):
+                deviation_id = stripped[len("DEVIATION_ID:") :].strip()
+            elif stripped.startswith("MERGE_ACTION:"):
+                merge_action = stripped[len("MERGE_ACTION:") :].strip().lower()
+            elif stripped.startswith("MERGE_SOURCE_IDS:"):
+                rest = stripped[len("MERGE_SOURCE_IDS:") :].strip()
+                source_ids = [x.strip() for x in rest.split(",") if x.strip()]
+            elif stripped.startswith("DEVIATION_TEXT:"):
+                text = stripped[len("DEVIATION_TEXT:") :].strip()
+            elif stripped.startswith("PARAGRAPH_REFS:"):
+                rest = stripped[len("PARAGRAPH_REFS:") :].strip()
+                refs = [x.strip() for x in rest.split(",") if x.strip()]
+            elif stripped.startswith("DATA_SUPPORT_NOTE:"):
+                data_note = stripped[len("DATA_SUPPORT_NOTE:") :].strip()
+            elif stripped.startswith("CATEGORY:"):
+                category = stripped[len("CATEGORY:") :].strip()
+            elif stripped.startswith("SUB_CATEGORY:"):
+                sub_category = stripped[len("SUB_CATEGORY:") :].strip()
+        if deviation_id and merge_action in {"keep", "update", "add"} and text:
+            out.append(
+                {
+                    "deviation_id": deviation_id,
+                    "merge_action": merge_action,
+                    "merge_source_ids": source_ids,
+                    "text": text,
+                    "paragraph_refs": refs,
+                    "data_support_note": data_note,
+                    "protocol_deviation_category": category,
+                    "protocol_deviation_sub_category": sub_category,
+                }
+            )
+    return out

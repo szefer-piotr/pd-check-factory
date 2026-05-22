@@ -288,3 +288,35 @@ def local_final_deviations_json(study_id: str, output_dir: Path) -> Path:
 
 def local_final_deviations_xlsx(study_id: str, output_dir: Path) -> Path:
     return local_final_dir(study_id, output_dir) / "final_deviations.xlsx"
+
+
+def local_imports_dir(study_id: str, output_dir: Path) -> Path:
+    return local_pipeline_v2_dir(study_id, output_dir) / "imports"
+
+
+def local_pd_spec_workbook(study_id: str, output_dir: Path) -> Path:
+    return local_imports_dir(study_id, output_dir) / "pd_specifications.xlsx"
+
+
+def pd_spec_workbook_blob(study_id: str) -> str:
+    """Blob path mirrored from ``local_pd_spec_workbook``."""
+    return f"pipeline/{study_id}/imports/pd_specifications.xlsx"
+
+
+def local_deviations_import_snapshot(study_id: str, output_dir: Path, version: str) -> Path:
+    safe = version.replace("/", "_").replace("\\", "_")
+    return local_review_dir(study_id, output_dir) / f"deviations_import_{safe}.json"
+
+
+def local_deviations_merged_snapshot(study_id: str, output_dir: Path, version: str) -> Path:
+    safe = version.replace("/", "_").replace("\\", "_")
+    return local_review_dir(study_id, output_dir) / f"deviations_merged_{safe}.json"
+
+
+def local_deviation_context_dir(study_id: str, output_dir: Path) -> Path:
+    return local_pipeline_v2_dir(study_id, output_dir) / "coding" / "deviation_context"
+
+
+def local_deviation_context_json(study_id: str, output_dir: Path, deviation_id: str) -> Path:
+    safe = deviation_id.replace("/", "_").replace("\\", "_")
+    return local_deviation_context_dir(study_id, output_dir) / f"{safe}.json"

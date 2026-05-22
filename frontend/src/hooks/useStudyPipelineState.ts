@@ -8,6 +8,7 @@ import {
 } from "../services/stepApi";
 
 export type UploadSlotStatus = "missing" | "selected" | "uploading" | "uploaded" | "error";
+export type PreprocessStatus = "idle" | "running" | "done" | "failed";
 
 export interface DocumentUploadState {
   status: UploadSlotStatus;
@@ -27,8 +28,10 @@ export interface ExtractionRunState {
 }
 
 export interface StudyPipelineState {
-  uploads: { protocol: DocumentUploadState; acrf: DocumentUploadState };
+  uploads: { protocol: DocumentUploadState; acrf: DocumentUploadState; pdSpec: DocumentUploadState };
   bothUploaded: boolean;
+  allThreeUploaded: boolean;
+  preprocess: { protocol: PreprocessStatus; acrf: PreprocessStatus };
   extraction: ExtractionRunState;
 }
 
@@ -51,8 +54,10 @@ function defaultExtractionState(): ExtractionRunState {
 
 function defaultPipelineState(): StudyPipelineState {
   return {
-    uploads: { protocol: defaultUploadState(), acrf: defaultUploadState() },
+    uploads: { protocol: defaultUploadState(), acrf: defaultUploadState(), pdSpec: defaultUploadState() },
     bothUploaded: false,
+    allThreeUploaded: false,
+    preprocess: { protocol: "idle", acrf: "idle" },
     extraction: defaultExtractionState()
   };
 }
@@ -67,6 +72,24 @@ function uploadStateFromApi(slot: Step1UploadStatusResponse["protocol"]): Docume
     sizeBytes: slot.size,
     blobPath: slot.blob
   };
+}
+
+function preprocessFromApi(
+  role: "protocol" | "acrf",
+  status: Step1UploadStatusResponse,
+  previous: PreprocessStatus
+): PreprocessStatus {
+  if (previous === "running") {
+    return "running";
+  }
+  if (role === "protocol" && status.protocolPreprocessed) {
+    return "done";
+  }
+  if (role === "acrf" && status.acrfPreprocessed) {
+    return "done";
+  }
+  const uploaded = role === "protocol" ? status.protocol.uploaded : status.acrf.uploaded;
+  return uploaded ? previous : "idle";
 }
 
 function readSession(studyId: string): Partial<StudyPipelineState> | null {
@@ -97,7 +120,8 @@ export interface UseStudyPipelineStateResult {
   refreshUploadStatus: (overrideStudyId?: string) => Promise<Step1UploadStatusResponse | null>;
   refreshRunState: (overrideStudyId?: string) => Promise<void>;
   applyUploadStatus: (status: Step1UploadStatusResponse) => void;
-  setUploadSlot: (slot: "protocol" | "acrf", patch: Partial<DocumentUploadState>) => void;
+  setUploadSlot: (slot: "protocol" | "acrf" | "pdSpec", patch: Partial<DocumentUploadState>) => void;
+  setPreprocess: (slot: "protocol" | "acrf", status: PreprocessStatus) => void;
   setExtraction: (patch: Partial<ExtractionRunState>) => void;
   resetForStudy: () => void;
 }
@@ -116,9 +140,15 @@ export function useStudyPipelineState(
       setPipeline((previous) => ({
         ...previous,
         bothUploaded: status.bothUploaded,
+        allThreeUploaded: status.allThreeUploaded ?? (status.bothUploaded && status.pdSpec.uploaded),
         uploads: {
           protocol: uploadStateFromApi(status.protocol),
-          acrf: uploadStateFromApi(status.acrf)
+          acrf: uploadStateFromApi(status.acrf),
+          pdSpec: uploadStateFromApi(status.pdSpec)
+        },
+        preprocess: {
+          protocol: preprocessFromApi("protocol", status, previous.preprocess.protocol),
+          acrf: preprocessFromApi("acrf", status, previous.preprocess.acrf)
         }
       }));
       onStatusesChange?.(status.stepStatuses);
@@ -156,17 +186,34 @@ export function useStudyPipelineState(
     }
     try {
       const runState = await fetchStep1RunState(trimmed);
-      setPipeline((previous) => ({
-        ...previous,
-        extraction: {
-          status: runState.status,
-          currentStage: runState.currentStage,
-          currentSubStepId: runState.currentSubStepId,
-          message: runState.message,
-          error: runState.error,
-          logs: runState.logs
+      const sub = runState.currentSubStepId;
+      setPipeline((previous) => {
+        const next = {
+          ...previous,
+          extraction: {
+            status: runState.status,
+            currentStage: runState.currentStage,
+            currentSubStepId: runState.currentSubStepId,
+            message: runState.message,
+            error: runState.error,
+            logs: runState.logs
+          }
+        };
+        if (sub === "preprocess-protocol" && runState.status === "running") {
+          next.preprocess = { ...next.preprocess, protocol: "running" };
+        } else if (sub === "preprocess-protocol" && runState.status === "done") {
+          next.preprocess = { ...next.preprocess, protocol: "done" };
+        } else if (sub === "preprocess-protocol" && runState.status === "failed") {
+          next.preprocess = { ...next.preprocess, protocol: "failed" };
+        } else if (sub === "preprocess-acrf" && runState.status === "running") {
+          next.preprocess = { ...next.preprocess, acrf: "running" };
+        } else if (sub === "preprocess-acrf" && runState.status === "done") {
+          next.preprocess = { ...next.preprocess, acrf: "done" };
+        } else if (sub === "preprocess-acrf" && runState.status === "failed") {
+          next.preprocess = { ...next.preprocess, acrf: "failed" };
         }
-      }));
+        return next;
+      });
     } catch {
       // keep local state
     }
@@ -176,13 +223,23 @@ export function useStudyPipelineState(
     setPipeline(defaultPipelineState());
   }, []);
 
-  const setUploadSlot = useCallback((slot: "protocol" | "acrf", patch: Partial<DocumentUploadState>) => {
+  const setUploadSlot = useCallback(
+    (slot: "protocol" | "acrf" | "pdSpec", patch: Partial<DocumentUploadState>) => {
+      setPipeline((previous) => ({
+        ...previous,
+        uploads: {
+          ...previous.uploads,
+          [slot]: { ...previous.uploads[slot], ...patch }
+        }
+      }));
+    },
+    []
+  );
+
+  const setPreprocess = useCallback((slot: "protocol" | "acrf", status: PreprocessStatus) => {
     setPipeline((previous) => ({
       ...previous,
-      uploads: {
-        ...previous.uploads,
-        [slot]: { ...previous.uploads[slot], ...patch }
-      }
+      preprocess: { ...previous.preprocess, [slot]: status }
     }));
   }, []);
 
@@ -203,9 +260,15 @@ export function useStudyPipelineState(
       setPipeline({
         uploads: {
           protocol: { ...defaultUploadState(), ...session.uploads?.protocol },
-          acrf: { ...defaultUploadState(), ...session.uploads?.acrf }
+          acrf: { ...defaultUploadState(), ...session.uploads?.acrf },
+          pdSpec: { ...defaultUploadState(), ...session.uploads?.pdSpec }
         },
         bothUploaded: session.bothUploaded ?? false,
+        allThreeUploaded: session.allThreeUploaded ?? false,
+        preprocess: {
+          protocol: session.preprocess?.protocol ?? "idle",
+          acrf: session.preprocess?.acrf ?? "idle"
+        },
         extraction: { ...defaultExtractionState(), ...session.extraction }
       });
     } else {
@@ -232,6 +295,7 @@ export function useStudyPipelineState(
     refreshRunState,
     applyUploadStatus,
     setUploadSlot,
+    setPreprocess,
     setExtraction,
     resetForStudy
   };

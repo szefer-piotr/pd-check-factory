@@ -7,8 +7,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-from pdcheck_factory import document_chat_agent, extraction_resolve, llm, paths, study_artifact_sync, text_parse
+from pdcheck_factory import document_chat_agent, extraction_resolve, import_grounding, llm, paths, study_artifact_sync, text_parse
 from pdcheck_factory.pd_spec_export import write_final_pd_spec_xlsx
+from pdcheck_factory.pd_spec_import import parse_pd_spec_xlsx
 from pdcheck_factory.json_util import load_schema, read_json, validate, write_json
 from pdcheck_factory.prompt_loader import load_prompt
 
@@ -469,8 +470,11 @@ def generate_pseudo_logic_for_deviation(
 def step10_finalize(study_id: str, output_dir: Path) -> Dict[str, Any]:
     deviations_obj = read_json(paths.local_deviations_validated_json(study_id, output_dir))
     pseudo_obj = read_json(paths.local_pseudo_logic_validated_json(study_id, output_dir))
-    rules_obj = read_json(paths.local_rules_parsed_json(study_id, output_dir))
-    rule_by_id = {r["rule_id"]: r for r in rules_obj.get("rules", [])}
+    rules_path = paths.local_rules_parsed_json(study_id, output_dir)
+    rule_by_id: Dict[str, Dict[str, Any]] = {}
+    if rules_path.is_file():
+        rules_obj = read_json(rules_path)
+        rule_by_id = {r["rule_id"]: r for r in rules_obj.get("rules", [])}
     pseudo_by_dev = {
         p["deviation_id"]: p
         for p in pseudo_obj.get("items", [])
@@ -484,14 +488,23 @@ def step10_finalize(study_id: str, output_dir: Path) -> Dict[str, Any]:
         if not p:
             continue
         rule = rule_by_id.get(dev.get("rule_id"), {})
+        rule_title = rule.get("title", "")
+        if not rule_title:
+            cat = str(dev.get("protocol_deviation_category", "")).strip()
+            sub = str(dev.get("protocol_deviation_sub_category", "")).strip()
+            rule_title = f"{cat} / {sub}".strip(" /")
         items.append(
             {
                 "rule_id": dev["rule_id"],
                 "deviation_id": dev["deviation_id"],
-                "rule_title": rule.get("title", ""),
+                "rule_title": rule_title,
                 "deviation_text": dev["text"],
                 "paragraph_refs": dev["paragraph_refs"],
                 "pseudo_logic": p["pseudo_logic"],
+                "protocol_deviation_category": dev.get("protocol_deviation_category", ""),
+                "protocol_deviation_sub_category": dev.get("protocol_deviation_sub_category", ""),
+                "classification": dev.get("classification", ""),
+                "data_source": dev.get("data_source", ""),
             }
         )
     out = {
@@ -684,6 +697,371 @@ def refine_single_deviation_with_comment(
     if pseudo_item is not None:
         audit["pseudo_item"] = pseudo_item
     return updated_row, audit
+
+
+def generate_pseudo_logic_for_imported_deviation(
+    *,
+    study_id: str,
+    output_dir: Path,
+    deviation: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Generate pseudo logic for one imported PD spec deviation."""
+    acrf_summary = _acrf_summary_text(study_id, output_dir)[:50000]
+    system = load_prompt("pseudo_logic_v2_system")
+    user = load_prompt("pseudo_logic_import_v2_user").format(
+        study_id=study_id,
+        rule_id=str(deviation.get("rule_id", "")),
+        deviation_id=str(deviation.get("deviation_id", "")),
+        deviation_text=str(deviation.get("text", "")),
+        paragraph_refs=", ".join(deviation.get("paragraph_refs", [])),
+        protocol_deviation_category=str(deviation.get("protocol_deviation_category", "")),
+        protocol_deviation_sub_category=str(deviation.get("protocol_deviation_sub_category", "")),
+        classification=str(deviation.get("classification", "")),
+        data_support_note=str(deviation.get("data_support_note", "")),
+        acrf_summary=acrf_summary,
+    )
+    try:
+        pseudo_logic = llm.generate_pseudo_logic_structured(
+            system=system,
+            user=user,
+            max_repairs=2,
+        )
+    except ValueError:
+        reply = llm.chat_text_repairs(
+            system=system,
+            user=user,
+            validate_reply=lambda t: None if (t or "").strip() else "Empty pseudo logic response.",
+            max_repairs=1,
+            label=f"v2-pseudo-import-{deviation.get('deviation_id', '')}",
+        )
+        pseudo_logic = _coerce_pseudo_logic_text(reply)
+
+    prog_reply = llm.chat_text_repairs(
+        system=(
+            "You are a data programmability assessor.\n"
+            "Return exactly two lines:\n"
+            "PROGRAMMABLE: yes|no\n"
+            "RATIONALE: short reason grounded in provided deviation, pseudo logic, and aCRF summary."
+        ),
+        user=(
+            f"study_id: {study_id}\n"
+            f"deviation_id: {deviation.get('deviation_id', '')}\n"
+            f"deviation_text: {deviation.get('text', '')}\n\n"
+            f"pseudo_logic:\n{pseudo_logic}\n\n"
+            f"acrf_summary:\n{acrf_summary}\n"
+        ),
+        validate_reply=_validate_programmability_reply,
+        max_repairs=1,
+        label=f"v2-programmability-import-{deviation.get('deviation_id', '')}",
+    )
+    programmable, rationale = text_parse.parse_programmability(prog_reply)
+    category = str(deviation.get("protocol_deviation_category", ""))
+    sub = str(deviation.get("protocol_deviation_sub_category", ""))
+    rule_title = f"{category} / {sub}".strip(" /")
+    return {
+        "deviation_id": deviation.get("deviation_id", ""),
+        "rule_id": deviation.get("rule_id", ""),
+        "rule_title": rule_title,
+        "pseudo_logic": pseudo_logic,
+        "programmable": programmable,
+        "programmability_note": rationale,
+        "status": "pending",
+        "dm_comment": "",
+    }
+
+
+def _next_import_version(study_id: str, output_dir: Path) -> str:
+    review_dir = paths.local_review_dir(study_id, output_dir)
+    existing = sorted(review_dir.glob("deviations_import_*.json")) if review_dir.exists() else []
+    return f"v{len(existing) + 1}"
+
+
+def list_import_versions(study_id: str, output_dir: Path) -> Dict[str, Any]:
+    review_dir = paths.local_review_dir(study_id, output_dir)
+    imports: List[str] = []
+    merged: List[str] = []
+    if review_dir.exists():
+        for path in sorted(review_dir.glob("deviations_import_*.json")):
+            imports.append(path.stem.replace("deviations_import_", ""))
+        for path in sorted(review_dir.glob("deviations_merged_*.json")):
+            merged.append(path.stem.replace("deviations_merged_", ""))
+    return {"imports": imports, "merged": merged}
+
+
+def run_import_pd_spec_map(
+    study_id: str,
+    output_dir: Path,
+    *,
+    workbook_bytes: bytes | None = None,
+    workbook_path: Path | None = None,
+    version_label: str | None = None,
+    pd_spec_import_mode: str = "map",
+) -> Dict[str, Any]:
+    """Parse PD spec workbook and map rows to review state without LLM grounding."""
+    if workbook_bytes is None:
+        if workbook_path is None or not workbook_path.is_file():
+            workbook_path = paths.local_pd_spec_workbook(study_id, output_dir)
+        if not workbook_path.is_file():
+            raise ValueError("PD specifications workbook not found")
+        workbook_bytes = workbook_path.read_bytes()
+
+    import_version = (version_label or "").strip() or _next_import_version(study_id, output_dir)
+    raw_deviations = parse_pd_spec_xlsx(workbook_bytes)
+
+    snapshot = import_grounding.build_deviations_state(
+        study_id=study_id,
+        deviations=raw_deviations,
+        import_version=import_version,
+        source_type="import",
+    )
+    errs = validate(snapshot, load_schema("deviations_parsed_v2.schema.json"))
+    if errs:
+        raise ValueError("; ".join(errs))
+
+    snapshot_path = paths.local_deviations_import_snapshot(study_id, output_dir, import_version)
+    write_json(snapshot_path, snapshot)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, snapshot_path)
+
+    review_path = paths.local_deviations_review_state(study_id, output_dir)
+    validated_path = paths.local_deviations_validated_json(study_id, output_dir)
+    write_json(review_path, snapshot)
+    write_json(validated_path, snapshot)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, review_path)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, validated_path)
+
+    return {
+        "import_version": import_version,
+        "deviations": raw_deviations,
+        "pd_spec_import_mode": pd_spec_import_mode,
+        "snapshot_path": str(snapshot_path),
+    }
+
+
+def run_import_pd_spec_grounding(
+    study_id: str,
+    output_dir: Path,
+    *,
+    workbook_bytes: bytes | None = None,
+    workbook_path: Path | None = None,
+    version_label: str | None = None,
+) -> Dict[str, Any]:
+    """Parse PD spec workbook, ground deviations, generate pseudo logic; never writes rules_parsed."""
+    index_path = paths.local_protocol_paragraph_index_json(study_id, output_dir)
+    acrf_path = paths.local_acrf_summary_text_merged(study_id, output_dir)
+    if not index_path.is_file():
+        raise ValueError(f"Missing paragraph index: {index_path}")
+    if not acrf_path.is_file():
+        raise ValueError(f"Missing merged aCRF summary: {acrf_path}")
+
+    if workbook_bytes is None:
+        if workbook_path is None or not workbook_path.is_file():
+            workbook_path = paths.local_pd_spec_workbook(study_id, output_dir)
+        if not workbook_path.is_file():
+            raise ValueError("PD specifications workbook not found")
+        workbook_bytes = workbook_path.read_bytes()
+
+    import_version = (version_label or "").strip() or _next_import_version(study_id, output_dir)
+    raw_deviations = parse_pd_spec_xlsx(workbook_bytes)
+    index_obj = read_json(index_path)
+    acrf_summary = _acrf_summary_text(study_id, output_dir)
+
+    grounded: List[Dict[str, Any]] = []
+    for dev in raw_deviations:
+        grounded.append(
+            import_grounding.ground_imported_deviation(
+                study_id=study_id,
+                output_dir=output_dir,
+                deviation=dev,
+                index_obj=index_obj,
+                acrf_summary=acrf_summary,
+            )
+        )
+
+    pseudo_items: List[Dict[str, Any]] = []
+    for dev in grounded:
+        pseudo_items.append(
+            generate_pseudo_logic_for_imported_deviation(
+                study_id=study_id,
+                output_dir=output_dir,
+                deviation=dev,
+            )
+        )
+
+    snapshot = import_grounding.build_deviations_state(
+        study_id=study_id,
+        deviations=grounded,
+        import_version=import_version,
+        source_type="import",
+    )
+    errs = validate(snapshot, load_schema("deviations_parsed_v2.schema.json"))
+    if errs:
+        raise ValueError("; ".join(errs))
+
+    snapshot_path = paths.local_deviations_import_snapshot(study_id, output_dir, import_version)
+    write_json(snapshot_path, snapshot)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, snapshot_path)
+
+    review_path = paths.local_deviations_review_state(study_id, output_dir)
+    validated_path = paths.local_deviations_validated_json(study_id, output_dir)
+    write_json(review_path, snapshot)
+    write_json(validated_path, snapshot)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, review_path)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, validated_path)
+
+    pseudo_out = {
+        "schema_version": "1.0.0",
+        "study_id": study_id,
+        "generated_at": _iso_now(),
+        "items": pseudo_items,
+    }
+    pseudo_errs = validate(pseudo_out, load_schema("pseudo_logic_v2.schema.json"))
+    if pseudo_errs:
+        raise ValueError("; ".join(pseudo_errs))
+
+    pseudo_review = paths.local_pseudo_logic_review_state(study_id, output_dir)
+    pseudo_validated = paths.local_pseudo_logic_validated_json(study_id, output_dir)
+    write_json(pseudo_review, pseudo_out)
+    write_json(pseudo_validated, pseudo_out)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, pseudo_review)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, pseudo_validated)
+
+    return {
+        "import_version": import_version,
+        "deviations": grounded,
+        "pseudo_items": pseudo_items,
+        "snapshot_path": str(snapshot_path),
+    }
+
+
+def merge_imported_deviation_snapshots(
+    study_id: str,
+    output_dir: Path,
+    *,
+    prior_version: str | None = None,
+    new_version: str | None = None,
+    merged_version_label: str | None = None,
+) -> Dict[str, Any]:
+    """Semantically merge two import snapshots into a third merged artifact."""
+    versions = list_import_versions(study_id, output_dir)
+    imports = versions.get("imports", [])
+    if len(imports) < 2:
+        raise ValueError("At least two import snapshots are required for merge")
+
+    prior_v = prior_version or imports[-2]
+    new_v = new_version or imports[-1]
+    prior_path = paths.local_deviations_import_snapshot(study_id, output_dir, prior_v)
+    new_path = paths.local_deviations_import_snapshot(study_id, output_dir, new_v)
+    if not prior_path.is_file() or not new_path.is_file():
+        raise ValueError("Import snapshot files not found for merge")
+
+    prior_obj = read_json(prior_path)
+    new_obj = read_json(new_path)
+
+    system = load_prompt("import_merge_v2_system")
+    user = load_prompt("import_merge_v2_user").format(
+        study_id=study_id,
+        prior_version=prior_v,
+        new_version=new_v,
+        prior_snapshot=json.dumps(prior_obj, ensure_ascii=False, indent=2)[:120000],
+        new_snapshot=json.dumps(new_obj, ensure_ascii=False, indent=2)[:120000],
+    )
+
+    def _validate_merge(reply: str) -> Optional[str]:
+        if text_parse.BEGIN_IMPORT_MERGE not in (reply or ""):
+            return "Must contain <<<BEGIN_IMPORT_MERGE>>> blocks."
+        if not text_parse.parse_import_merge_blocks(reply):
+            return "Merge blocks missing required fields."
+        return None
+
+    reply = llm.chat_text_repairs(
+        system=system,
+        user=user,
+        validate_reply=_validate_merge,
+        max_repairs=2,
+        label=f"import-merge-{prior_v}-{new_v}",
+    )
+    merged_rows_raw = text_parse.parse_import_merge_blocks(reply)
+    index_obj = read_json(paths.local_protocol_paragraph_index_json(study_id, output_dir))
+    valid_ids = {str(p.get("paragraph_id", "")) for p in index_obj.get("paragraphs", [])}
+
+    prior_by_id = {str(d.get("deviation_id", "")): d for d in prior_obj.get("deviations", [])}
+    new_by_id = {str(d.get("deviation_id", "")): d for d in new_obj.get("deviations", [])}
+
+    merged_deviations: List[Dict[str, Any]] = []
+    for row in merged_rows_raw:
+        dev_id = str(row.get("deviation_id", ""))
+        action = str(row.get("merge_action", ""))
+        base = dict(new_by_id.get(dev_id) or prior_by_id.get(dev_id) or {})
+        base.update(
+            {
+                "deviation_id": dev_id,
+                "rule_id": base.get("rule_id") or f"pd-spec-{dev_id}",
+                "text": row.get("text") or base.get("text", ""),
+                "paragraph_refs": _filter_refs(list(row.get("paragraph_refs", []) or base.get("paragraph_refs", [])), valid_ids),
+                "data_support_note": row.get("data_support_note") or base.get("data_support_note", ""),
+                "protocol_deviation_category": row.get("protocol_deviation_category")
+                or base.get("protocol_deviation_category", ""),
+                "protocol_deviation_sub_category": row.get("protocol_deviation_sub_category")
+                or base.get("protocol_deviation_sub_category", ""),
+                "entry_source": "imported_pd_spec",
+                "merge_action": action,
+                "merge_source_ids": list(row.get("merge_source_ids", [])) or [dev_id],
+                "status": base.get("status", "pending"),
+                "dm_comment": base.get("dm_comment", ""),
+                "grounding_error": base.get("grounding_error", ""),
+            }
+        )
+        if not base.get("paragraph_refs") and base.get("grounding_error"):
+            base["status"] = "to_review"
+        merged_deviations.append(base)
+
+    merged_version = (merged_version_label or "").strip() or f"{prior_v}_{new_v}"
+    merged_state = import_grounding.build_deviations_state(
+        study_id=study_id,
+        deviations=merged_deviations,
+        import_version=merged_version,
+        source_type="merged",
+    )
+    merged_path = paths.local_deviations_merged_snapshot(study_id, output_dir, merged_version)
+    write_json(merged_path, merged_state)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, merged_path)
+
+    return {
+        "merged_version": merged_version,
+        "prior_version": prior_v,
+        "new_version": new_v,
+        "deviation_count": len(merged_deviations),
+        "merged_path": str(merged_path),
+    }
+
+
+def apply_active_deviations_source(
+    study_id: str,
+    output_dir: Path,
+    source_key: str,
+) -> Dict[str, Any]:
+    """Copy selected import/merged snapshot into active review state."""
+    key = (source_key or "").strip()
+    if key.startswith("import_"):
+        version = key[len("import_") :]
+        src = paths.local_deviations_import_snapshot(study_id, output_dir, version)
+    elif key.startswith("merged_"):
+        version = key[len("merged_") :]
+        src = paths.local_deviations_merged_snapshot(study_id, output_dir, version)
+    else:
+        raise ValueError(f"Unknown active deviations source: {source_key}")
+
+    if not src.is_file():
+        raise ValueError(f"Snapshot not found: {src}")
+
+    state_obj = read_json(src)
+    review_path = paths.local_deviations_review_state(study_id, output_dir)
+    validated_path = paths.local_deviations_validated_json(study_id, output_dir)
+    write_json(review_path, state_obj)
+    write_json(validated_path, state_obj)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, review_path)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, validated_path)
+    return {"activeDeviationsSource": key, "deviation_count": len(state_obj.get("deviations", []))}
 
 
 def run_steps(study_id: str, output_dir: Path, from_step: int, to_step: int) -> None:

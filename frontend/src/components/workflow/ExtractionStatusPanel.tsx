@@ -1,4 +1,6 @@
+import { useEffect, useMemo } from "react";
 import type { ExtractionRunState } from "../../hooks/useStudyPipelineState";
+import { fetchStep1RunState } from "../../services/stepApi";
 import type { ProcessingSubProgressItem } from "./ProcessingPanel";
 
 interface ExtractionStatusPanelProps {
@@ -7,6 +9,15 @@ interface ExtractionStatusPanelProps {
   isProcessing: boolean;
   processingMessage: string;
   processingError: string;
+  studyId?: string;
+  pollRunStateDuringExtract?: boolean;
+  simplified?: boolean;
+  onRunStatePolled?: (runState: {
+    logs: ExtractionRunState["logs"];
+    message: string;
+    currentSubStepId: string;
+    currentStage: string;
+  }) => void;
 }
 
 const STAGE_LABELS: Record<string, string> = {
@@ -30,18 +41,95 @@ const SUB_STEP_LABELS: Record<string, string> = {
   "extract-deviations": "Extract deviation candidates"
 };
 
+type DiMilestoneId = "di_protocol" | "di_acrf" | "odl_protocol" | "odl_acrf";
+
+const DI_MILESTONE_LABELS: Record<DiMilestoneId, string> = {
+  di_protocol: "Document Intelligence — protocol",
+  di_acrf: "Document Intelligence — aCRF",
+  odl_protocol: "OpenDataLoader — protocol",
+  odl_acrf: "OpenDataLoader — aCRF"
+};
+
+function resolveDiMilestoneStatus(
+  logs: ExtractionRunState["logs"],
+  milestoneId: DiMilestoneId
+): "pending" | "running" | "done" {
+  const patterns: Record<DiMilestoneId, { start: string; done: string }> = {
+    di_protocol: { start: "di: analyzing protocol", done: "di: protocol complete" },
+    di_acrf: { start: "di: analyzing acrf", done: "di: acrf complete" },
+    odl_protocol: { start: "opendataloader: protocol", done: "opendataloader: protocol complete" },
+    odl_acrf: { start: "opendataloader: acrf", done: "opendataloader: acrf complete" }
+  };
+  const pattern = patterns[milestoneId];
+  const texts = logs.map((line) => line.text.toLowerCase());
+  if (texts.some((text) => text.includes(pattern.done))) {
+    return "done";
+  }
+  if (texts.some((text) => text.includes(pattern.start))) {
+    return "running";
+  }
+  return "pending";
+}
+
 export function ExtractionStatusPanel({
   extraction,
   processingProgress,
   isProcessing,
   processingMessage,
-  processingError
+  processingError,
+  studyId = "",
+  pollRunStateDuringExtract = false,
+  simplified = false,
+  onRunStatePolled
 }: ExtractionStatusPanelProps): JSX.Element | null {
   const showPanel =
     isProcessing ||
     extraction.status !== "idle" ||
     processingProgress.some((item) => item.status !== "pending") ||
     Boolean(processingMessage || processingError);
+
+  const onExtractInputs =
+    isProcessing &&
+    (extraction.currentSubStepId === "extract-inputs" || processingProgress.find((p) => p.stepId === "extract-inputs")?.status === "running");
+
+  useEffect(() => {
+    if (!pollRunStateDuringExtract || !onExtractInputs || !studyId.trim()) {
+      return;
+    }
+    let cancelled = false;
+    const poll = async (): Promise<void> => {
+      try {
+        const runState = await fetchStep1RunState(studyId.trim());
+        if (!cancelled) {
+          onRunStatePolled?.({
+            logs: runState.logs,
+            message: runState.message,
+            currentSubStepId: runState.currentSubStepId,
+            currentStage: runState.currentStage
+          });
+        }
+      } catch {
+        // best-effort polling
+      }
+    };
+    void poll();
+    const timer = window.setInterval(() => void poll(), 2500);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [pollRunStateDuringExtract, onExtractInputs, studyId, onRunStatePolled]);
+
+  const diMilestones = useMemo(() => {
+    if (!onExtractInputs && extraction.logs.length === 0) {
+      return [];
+    }
+    return (Object.keys(DI_MILESTONE_LABELS) as DiMilestoneId[]).map((id) => ({
+      id,
+      label: DI_MILESTONE_LABELS[id],
+      status: resolveDiMilestoneStatus(extraction.logs, id)
+    }));
+  }, [extraction.logs, onExtractInputs]);
 
   if (!showPanel) {
     return null;
@@ -64,27 +152,57 @@ export function ExtractionStatusPanel({
       }))
   ];
 
+  const statusLine =
+    subStepLabel && (isProcessing || extraction.status === "running")
+      ? `${stageLabel || "Running"} — ${subStepLabel}`
+      : stageLabel || processingMessage || extraction.message;
+
   return (
-    <section className="extraction-status-panel" aria-label="Extraction status">
+    <section
+      className={`extraction-status-panel ${simplified ? "extraction-status-panel-simplified" : ""}`}
+      aria-label="Extraction status"
+    >
       {isProcessing || extraction.status === "running" ? (
         <div className="extraction-wait-banner" role="status">
           <span className="step1-extraction-circle" aria-hidden="true" />
           <div>
-            <strong>Please wait — processing is in progress</strong>
-            <p className="step7-muted">This step can take several minutes, especially Document Intelligence extraction.</p>
+            <strong>{simplified ? "Running pipeline…" : "Please wait — processing is in progress"}</strong>
+            {!simplified ? (
+              <p className="step7-muted">This step can take several minutes, especially Document Intelligence extraction.</p>
+            ) : null}
           </div>
         </div>
       ) : null}
 
-      {stageLabel ? (
+      {simplified && statusLine ? (
+        <p className="extraction-stage-line extraction-stage-line-simple">{statusLine}</p>
+      ) : null}
+
+      {!simplified && stageLabel ? (
         <p className="extraction-stage-line">
           <span className="extraction-stage-label">Current stage:</span> {stageLabel}
         </p>
       ) : null}
-      {subStepLabel && (isProcessing || extraction.status === "running") ? (
+      {!simplified && subStepLabel && (isProcessing || extraction.status === "running") ? (
         <p className="extraction-substep-line">
           <span className="extraction-stage-label">Sub-step:</span> {subStepLabel}
         </p>
+      ) : null}
+
+      {!simplified && diMilestones.some((m) => m.status !== "pending") ? (
+        <div className="extraction-di-milestones" aria-label="PDF extraction milestones">
+          {diMilestones.map((milestone) =>
+            milestone.status === "pending" ? null : (
+              <div className="auto-run-step" key={milestone.id}>
+                <span className={`auto-run-circle auto-run-circle-${milestone.status}`} aria-hidden="true" />
+                <div>
+                  <span className="auto-run-title">{milestone.label}</span>
+                  <span className="auto-run-message">{milestone.status === "done" ? "Complete" : "In progress…"}</span>
+                </div>
+              </div>
+            )
+          )}
+        </div>
       ) : null}
 
       {processingMessage || extraction.message ? (
@@ -99,10 +217,10 @@ export function ExtractionStatusPanel({
       ) : null}
 
       {extraction.status === "done" && !isProcessing ? (
-        <p className="step1-status">Extraction completed. You can continue to the next stage.</p>
+        <p className="step1-status">Extraction completed. You can continue to review when ready.</p>
       ) : null}
 
-      <div className="auto-run-progress" aria-live="polite">
+      <div className={`auto-run-progress ${simplified ? "auto-run-progress-compact" : ""}`} aria-live="polite">
         {processingProgress.map((item) => (
           <div className="auto-run-step" key={item.stepId}>
             <span className={`auto-run-circle auto-run-circle-${item.status}`} aria-hidden="true">

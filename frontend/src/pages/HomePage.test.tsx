@@ -41,6 +41,7 @@ vi.mock("../services/stepApi", () => ({
   })),
   fetchStepStatuses: vi.fn(async () => ({
     studyId: "MY-STUDY",
+    codingPhaseAccepted: false,
     steps: [
       { stepId: "extract-inputs", status: "done" },
       { stepId: "index-protocol", status: "done" },
@@ -382,6 +383,7 @@ vi.mock("../services/stepApi", () => ({
     stepStatuses: DONE_STATUSES
   })),
   fetchStep1UploadStatus: vi.fn(async () => ({
+    pdSpec: { uploaded: false, fileName: "pd_specifications.xlsx", size: 0, blob: "pipeline/MY-STUDY/imports/pd_specifications.xlsx" },
     studyId: "MY-STUDY",
     protocol: {
       uploaded: true,
@@ -396,6 +398,29 @@ vi.mock("../services/stepApi", () => ({
       blob: "raw/MY-STUDY/acrf.pdf"
     },
     bothUploaded: true,
+    allThreeUploaded: false,
+    protocolPreprocessed: true,
+    acrfPreprocessed: true,
+    stepStatuses: DONE_STATUSES
+  })),
+  preprocessProtocol: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    role: "protocol" as const,
+    message: "Protocol ready",
+    protocolPreprocessed: true,
+    stepStatuses: DONE_STATUSES
+  })),
+  preprocessAcrf: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    role: "acrf" as const,
+    message: "aCRF ready",
+    acrfPreprocessed: true,
+    stepStatuses: DONE_STATUSES
+  })),
+  uploadPdSpecWorkbook: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    pdSpecPath: "output/MY-STUDY/pipeline/imports/pd_specifications.xlsx",
+    pdSpecBlob: "pipeline/MY-STUDY/imports/pd_specifications.xlsx",
     stepStatuses: DONE_STATUSES
   })),
   fetchStep1RunState: vi.fn(async () => ({
@@ -413,15 +438,7 @@ vi.mock("../services/stepApi", () => ({
     studyId: "MY-STUDY",
     message: "Extraction completed.",
     extractor: "document_intelligence",
-    stepStatuses: {
-      "extract-inputs": "done",
-      "index-protocol": "done",
-      "acrf-split-toc": "done",
-      "acrf-summary-text": "done",
-      "extract-rules": "pending",
-      "extract-deviations": "pending",
-      "review-and-finalize": "pending"
-    }
+    stepStatuses: DONE_STATUSES
   })),
   fetchStep1Preview: vi.fn(async () => ({
     studyId: "MY-STUDY",
@@ -443,6 +460,39 @@ vi.mock("../services/stepApi", () => ({
       "extract-deviations": "pending",
       "review-and-finalize": "pending"
     }
+  })),
+  fetchSpecificationsPreview: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    sources: [
+      {
+        key: "review_state",
+        label: "Active review state",
+        rows: [
+          {
+            deviation_id: "dev-0001",
+            rule_id: "rule-001",
+            rule_title: "Visit window timing",
+            deviation_text: "Visit date outside window",
+            text: "Visit date outside window",
+            entry_source: "extracted",
+            status: "to_review"
+          }
+        ]
+      }
+    ],
+    stepStatuses: DONE_STATUSES
+  })),
+  fetchImportVersions: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    activeDeviationsSource: null,
+    importVersions: { imports: [], merged: [] },
+    sources: []
+  })),
+  acceptCodingPhase: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    codingPhaseAccepted: true,
+    codingPhaseAcceptedAt: "2026-01-01T00:00:00Z",
+    stepStatuses: { ...DONE_STATUSES, "review-and-finalize": "done" }
   }))
 }));
 
@@ -450,22 +500,30 @@ describe("Workflow pipeline pages", () => {
   beforeEach(async () => {
     window.location.hash = "";
     const stepApi = await import("../services/stepApi");
-    vi.mocked(stepApi.runStep).mockClear();
+    vi.mocked(stepApi.runStep).mockReset();
+    vi.mocked(stepApi.runStep).mockImplementation(async (_studyId: string, stepId: string) => ({
+      studyId: "MY-STUDY",
+      stepId,
+      summary: `Completed ${stepId}.`,
+      stepStatuses: DONE_STATUSES
+    }));
     vi.mocked(stepApi.fetchStep7Deviations).mockClear();
     vi.mocked(stepApi.runStep1Extraction).mockClear();
     vi.mocked(stepApi.fetchStep1Preview).mockClear();
+    vi.mocked(stepApi.fetchSpecificationsPreview).mockClear();
   });
 
   it("renders step navigation and default step panel", async () => {
     render(<App />);
 
     expect((await screen.findAllByText(/1 project in blob/)).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Step 1 - Processing").length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: /Run extraction pipeline|Re-run extraction pipeline/i })).toBeInTheDocument();
-    expect(screen.getByText("PDF extractor")).toBeInTheDocument();
+    expect(screen.getAllByText("Processing").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: /Run pipeline to review/i })).toBeInTheDocument();
+    expect(screen.getByText("Extract deviations from protocol")).toBeInTheDocument();
+    expect(screen.getByText("PD Specification")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Use ID" }).length).toBeGreaterThan(0);
     expect(screen.getAllByPlaceholderText(/Type a new project ID/i).length).toBeGreaterThan(0);
-    const step1Picker = document.getElementById("step1-blob-project-picker");
+    const step1Picker = document.getElementById("workflow-blob-project-picker");
     expect(step1Picker).toBeInTheDocument();
     expect(within(step1Picker!.parentElement!.parentElement!).getByRole("option", { name: "MY-STUDY" })).toBeInTheDocument();
   });
@@ -489,7 +547,7 @@ describe("Workflow pipeline pages", () => {
     render(<App />);
 
     const picker = await waitFor(() => {
-      const element = document.getElementById("step1-blob-project-picker") as HTMLSelectElement | null;
+      const element = document.getElementById("workflow-blob-project-picker") as HTMLSelectElement | null;
       if (!element || element.disabled) {
         throw new Error("picker not ready");
       }
@@ -499,35 +557,7 @@ describe("Workflow pipeline pages", () => {
     expect(picker).toHaveValue("MY-STUDY");
   });
 
-  it("switches to rule extraction page, shows preview, and runs backend step", async () => {
-    const user = userEvent.setup();
-    render(<App />);
-
-    await user.click(screen.getByRole("button", { name: /Step 2 - Rule Extractions/i }));
-    expect(await screen.findByRole("heading", { name: "Preview" })).toBeInTheDocument();
-
-    await user.click(screen.getByRole("button", { name: "Run this step" }));
-    expect((await screen.findAllByText("Extracted 10 rules.")).length).toBeGreaterThan(0);
-    expect(screen.getByText("Rules preview")).toBeInTheDocument();
-  });
-
-  it("shows Re-run when step is already done", async () => {
-    const stepApi = await import("../services/stepApi");
-    vi.mocked(stepApi.fetchStepPreview).mockResolvedValueOnce({
-      studyId: "MY-STUDY",
-      stepId: "extract-rules",
-      previews: [{ title: "Rules preview", body: '{"rules":[]}', highlight: true }],
-      stepStatuses: DONE_STATUSES
-    });
-
-    const user = userEvent.setup();
-    render(<App />);
-
-    await user.click(screen.getByRole("button", { name: /Step 2 - Rule Extractions/i }));
-    expect(await screen.findByRole("button", { name: "Re-run" })).toBeInTheDocument();
-  });
-
-  it("exports current deviations from Step 4 review", async () => {
+  it("exports current deviations from review", async () => {
     const stepApi = await import("../services/stepApi");
     const user = userEvent.setup();
     const createObjectURL = vi.fn(() => "blob:export");
@@ -544,7 +574,7 @@ describe("Workflow pipeline pages", () => {
     });
 
     render(<App />);
-    await user.click(screen.getByRole("button", { name: /Step 4 - Review and Finalize/i }));
+    await user.click(screen.getByRole("button", { name: /Review and Finalize/i }));
     await user.click(screen.getByRole("button", { name: "Generate Excel" }));
 
     await waitFor(() => {
@@ -574,7 +604,7 @@ describe("Workflow pipeline pages", () => {
     });
 
     render(<App />);
-    await user.click(screen.getByRole("button", { name: /Step 4 - Review and Finalize/i }));
+    await user.click(screen.getByRole("button", { name: /Review and Finalize/i }));
     await user.click(screen.getByRole("button", { name: "Generate Company PDS" }));
 
     await waitFor(() => {
@@ -591,11 +621,10 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /Step 4 - Review and Finalize/i }));
-    expect(await screen.findByText("Visit window timing")).toBeInTheDocument();
-    expect(screen.getByText("dev-0001")).toBeInTheDocument();
-
-    await user.click(screen.getByText("dev-0001"));
+    await user.click(screen.getByRole("button", { name: /Review and Finalize/i }));
+    await screen.findByText("Specification preview");
+    const devRow = await screen.findByRole("button", { name: /dev-0001/i });
+    await user.click(devRow);
     expect(await screen.findByRole("heading", { name: "dev-0001" })).toBeInTheDocument();
     expect(screen.getByText("Visit must happen inside window")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Decline" })).toBeInTheDocument();
@@ -608,18 +637,74 @@ describe("Workflow pipeline pages", () => {
     expect(await within(transcript).findByText("Updated deviation from your message.")).toBeInTheDocument();
   });
 
-  it("sends llmInstructions when running rule extraction", async () => {
+  it("sends llmInstructions when running the extraction pipeline", async () => {
     const stepApi = await import("../services/stepApi");
+    const afterExtract: Record<string, StepStatus> = {
+      "extract-inputs": "done",
+      "index-protocol": "done",
+      "acrf-split-toc": "done",
+      "acrf-summary-text": "done",
+      "extract-rules": "pending",
+      "extract-deviations": "pending",
+      "review-and-finalize": "pending"
+    };
+    vi.mocked(stepApi.runStep1Extraction).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      message: "Extraction completed.",
+      extractor: "document_intelligence",
+      stepStatuses: afterExtract
+    });
+    vi.mocked(stepApi.fetchStudies).mockResolvedValueOnce({
+      studies: [
+        {
+          studyId: "MY-STUDY",
+          protocolBlob: "raw/MY-STUDY/protocol.pdf",
+          acrfBlob: "raw/MY-STUDY/acrf.pdf",
+          bothUploaded: true,
+          stepStatuses: afterExtract,
+          nextStepId: "extract-rules"
+        }
+      ]
+    });
+    vi.mocked(stepApi.fetchStepStatuses).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      codingPhaseAccepted: false,
+      steps: [
+        { stepId: "extract-inputs", status: "pending" },
+        { stepId: "index-protocol", status: "pending" },
+        { stepId: "acrf-split-toc", status: "pending" },
+        { stepId: "acrf-summary-text", status: "pending" },
+        { stepId: "extract-rules", status: "pending" },
+        { stepId: "extract-deviations", status: "pending" },
+        { stepId: "review-and-finalize", status: "pending" }
+      ],
+      nextStepId: "extract-inputs"
+    });
+    vi.mocked(stepApi.fetchStep1UploadStatus).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      protocol: { uploaded: true, fileName: "protocol.pdf", size: 1, blob: "raw/MY-STUDY/protocol.pdf" },
+      acrf: { uploaded: true, fileName: "acrf.pdf", size: 1, blob: "raw/MY-STUDY/acrf.pdf" },
+      pdSpec: { uploaded: false, fileName: "pd_specifications.xlsx", size: 0, blob: "pipeline/MY-STUDY/imports/pd_specifications.xlsx" },
+      bothUploaded: true,
+      stepStatuses: {
+        "extract-inputs": "pending",
+        "index-protocol": "pending",
+        "acrf-split-toc": "pending",
+        "acrf-summary-text": "pending",
+        "extract-rules": "pending",
+        "extract-deviations": "pending",
+        "review-and-finalize": "pending"
+      }
+    });
+
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /Step 2 - Rule Extractions/i }));
-    expect(await screen.findByRole("heading", { name: "Preview" })).toBeInTheDocument();
-
-    await user.click(screen.getByText("Additional instructions for the model"));
-    const textarea = screen.getByPlaceholderText(/Optional context/i);
+    await user.click(screen.getByText("Advanced options"));
+    const textarea = await screen.findByPlaceholderText(/Additional guidance for rule and deviation extraction/i);
     await user.type(textarea, "Emphasize dosing");
-    await user.click(screen.getByRole("button", { name: "Run this step" }));
+    const runBtn = await screen.findByRole("button", { name: /Run pipeline to review/i });
+    await user.click(runBtn);
 
     await waitFor(() => {
       expect(stepApi.runStep).toHaveBeenCalled();
@@ -634,8 +719,8 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /Step 4 - Review and Finalize/i }));
-    expect(await screen.findByText("Visit window timing")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Review and Finalize/i }));
+    await screen.findByRole("button", { name: /dev-0001/i });
 
     const acceptAllButton = screen.getByRole("button", { name: /Accept all \(1\)/i });
     expect(screen.getByRole("button", { name: /Generate all pseudo \(0\)/i })).toBeDisabled();
@@ -650,13 +735,13 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /Step 4 - Review and Finalize/i }));
-    expect(await screen.findByText("Visit window timing")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Review and Finalize/i }));
+    await screen.findByRole("button", { name: /dev-0001/i });
 
     const bulkButton = screen.getByRole("button", { name: /Generate all pseudo \(0\)/i });
     expect(bulkButton).toBeDisabled();
 
-    await user.click(screen.getByText("dev-0001"));
+    await user.click(await screen.findByRole("button", { name: /dev-0001/i }));
     expect(await screen.findByRole("heading", { name: "dev-0001" })).toBeInTheDocument();
 
     const perRowButton = screen.getByRole("button", { name: "Generate pseudo logic" });
@@ -705,10 +790,9 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /Step 4 - Review and Finalize/i }));
-    expect(await screen.findByText("Visit window timing")).toBeInTheDocument();
-
-    await user.click(screen.getByText("dev-0001"));
+    await user.click(screen.getByRole("button", { name: /Review and Finalize/i }));
+    const devRow = await screen.findByRole("button", { name: /dev-0001/i });
+    await user.click(devRow);
     expect(await screen.findByText("Not generated yet.")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /Generate all pseudo \(1\)/i }));
@@ -722,8 +806,8 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /Step 4 - Review and Finalize/i }));
-    expect(await screen.findByText("Visit window timing")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Review and Finalize/i }));
+    await screen.findByRole("button", { name: /dev-0001/i });
 
     await user.click(screen.getByRole("button", { name: "More actions" }));
     await user.type(screen.getByPlaceholderText("deviation_id"), "dev-manual");
@@ -744,63 +828,87 @@ describe("Workflow pipeline pages", () => {
     expect(stepApi.importStep7DeviationsWorkbook).toHaveBeenCalledWith("MY-STUDY", file);
   });
 
-  it("runs processing chain then review auto-run", async () => {
+  it("runs processing chain then opens review", async () => {
     const stepApi = await import("../services/stepApi");
+    const pendingStatuses: Record<string, StepStatus> = {
+      ...DONE_STATUSES,
+      "extract-inputs": "pending",
+      "extract-rules": "pending",
+      "extract-deviations": "pending"
+    };
+    vi.mocked(stepApi.fetchStudies).mockResolvedValueOnce({
+      studies: [
+        {
+          studyId: "MY-STUDY",
+          protocolBlob: "raw/MY-STUDY/protocol.pdf",
+          acrfBlob: "raw/MY-STUDY/acrf.pdf",
+          bothUploaded: true,
+          stepStatuses: pendingStatuses,
+          nextStepId: "extract-inputs"
+        }
+      ]
+    });
+    const pendingSteps = Object.entries(pendingStatuses).map(([stepId, status]) => ({ stepId, status }));
+    vi.mocked(stepApi.fetchStepStatuses).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      codingPhaseAccepted: false,
+      steps: pendingSteps
+    });
+    vi.mocked(stepApi.fetchStep1UploadStatus).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      protocol: { uploaded: true, fileName: "protocol.pdf", size: 100, blob: "raw/MY-STUDY/protocol.pdf" },
+      acrf: { uploaded: true, fileName: "acrf.pdf", size: 100, blob: "raw/MY-STUDY/acrf.pdf" },
+      pdSpec: { uploaded: false, fileName: "pd_specifications.xlsx", size: 0, blob: "pipeline/MY-STUDY/imports/pd_specifications.xlsx" },
+      bothUploaded: true,
+      allThreeUploaded: false,
+      protocolPreprocessed: true,
+      acrfPreprocessed: true,
+      stepStatuses: pendingStatuses
+    });
+    vi.mocked(stepApi.runStep1Extraction).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      message: "Extraction completed.",
+      extractor: "document_intelligence",
+      stepStatuses: { ...pendingStatuses, "extract-inputs": "done" }
+    });
+
     const user = userEvent.setup();
     render(<App />);
 
-    const runProcessing = await screen.findByRole("button", { name: /Run extraction pipeline|Re-run extraction pipeline/i });
+    const runProcessing = await screen.findByRole("button", { name: /Run pipeline to review/i });
     await waitFor(() => expect(runProcessing).toBeEnabled());
     await user.click(runProcessing);
-    expect((await screen.findAllByText(/Processing completed/i)).length).toBeGreaterThan(0);
-    expect(stepApi.runStep1Extraction).toHaveBeenCalled();
-    expect(vi.mocked(stepApi.runStep).mock.calls.map(([, stepId]) => stepId)).toEqual([
-      "index-protocol",
-      "acrf-split-toc",
-      "acrf-summary-text"
-    ]);
-
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Run to review" })).toBeEnabled();
+      expect(stepApi.runStep1Extraction).toHaveBeenCalled();
+      expect(stepApi.runStep).toHaveBeenCalled();
     });
-    await user.click(screen.getByRole("button", { name: "Run to review" }));
 
-    await waitFor(() => {
-      expect(stepApi.runStep).toHaveBeenCalledTimes(5);
-    });
-    expect(vi.mocked(stepApi.runStep).mock.calls.map(([, stepId]) => stepId).slice(3)).toEqual([
-      "extract-rules",
-      "extract-deviations"
-    ]);
-    expect(await screen.findByText("Visit window timing")).toBeInTheDocument();
-    expect(screen.getByText("Review is ready.")).toBeInTheDocument();
+    await screen.findByText("Specification preview");
+    await screen.findByRole("button", { name: /dev-0001/i });
   });
 
-  it("stops processing when a backend step fails", async () => {
+  it("shows PD spec action tiles when all three documents are uploaded", async () => {
     const stepApi = await import("../services/stepApi");
-    vi.mocked(stepApi.runStep).mockImplementationOnce(async (_studyId: string, stepId: string) => ({
+    vi.mocked(stepApi.fetchStep1UploadStatus).mockResolvedValue({
       studyId: "MY-STUDY",
-      stepId,
-      summary: "Indexed 25 protocol paragraphs.",
+      protocol: { uploaded: true, fileName: "protocol.pdf", size: 100, blob: "raw/MY-STUDY/protocol.pdf" },
+      acrf: { uploaded: true, fileName: "acrf.pdf", size: 100, blob: "raw/MY-STUDY/acrf.pdf" },
+      pdSpec: { uploaded: true, fileName: "specs.xlsx", size: 200, blob: "pipeline/MY-STUDY/imports/pd_specifications.xlsx" },
+      bothUploaded: true,
+      allThreeUploaded: true,
+      protocolPreprocessed: true,
+      acrfPreprocessed: true,
       stepStatuses: DONE_STATUSES
-    }));
-    vi.mocked(stepApi.runStep).mockRejectedValueOnce(new Error("Missing aCRF source markdown."));
-
-    const user = userEvent.setup();
+    });
     render(<App />);
-
-    const runBtn = await screen.findByRole("button", { name: /Run extraction pipeline|Re-run extraction pipeline/i });
-    await waitFor(() => expect(runBtn).toBeEnabled());
-    await user.click(runBtn);
-
-    expect((await screen.findAllByText("Missing aCRF source markdown.")).length).toBeGreaterThan(0);
-    expect(stepApi.runStep).toHaveBeenCalledTimes(2);
-    expect(screen.queryByText("Visit window timing")).not.toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /Run pipeline to review/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Map to review/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Enrich and open review/i })).toBeInTheDocument();
   });
 
-  it("loads markdown preview when processing is already done", async () => {
+  it("opens markdown preview in a modal when Preview is clicked", async () => {
     const stepApi = await import("../services/stepApi");
-    vi.mocked(stepApi.fetchStep1Preview).mockResolvedValue({
+    vi.mocked(stepApi.fetchStep1Preview).mockImplementation(async (_studyId, _options?) => ({
       studyId: "MY-STUDY",
       protocolPreview: "## Inclusion\nSubject must be 18+",
       acrfPreview: "## Visit 3\nHemoglobin field",
@@ -812,7 +920,7 @@ describe("Workflow pipeline pages", () => {
       acrfFileName: "aCRF_annotated.pdf",
       extractor: "document_intelligence",
       stepStatuses: DONE_STATUSES
-    });
+    }));
     vi.mocked(stepApi.fetchStep1UploadStatus).mockResolvedValue({
       studyId: "MY-STUDY",
       protocol: {
@@ -827,16 +935,19 @@ describe("Workflow pipeline pages", () => {
         size: 100,
         blob: "raw/MY-STUDY/acrf.pdf"
       },
+      pdSpec: { uploaded: false, fileName: "pd_specifications.xlsx", size: 0, blob: "pipeline/MY-STUDY/imports/pd_specifications.xlsx" },
       bothUploaded: true,
       stepStatuses: DONE_STATUSES
     });
 
+    const user = userEvent.setup();
     render(<App />);
 
-    expect(await screen.findByText(/Protocol — Protocol_v3_final\.pdf/i)).toBeInTheDocument();
-    expect(await screen.findByText(/aCRF — aCRF_annotated\.pdf/i)).toBeInTheDocument();
-    expect(screen.getByRole("heading", { level: 2, name: "Inclusion" })).toBeInTheDocument();
-    expect(stepApi.fetchStep1Preview).toHaveBeenCalledWith("MY-STUDY");
+    const previewButtons = await screen.findAllByRole("button", { name: /Preview markdown/i });
+    await user.click(previewButtons[0]);
+    const dialog = await screen.findByRole("dialog", { name: /Protocol — extracted markdown/i });
+    expect(within(dialog).getByRole("heading", { level: 2, name: "Inclusion" })).toBeInTheDocument();
+    expect(stepApi.fetchStep1Preview).toHaveBeenCalledWith("MY-STUDY", { full: true });
   });
 
   it("deletes the active study after confirmation", async () => {
@@ -856,5 +967,82 @@ describe("Workflow pipeline pages", () => {
     expect(await screen.findByText(/Deleted 2 blob object/i)).toBeInTheDocument();
 
     confirmSpy.mockRestore();
+  });
+
+  it("disables Accept and continue when deviations are not all reviewed", async () => {
+    const stepApi = await import("../services/stepApi");
+    vi.mocked(stepApi.fetchStep7Deviations).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      columns: ["rule_id", "deviation_id", "rule_title", "deviation_text", "paragraph_refs", "pseudo_logic"],
+      rows: [
+        {
+          rule_id: "rule-001",
+          deviation_id: "dev-0001",
+          rule_title: "Visit window timing",
+          rule_text: "Visit must happen inside window",
+          deviation_text: "Visit date outside window",
+          paragraph_refs: ["p2"],
+          paragraph_refs_text: "p2",
+          supporting_sentences: [],
+          data_support_note: "",
+          pseudo_logic: "",
+          status: "to_review",
+          dm_comment: "",
+          entry_source: "extracted",
+          programmable: null,
+          programmability_note: ""
+        }
+      ],
+      stepStatuses: DONE_STATUSES
+    });
+
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: /Review and Finalize/i }));
+    expect(await screen.findByRole("button", { name: "Accept and continue to coding" })).toBeDisabled();
+    expect(screen.getByText(/still pending or to review/i)).toBeInTheDocument();
+  });
+
+  it("accepts review and navigates to Step 5 coding", async () => {
+    const stepApi = await import("../services/stepApi");
+    vi.mocked(stepApi.fetchStep7Deviations).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      columns: ["rule_id", "deviation_id", "rule_title", "deviation_text", "paragraph_refs", "pseudo_logic"],
+      rows: [
+        {
+          rule_id: "rule-001",
+          deviation_id: "dev-0001",
+          rule_title: "Visit window timing",
+          rule_text: "Visit must happen inside window",
+          deviation_text: "Visit date outside window",
+          paragraph_refs: ["p2"],
+          paragraph_refs_text: "p2",
+          supporting_sentences: [],
+          data_support_note: "",
+          pseudo_logic: "SELECT 1",
+          status: "accepted",
+          dm_comment: "",
+          entry_source: "extracted",
+          programmable: true,
+          programmability_note: "ok"
+        }
+      ],
+      stepStatuses: DONE_STATUSES
+    });
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.click(screen.getByRole("button", { name: /Review and Finalize/i }));
+    const continueButton = await screen.findByRole("button", { name: "Accept and continue to coding" });
+    await waitFor(() => expect(continueButton).toBeEnabled());
+    await user.click(continueButton);
+
+    await waitFor(() => {
+      expect(stepApi.acceptCodingPhase).toHaveBeenCalledWith("MY-STUDY");
+    });
+    expect(await screen.findByText("Coding phase")).toBeInTheDocument();
+    expect(screen.getByText("Coming soon")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Coding/i })).toBeInTheDocument();
   });
 });

@@ -31,6 +31,10 @@ STEP_ORDER: List[str] = [
     "acrf-summary-text",
     "extract-rules",
     "extract-deviations",
+    "import-pd-spec-ground",
+    "import-pd-spec-map",
+    "import-pd-spec-enrich",
+    "merge-pd-spec-imports",
     "review-and-finalize",
 ]
 
@@ -41,7 +45,38 @@ STEP_DEPENDENCIES: Dict[str, List[str]] = {
     "acrf-summary-text": ["acrf-split-toc"],
     "extract-rules": ["index-protocol"],
     "extract-deviations": ["extract-rules", "acrf-summary-text"],
-    "review-and-finalize": ["extract-deviations"],
+    "import-pd-spec-ground": ["index-protocol", "acrf-summary-text"],
+    "import-pd-spec-map": [],
+    "import-pd-spec-enrich": [],
+    "merge-pd-spec-imports": ["import-pd-spec-ground"],
+    "review-and-finalize": [],
+}
+
+ENTRY_MODE_EXTRACTED = "extracted"
+ENTRY_MODE_IMPORTED_PD_SPEC = "imported_pd_spec"
+
+IMPORT_STEP_ORDER: List[str] = [
+    "extract-inputs",
+    "index-protocol",
+    "acrf-split-toc",
+    "acrf-summary-text",
+    "import-pd-spec-ground",
+    "import-pd-spec-map",
+    "import-pd-spec-enrich",
+    "merge-pd-spec-imports",
+    "review-and-finalize",
+]
+
+IMPORT_STEP_DEPENDENCIES: Dict[str, List[str]] = {
+    "extract-inputs": [],
+    "index-protocol": ["extract-inputs"],
+    "acrf-split-toc": ["extract-inputs"],
+    "acrf-summary-text": ["acrf-split-toc"],
+    "import-pd-spec-ground": ["index-protocol", "acrf-summary-text"],
+    "import-pd-spec-map": [],
+    "import-pd-spec-enrich": [],
+    "merge-pd-spec-imports": ["import-pd-spec-ground"],
+    "review-and-finalize": ["import-pd-spec-ground"],
 }
 
 STEP7_EXPORT_COLUMNS: List[str] = [
@@ -122,17 +157,66 @@ class UiStepService:
                 400,
             )
 
-    def _assert_step_dependencies(self, statuses: Dict[str, str], step_id: str) -> None:
-        for dependency in STEP_DEPENDENCIES.get(step_id, []):
-            if statuses.get(dependency) != "done":
+    def _get_entry_mode(self, study_id: str) -> str:
+        manifest = self._read_upload_manifest_obj(study_id)
+        mode = str(manifest.get("entryMode") or ENTRY_MODE_EXTRACTED).strip()
+        if mode not in {ENTRY_MODE_EXTRACTED, ENTRY_MODE_IMPORTED_PD_SPEC}:
+            return ENTRY_MODE_EXTRACTED
+        return mode
+
+    def _effective_step_order(self, study_id: str) -> List[str]:
+        return list(STEP_ORDER)
+
+    def _effective_step_dependencies(self, study_id: str) -> Dict[str, List[str]]:
+        return dict(STEP_DEPENDENCIES)
+
+    def _assert_step_dependencies(self, statuses: Dict[str, str], step_id: str, study_id: str) -> None:
+        if step_id == "review-and-finalize":
+            extract_done = statuses.get("extract-deviations") in {"done", "skipped"}
+            import_done = any(
+                statuses.get(step) in {"done", "skipped"}
+                for step in (
+                    "import-pd-spec-ground",
+                    "import-pd-spec-map",
+                    "import-pd-spec-enrich",
+                )
+            )
+            if not (extract_done or import_done):
+                raise UiApiError(
+                    "STEP_BLOCKED",
+                    "Step 'review-and-finalize' is blocked. Complete deviation extraction or PD spec import first.",
+                    409,
+                )
+            return
+        for dependency in self._effective_step_dependencies(study_id).get(step_id, []):
+            dep_status = statuses.get(dependency)
+            if dep_status not in {"done", "skipped"}:
                 raise UiApiError(
                     "STEP_BLOCKED",
                     f"Step '{step_id}' is blocked. Complete '{dependency}' first.",
                     409,
                 )
 
+    def _has_import_snapshot(self, study_id: str) -> bool:
+        review_dir = paths.local_review_dir(study_id, self.output_dir)
+        return review_dir.exists() and any(review_dir.glob("deviations_import_*.json"))
+
+    def _has_merged_snapshot(self, study_id: str) -> bool:
+        review_dir = paths.local_review_dir(study_id, self.output_dir)
+        return review_dir.exists() and any(review_dir.glob("deviations_merged_*.json"))
+
+    def _pd_spec_map_done(self, study_id: str) -> bool:
+        manifest = self._read_upload_manifest_obj(study_id)
+        mode = str(manifest.get("pdSpecImportMode") or "")
+        return mode in {"map", "enrich_stub"} or self._has_import_snapshot(study_id)
+
+    def _pd_spec_enrich_done(self, study_id: str) -> bool:
+        manifest = self._read_upload_manifest_obj(study_id)
+        return str(manifest.get("pdSpecImportMode") or "") == "enrich_stub"
+
     def _step_statuses(self, study_id: str) -> Dict[str, str]:
         p = self._study_paths(study_id)
+        entry_mode = self._get_entry_mode(study_id)
         statuses: Dict[str, str] = {
             "extract-inputs": "done" if p.protocol_source.exists() and p.acrf_source.exists() else "pending",
             "index-protocol": "done" if p.paragraph_index.exists() else "pending",
@@ -141,9 +225,18 @@ class UiStepService:
             else "pending",
             "acrf-summary-text": "done" if p.acrf_summary_text_merged.exists() else "pending",
             "extract-rules": "done" if p.rules_parsed.exists() else "pending",
-            "extract-deviations": "done" if p.deviations_parsed.exists() and p.deviations_review_state.exists() else "pending",
+            "extract-deviations": "done"
+            if p.deviations_parsed.exists() and p.deviations_review_state.exists()
+            else "pending",
+            "import-pd-spec-ground": "done" if self._has_import_snapshot(study_id) else "pending",
+            "import-pd-spec-map": "done" if self._pd_spec_map_done(study_id) else "pending",
+            "import-pd-spec-enrich": "done" if self._pd_spec_enrich_done(study_id) else "pending",
+            "merge-pd-spec-imports": "done" if self._has_merged_snapshot(study_id) else "pending",
             "review-and-finalize": "done" if p.final_json.exists() and p.final_xlsx.exists() else "pending",
         }
+        versions = pipeline_v2.list_import_versions(study_id, self.output_dir)
+        if len(versions.get("imports", [])) < 2:
+            statuses["merge-pd-spec-imports"] = "skipped"
         return statuses
 
     def _read_excerpt(self, file_path: Path, max_chars: int = 2500) -> str:
@@ -199,6 +292,12 @@ class UiStepService:
         acrf_file_name: str | None = None,
         protocol_size: int | None = None,
         acrf_size: int | None = None,
+        entry_mode: str | None = None,
+        active_deviations_source: str | None = None,
+        pd_spec_file_name: str | None = None,
+        pd_spec_size: int | None = None,
+        pd_spec_import_mode: str | None = None,
+        coding_phase_accepted: bool | None = None,
     ) -> Dict[str, Any]:
         existing = self._read_upload_manifest_obj(study_id)
         manifest = {
@@ -209,7 +308,22 @@ class UiStepService:
             or "protocol.pdf",
             "acrfFileName": acrf_file_name or existing.get("acrfFileName") or "acrf.pdf",
             "uploadedAt": datetime.now(timezone.utc).isoformat(),
+            "entryMode": entry_mode or existing.get("entryMode") or ENTRY_MODE_EXTRACTED,
+            "activeDeviationsSource": active_deviations_source
+            if active_deviations_source is not None
+            else existing.get("activeDeviationsSource"),
+            "pdSpecFileName": pd_spec_file_name or existing.get("pdSpecFileName"),
+            "pdSpecImportMode": pd_spec_import_mode
+            if pd_spec_import_mode is not None
+            else existing.get("pdSpecImportMode"),
+            "codingPhaseAccepted": coding_phase_accepted
+            if coding_phase_accepted is not None
+            else existing.get("codingPhaseAccepted", False),
         }
+        if coding_phase_accepted:
+            manifest["codingPhaseAcceptedAt"] = datetime.now(timezone.utc).isoformat()
+        elif "codingPhaseAcceptedAt" in existing:
+            manifest["codingPhaseAcceptedAt"] = existing["codingPhaseAcceptedAt"]
         if protocol_size is not None:
             manifest["protocolSize"] = protocol_size
         elif "protocolSize" in existing:
@@ -218,6 +332,10 @@ class UiStepService:
             manifest["acrfSize"] = acrf_size
         elif "acrfSize" in existing:
             manifest["acrfSize"] = existing["acrfSize"]
+        if pd_spec_size is not None:
+            manifest["pdSpecSize"] = pd_spec_size
+        elif "pdSpecSize" in existing:
+            manifest["pdSpecSize"] = existing["pdSpecSize"]
 
         manifest_path = self._ui_upload_manifest_path(study_id)
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -269,13 +387,57 @@ class UiStepService:
         )
         return blob_path
 
+    def _blob_has_pd_spec_workbook(self, study_id: str) -> bool:
+        try:
+            blob_service = blob_io.blob_service_from_env()
+            container = blob_io.container_from_env()
+            return blob_io.blob_exists(
+                blob_service=blob_service,
+                container_name=container,
+                blob_path=paths.pd_spec_workbook_blob(study_id),
+            )
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _read_pd_spec_workbook_bytes(self, study_id: str) -> bytes | None:
+        """Return workbook bytes from local cache, downloading from blob when needed."""
+        local_path = paths.local_pd_spec_workbook(study_id, self.output_dir)
+        if local_path.is_file():
+            return local_path.read_bytes()
+        if not self._blob_has_pd_spec_workbook(study_id):
+            return None
+        try:
+            blob_service = blob_io.blob_service_from_env()
+            container = blob_io.container_from_env()
+            data = blob_io.download_blob_bytes(
+                blob_service=blob_service,
+                container_name=container,
+                blob_path=paths.pd_spec_workbook_blob(study_id),
+            )
+        except Exception:  # noqa: BLE001
+            return None
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_bytes(data)
+        self._mirror_upload(study_id, local_path)
+        return data
+
     def get_step1_upload_status(self, study_id: str) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         manifest = self._read_upload_manifest_obj(study_id)
         protocol_uploaded = self._blob_has_upload(study_id, "protocol")
         acrf_uploaded = self._blob_has_upload(study_id, "acrf")
+        pd_spec_uploaded = self._blob_has_pd_spec_workbook(study_id)
+        if pd_spec_uploaded:
+            self._read_pd_spec_workbook_bytes(study_id)
 
         def slot(role: str, uploaded: bool) -> Dict[str, Any]:
+            if role == "pdSpec":
+                return {
+                    "uploaded": uploaded,
+                    "fileName": str(manifest.get("pdSpecFileName") or "pd_specifications.xlsx"),
+                    "size": int(manifest.get("pdSpecSize") or 0) if uploaded else 0,
+                    "blob": paths.pd_spec_workbook_blob(study_id),
+                }
             name_key = "protocolFileName" if role == "protocol" else "acrfFileName"
             size_key = "protocolSize" if role == "protocol" else "acrfSize"
             default_name = "protocol.pdf" if role == "protocol" else "acrf.pdf"
@@ -286,13 +448,34 @@ class UiStepService:
                 "blob": paths.raw_protocol_blob(study_id) if role == "protocol" else paths.raw_acrf_blob(study_id),
             }
 
+        p = self._study_paths(study_id)
         return {
             "studyId": study_id,
             "protocol": slot("protocol", protocol_uploaded),
             "acrf": slot("acrf", acrf_uploaded),
+            "pdSpec": slot("pdSpec", pd_spec_uploaded),
             "bothUploaded": protocol_uploaded and acrf_uploaded,
+            "allThreeUploaded": protocol_uploaded and acrf_uploaded and pd_spec_uploaded,
+            "protocolPreprocessed": p.paragraph_index.exists(),
+            "acrfPreprocessed": p.acrf_summary_text_merged.exists(),
             "stepStatuses": self._step_statuses(study_id),
         }
+
+    def _assert_protocol_upload_ready(self, study_id: str) -> None:
+        if not self._blob_has_upload(study_id, "protocol"):
+            raise UiApiError(
+                "UPLOAD_REQUIRED",
+                "Upload the protocol PDF before preprocessing.",
+                409,
+            )
+
+    def _assert_acrf_upload_ready(self, study_id: str) -> None:
+        if not self._blob_has_upload(study_id, "acrf"):
+            raise UiApiError(
+                "UPLOAD_REQUIRED",
+                "Upload the aCRF PDF before preprocessing.",
+                409,
+            )
 
     def _assert_both_uploads_ready(self, study_id: str) -> None:
         status = self.get_step1_upload_status(study_id)
@@ -520,12 +703,12 @@ class UiStepService:
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
 
-    def _normalize_refs(self, value: Any) -> List[str]:
+    def _normalize_refs(self, value: Any, *, allow_empty: bool = False) -> List[str]:
         if isinstance(value, list):
             refs = [str(item).strip() for item in value if str(item).strip()]
         else:
             refs = [part.strip() for part in str(value or "").replace(";", ",").split(",") if part.strip()]
-        if not refs:
+        if not refs and not allow_empty:
             raise UiApiError("VALIDATION_ERROR", "paragraph_refs is required", 400)
         invalid = [ref for ref in refs if not ref.startswith("p") or not ref[1:].isdigit()]
         if invalid:
@@ -541,16 +724,41 @@ class UiStepService:
         status = str(payload.get("status") or "pending").strip().lower()
         if status not in {"pending", "accepted", "to_review", "rejected"}:
             raise UiApiError("VALIDATION_ERROR", "status must be one of pending,accepted,to_review,rejected", 400)
-        return {
+        grounding_error = str(payload.get("grounding_error") or payload.get("groundingError") or "").strip()
+        allow_empty_refs = bool(grounding_error) or default_source == "imported_pd_spec"
+        row = {
             "deviation_id": deviation_id,
             "rule_id": rule_id,
             "text": text,
-            "paragraph_refs": self._normalize_refs(payload.get("paragraph_refs") or payload.get("paragraphRefs")),
+            "paragraph_refs": self._normalize_refs(
+                payload.get("paragraph_refs") or payload.get("paragraphRefs"),
+                allow_empty=allow_empty_refs,
+            ),
             "data_support_note": str(payload.get("data_support_note") or payload.get("dataSupportNote") or ""),
             "status": status,
             "dm_comment": str(payload.get("dm_comment") or payload.get("dmComment") or ""),
             "entry_source": str(payload.get("entry_source") or payload.get("entrySource") or default_source),
         }
+        for field in (
+            "protocol_deviation_category",
+            "protocol_deviation_sub_category",
+            "classification",
+            "data_source",
+            "manual_or_programmable",
+            "programming_status",
+            "programmer_comments",
+            "reviewer_comments",
+            "aa_comment",
+            "grounding_error",
+        ):
+            if field in payload or self._camel_field(field) in payload:
+                row[field] = str(payload.get(field) or payload.get(self._camel_field(field)) or "").strip()
+        return row
+
+    @staticmethod
+    def _camel_field(snake: str) -> str:
+        parts = snake.split("_")
+        return parts[0] + "".join(p.title() for p in parts[1:])
 
     def _normalized_rule_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         rule_id = str(payload.get("rule_id") or payload.get("ruleId") or "").strip()
@@ -584,10 +792,15 @@ class UiStepService:
             paragraph = paragraph_lookup.get(str(ref), {})
             text = str(paragraph.get("text") or paragraph.get("content") or paragraph.get("paragraph_text") or "")
             supporting_sentences.append({"ref": str(ref), "text": text})
+        category = str(row.get("protocol_deviation_category", "")).strip()
+        sub_category = str(row.get("protocol_deviation_sub_category", "")).strip()
+        rule_title = str(rule.get("title", "")).strip()
+        if not rule_title and (category or sub_category):
+            rule_title = f"{category} / {sub_category}".strip(" /")
         return {
             "rule_id": rule_id,
             "deviation_id": deviation_id,
-            "rule_title": str(rule.get("title", "")),
+            "rule_title": rule_title,
             "rule_text": str(rule.get("text") or rule.get("rule_text") or rule.get("description") or ""),
             "deviation_text": str(row.get("text", "")),
             "paragraph_refs": refs,
@@ -641,7 +854,19 @@ class UiStepService:
                     "acrfFileName": filenames["acrfFileName"] if has_acrf else None,
                     "bothUploaded": has_protocol and has_acrf,
                     "stepStatuses": statuses,
-                    "nextStepId": next((step_id for step_id in STEP_ORDER if statuses[step_id] != "done"), None),
+                    "entryMode": self._get_entry_mode(study_id),
+                    "activeDeviationsSource": self._read_upload_manifest_obj(study_id).get(
+                        "activeDeviationsSource"
+                    ),
+                    "importVersions": pipeline_v2.list_import_versions(study_id, self.output_dir),
+                    "nextStepId": next(
+                        (
+                            step_id
+                            for step_id in self._effective_step_order(study_id)
+                            if statuses.get(step_id) not in {"done", "skipped"}
+                        ),
+                        None,
+                    ),
                 }
             )
         return {"studies": studies}
@@ -803,6 +1028,9 @@ class UiStepService:
         )
         self._append_pipeline_log(study_id, f"Starting extraction (extractor={mode})")
 
+        def _extract_log(message: str) -> None:
+            self._append_pipeline_log(study_id, message)
+
         try:
             run_extract(
                 study_id=study_id,
@@ -818,6 +1046,7 @@ class UiStepService:
                 run_opendataloader_ocr=run_odl,
                 opendataloader_only=odl_only,
                 debug_blob=False,
+                log_callback=_extract_log,
             )
             extraction_resolve.write_ui_extractor_choice(study_id, self.output_dir, mode)
             self._mirror_upload(study_id, extraction_resolve.local_ui_extractor_choice_json(study_id, self.output_dir))
@@ -850,11 +1079,186 @@ class UiStepService:
             "stepStatuses": self._step_statuses(study_id),
         }
 
-    def get_step1_preview(self, study_id: str) -> Dict[str, Any]:
+    def _run_partial_extract(
+        self,
+        study_id: str,
+        *,
+        skip_protocol: bool,
+        skip_acrf: bool,
+        log_prefix: str,
+    ) -> None:
+        from pdcheck_factory.cli import run_extract
+
+        mode = extraction_resolve.read_ui_extractor_choice(study_id, self.output_dir)
+        if not mode:
+            mode = extraction_resolve.UI_EXTRACTOR_BOTH
+        run_odl = mode != extraction_resolve.UI_EXTRACTOR_DI
+        odl_only = mode == extraction_resolve.UI_EXTRACTOR_OPEN
+
+        def _extract_log(message: str) -> None:
+            self._append_pipeline_log(study_id, f"{log_prefix}: {message}")
+
+        run_extract(
+            study_id=study_id,
+            protocol_blob=None,
+            acrf_blob=None,
+            output_dir=self.output_dir,
+            model_id=None,
+            sas_ttl=int(os.getenv("DI_SAS_TTL_MINUTES", "15")),
+            upload=True,
+            skip_acrf=skip_acrf,
+            skip_protocol=skip_protocol,
+            upload_only=False,
+            run_opendataloader_ocr=run_odl,
+            opendataloader_only=odl_only,
+            debug_blob=False,
+            log_callback=_extract_log,
+        )
+        extractions_root = paths.local_study_root(study_id, self.output_dir) / "extractions"
+        study_artifact_sync.mirror_upload_directory(study_id, self.output_dir, extractions_root)
+
+    def preprocess_protocol(self, study_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        self._assert_protocol_upload_ready(study_id)
+
+        self._write_pipeline_run_state(
+            study_id,
+            status="running",
+            currentStage="index",
+            currentSubStepId="preprocess-protocol",
+            message="Preparing protocol (extract + index)…",
+            error="",
+            startedAt=datetime.now(timezone.utc).isoformat(),
+            finishedAt="",
+        )
+        self._append_pipeline_log(study_id, "Starting protocol preprocess")
+
+        try:
+            p = self._study_paths(study_id)
+            if not p.protocol_source.exists():
+                self._run_partial_extract(
+                    study_id,
+                    skip_protocol=False,
+                    skip_acrf=True,
+                    log_prefix="protocol",
+                )
+            if not p.paragraph_index.exists():
+                result = pipeline_v2.step2_protocol_paragraph_index(study_id, self.output_dir)
+                index_path = paths.local_protocol_paragraph_index_json(study_id, self.output_dir)
+                study_artifact_sync.mirror_upload_path(study_id, self.output_dir, index_path)
+                summary = f"Protocol ready: indexed {len(result.get('paragraphs', []))} paragraphs."
+            else:
+                summary = "Protocol already indexed."
+            self._append_pipeline_log(study_id, summary)
+            self._write_pipeline_run_state(
+                study_id,
+                status="done",
+                currentStage="complete",
+                currentSubStepId="preprocess-protocol",
+                message=summary,
+                finishedAt=datetime.now(timezone.utc).isoformat(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._append_pipeline_log(study_id, f"Protocol preprocess failed: {exc}", level="error")
+            self._write_pipeline_run_state(
+                study_id,
+                status="failed",
+                message="Protocol preprocess failed",
+                error=str(exc),
+                finishedAt=datetime.now(timezone.utc).isoformat(),
+            )
+            raise
+
+        status = self.get_step1_upload_status(study_id)
+        return {
+            "studyId": study_id,
+            "role": "protocol",
+            "message": summary,
+            "protocolPreprocessed": status["protocolPreprocessed"],
+            "stepStatuses": status["stepStatuses"],
+        }
+
+    def preprocess_acrf(self, study_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        self._assert_acrf_upload_ready(study_id)
+
+        self._write_pipeline_run_state(
+            study_id,
+            status="running",
+            currentStage="acrf_split",
+            currentSubStepId="preprocess-acrf",
+            message="Preparing aCRF (extract + split + summary)…",
+            error="",
+            startedAt=datetime.now(timezone.utc).isoformat(),
+            finishedAt="",
+        )
+        self._append_pipeline_log(study_id, "Starting aCRF preprocess")
+
+        try:
+            from pdcheck_factory.cli import run_acrf_split_toc
+
+            p = self._study_paths(study_id)
+            if not p.acrf_source.exists():
+                self._run_partial_extract(
+                    study_id,
+                    skip_protocol=True,
+                    skip_acrf=False,
+                    log_prefix="acrf",
+                )
+                p = self._study_paths(study_id)
+
+            if not p.acrf_sections_toc_dir.exists() or not any(p.acrf_sections_toc_dir.glob("*.md")):
+                if not p.acrf_source.exists():
+                    raise UiApiError("STEP_BLOCKED", f"Missing aCRF source markdown: {p.acrf_source}", 409)
+                count, _manifest_path = run_acrf_split_toc(
+                    source_md=p.acrf_source,
+                    destination_dir=p.acrf_sections_toc_dir,
+                    write_manifest=True,
+                )
+                study_artifact_sync.mirror_upload_directory(study_id, self.output_dir, p.acrf_sections_toc_dir)
+                self._append_pipeline_log(study_id, f"Split aCRF into {count} sections")
+
+            if not p.acrf_summary_text_merged.exists():
+                result = pipeline_v2.step1_acrf_summary_text(study_id, self.output_dir)
+                summary_path = paths.local_acrf_summary_text_merged(study_id, self.output_dir)
+                study_artifact_sync.mirror_upload_path(study_id, self.output_dir, summary_path)
+                summary = f"aCRF ready: merged summary with {len(result.get('datasets', []))} datasets."
+            else:
+                summary = "aCRF already summarized."
+            self._append_pipeline_log(study_id, summary)
+            self._write_pipeline_run_state(
+                study_id,
+                status="done",
+                currentStage="complete",
+                currentSubStepId="preprocess-acrf",
+                message=summary,
+                finishedAt=datetime.now(timezone.utc).isoformat(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            self._append_pipeline_log(study_id, f"aCRF preprocess failed: {exc}", level="error")
+            self._write_pipeline_run_state(
+                study_id,
+                status="failed",
+                message="aCRF preprocess failed",
+                error=str(exc),
+                finishedAt=datetime.now(timezone.utc).isoformat(),
+            )
+            raise
+
+        status = self.get_step1_upload_status(study_id)
+        return {
+            "studyId": study_id,
+            "role": "acrf",
+            "message": summary,
+            "acrfPreprocessed": status["acrfPreprocessed"],
+            "stepStatuses": status["stepStatuses"],
+        }
+
+    def get_step1_preview(self, study_id: str, *, full: bool = False) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         p = self._study_paths(study_id)
         filenames = self._read_upload_filenames(study_id)
-        preview_max = 8000
+        preview_max = 500_000 if full else 8000
         return {
             "studyId": study_id,
             "protocolPreview": self._read_excerpt(p.protocol_source, max_chars=preview_max),
@@ -869,13 +1273,257 @@ class UiStepService:
             "stepStatuses": self._step_statuses(study_id),
         }
 
+    def _preview_row_from_normalized(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        text = str(row.get("deviation_text", "") or row.get("text", ""))
+        return {
+            "deviation_id": str(row.get("deviation_id", "")),
+            "rule_id": str(row.get("rule_id", "")),
+            "rule_title": str(row.get("rule_title", "")),
+            "deviation_text": text,
+            "text": text,
+            "entry_source": str(row.get("entry_source", "")),
+            "status": str(row.get("status", "")),
+        }
+
+    def get_specifications_preview(self, study_id: str) -> Dict[str, Any]:
+        from pdcheck_factory.pd_spec_import import parse_pd_spec_xlsx_table
+
+        study_id = self._require_study_id(study_id)
+        sources: List[Dict[str, Any]] = []
+        workbook_bytes = self._read_pd_spec_workbook_bytes(study_id)
+        if workbook_bytes:
+            try:
+                table = parse_pd_spec_xlsx_table(workbook_bytes)
+                sources.append(
+                    {
+                        "key": "pd_spec_workbook",
+                        "label": "PD Specifications workbook (parsed)",
+                        "columns": table["headers"],
+                        "rows": table["rows"],
+                    }
+                )
+            except Exception:
+                sources.append(
+                    {
+                        "key": "pd_spec_workbook",
+                        "label": "PD Specifications workbook (parsed)",
+                        "rows": [],
+                    }
+                )
+
+        state_obj = self._load_state(study_id)
+        pseudo_obj = self._load_pseudo_state(study_id)
+        rules_obj = self._load_rules(study_id)
+        paragraph_by_ref = self._load_paragraph_index(study_id)
+        pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in pseudo_obj.get("items", [])}
+        rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
+        review_rows = [
+            self._preview_row_from_normalized(
+                self._normalized_step7_row(row, pseudo_by_dev, rule_by_id, paragraph_by_ref)
+            )
+            for row in state_obj.get("deviations", [])
+        ]
+        if review_rows:
+            sources.append(
+                {
+                    "key": "review_state",
+                    "label": "Active review state",
+                    "rows": review_rows,
+                }
+            )
+
+        review_dir = paths.local_review_dir(study_id, self.output_dir)
+        for snapshot_path in sorted(review_dir.glob("deviations_import_*.json")) if review_dir.exists() else []:
+            try:
+                snapshot_obj = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            version = snapshot_path.stem.replace("deviations_import_", "")
+            snap_rows = [
+                self._preview_row_from_normalized(
+                    self._normalized_step7_row(row, pseudo_by_dev, rule_by_id, paragraph_by_ref)
+                )
+                for row in snapshot_obj.get("deviations", [])
+            ]
+            sources.append(
+                {
+                    "key": f"import_{version}",
+                    "label": f"Import snapshot v{version}",
+                    "rows": snap_rows,
+                }
+            )
+
+        merged_paths = sorted(review_dir.glob("deviations_merged_*.json")) if review_dir.exists() else []
+        for snapshot_path in merged_paths:
+            try:
+                snapshot_obj = json.loads(snapshot_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            version = snapshot_path.stem.replace("deviations_merged_", "")
+            snap_rows = [
+                self._preview_row_from_normalized(
+                    self._normalized_step7_row(row, pseudo_by_dev, rule_by_id, paragraph_by_ref)
+                )
+                for row in snapshot_obj.get("deviations", [])
+            ]
+            sources.append(
+                {
+                    "key": f"merged_{version}",
+                    "label": f"Merged snapshot {version}",
+                    "rows": snap_rows,
+                }
+            )
+
+        return {
+            "studyId": study_id,
+            "sources": sources,
+            "stepStatuses": self._step_statuses(study_id),
+        }
+
     def get_status(self, study_id: str) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         statuses = self._step_statuses(study_id)
+        manifest = self._read_upload_manifest_obj(study_id)
         return {
             "studyId": study_id,
-            "steps": [{"stepId": step_id, "status": statuses[step_id]} for step_id in STEP_ORDER],
-            "nextStepId": next((step_id for step_id in STEP_ORDER if statuses[step_id] != "done"), None),
+            "entryMode": self._get_entry_mode(study_id),
+            "activeDeviationsSource": manifest.get("activeDeviationsSource"),
+            "codingPhaseAccepted": bool(manifest.get("codingPhaseAccepted")),
+            "codingPhaseAcceptedAt": manifest.get("codingPhaseAcceptedAt"),
+            "importVersions": pipeline_v2.list_import_versions(study_id, self.output_dir),
+            "steps": [
+                {"stepId": step_id, "status": statuses.get(step_id, "pending")}
+                for step_id in self._effective_step_order(study_id)
+            ],
+            "nextStepId": next(
+                (
+                    step_id
+                    for step_id in self._effective_step_order(study_id)
+                    if statuses.get(step_id) not in {"done", "skipped"}
+                ),
+                None,
+            ),
+        }
+
+    def set_study_entry_mode(self, study_id: str, entry_mode: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        mode = (entry_mode or "").strip()
+        if mode not in {ENTRY_MODE_EXTRACTED, ENTRY_MODE_IMPORTED_PD_SPEC}:
+            raise UiApiError(
+                "VALIDATION_ERROR",
+                f"entryMode must be '{ENTRY_MODE_EXTRACTED}' or '{ENTRY_MODE_IMPORTED_PD_SPEC}'",
+                400,
+            )
+        manifest = self._write_upload_manifest(study_id, entry_mode=mode)
+        return {
+            "studyId": study_id,
+            "entryMode": manifest.get("entryMode"),
+            "stepStatuses": self._step_statuses(study_id),
+        }
+
+    def accept_coding_phase(self, study_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        state_obj = self._load_state(study_id)
+        deviations = list(state_obj.get("deviations", []))
+        if deviations:
+            incomplete = [
+                str(row.get("deviation_id", ""))
+                for row in deviations
+                if str(row.get("status", "pending")) not in {"accepted", "rejected"}
+            ]
+            if incomplete:
+                raise UiApiError(
+                    "VALIDATION_ERROR",
+                    f"All deviations must be accepted or rejected before continuing to coding. "
+                    f"{len(incomplete)} still pending or to review.",
+                    400,
+                )
+        manifest = self._write_upload_manifest(study_id, coding_phase_accepted=True)
+        return {
+            "studyId": study_id,
+            "codingPhaseAccepted": bool(manifest.get("codingPhaseAccepted")),
+            "codingPhaseAcceptedAt": manifest.get("codingPhaseAcceptedAt"),
+            "stepStatuses": self._step_statuses(study_id),
+        }
+
+    def upload_pd_spec_workbook(
+        self,
+        study_id: str,
+        workbook_bytes: bytes,
+        *,
+        file_name: str | None = None,
+    ) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        if not workbook_bytes:
+            raise UiApiError("VALIDATION_ERROR", "Workbook must not be empty", 400)
+        max_mb = int(os.getenv("UI_UPLOAD_MAX_MB", "100"))
+        max_bytes = max_mb * 1024 * 1024
+        if len(workbook_bytes) > max_bytes:
+            raise UiApiError("VALIDATION_ERROR", f"Workbook must be <= {max_mb}MB", 400)
+
+        out_path = paths.local_pd_spec_workbook(study_id, self.output_dir)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_bytes(workbook_bytes)
+
+        blob_service = blob_io.blob_service_from_env()
+        container = blob_io.container_from_env()
+        pd_spec_blob = paths.pd_spec_workbook_blob(study_id)
+        blob_io.upload_blob_bytes(
+            blob_service=blob_service,
+            container_name=container,
+            blob_path=pd_spec_blob,
+            data=workbook_bytes,
+            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        self._mirror_upload(study_id, out_path)
+
+        safe_name = (file_name or "").strip() or "pd_specifications.xlsx"
+        manifest = self._write_upload_manifest(
+            study_id,
+            pd_spec_file_name=safe_name,
+            pd_spec_size=len(workbook_bytes),
+        )
+        return {
+            "studyId": study_id,
+            "pdSpecPath": str(out_path),
+            "pdSpecBlob": pd_spec_blob,
+            "pdSpecFileName": manifest.get("pdSpecFileName"),
+            "pdSpecSize": int(manifest.get("pdSpecSize") or len(workbook_bytes)),
+            "entryMode": manifest.get("entryMode"),
+            "stepStatuses": self._step_statuses(study_id),
+        }
+
+    def set_active_deviations_source(self, study_id: str, source_key: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        key = (source_key or "").strip()
+        if not key:
+            raise UiApiError("VALIDATION_ERROR", "activeDeviationsSource is required", 400)
+        try:
+            result = pipeline_v2.apply_active_deviations_source(study_id, self.output_dir, key)
+        except ValueError as exc:
+            raise UiApiError("VALIDATION_ERROR", str(exc), 400) from exc
+        self._write_upload_manifest(study_id, active_deviations_source=key)
+        return {
+            "studyId": study_id,
+            "activeDeviationsSource": key,
+            "deviationCount": result.get("deviation_count", 0),
+            "stepStatuses": self._step_statuses(study_id),
+        }
+
+    def get_import_versions(self, study_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        versions = pipeline_v2.list_import_versions(study_id, self.output_dir)
+        manifest = self._read_upload_manifest_obj(study_id)
+        sources: List[Dict[str, str]] = []
+        for version in versions.get("imports", []):
+            sources.append({"key": f"import_{version}", "label": f"Import {version}", "type": "import"})
+        for version in versions.get("merged", []):
+            sources.append({"key": f"merged_{version}", "label": f"Merged {version}", "type": "merged"})
+        return {
+            "studyId": study_id,
+            "activeDeviationsSource": manifest.get("activeDeviationsSource"),
+            "importVersions": versions,
+            "sources": sources,
         }
 
     def sync_study(self, study_id: str) -> Dict[str, Any]:
@@ -896,11 +1544,12 @@ class UiStepService:
         llm_instructions: str | None = None,
     ) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
-        if step_id not in STEP_ORDER:
+        allowed_steps = set(STEP_ORDER) | set(IMPORT_STEP_ORDER)
+        if step_id not in allowed_steps:
             raise UiApiError("NOT_FOUND", f"Unknown stepId '{step_id}'", 404)
 
         statuses = self._step_statuses(study_id)
-        self._assert_step_dependencies(statuses, step_id)
+        self._assert_step_dependencies(statuses, step_id, study_id)
 
         extra = (llm_instructions or "").strip()
         stage_labels = {
@@ -909,6 +1558,10 @@ class UiStepService:
             "acrf-summary-text": "acrf_merge",
             "extract-rules": "rules",
             "extract-deviations": "deviations",
+            "import-pd-spec-ground": "import_ground",
+            "import-pd-spec-map": "import_map",
+            "import-pd-spec-enrich": "import_enrich",
+            "merge-pd-spec-imports": "import_merge",
             "review-and-finalize": "finalize",
         }
         self._write_pipeline_run_state(
@@ -984,6 +1637,94 @@ class UiStepService:
             )
             pipeline_v2.initialize_review_states(study_id, self.output_dir)
             summary = f"Extracted {len(result.get('deviations', []))} deviations and initialized review state."
+        elif step_id == "import-pd-spec-ground":
+            workbook_bytes = self._read_pd_spec_workbook_bytes(study_id)
+            if not workbook_bytes:
+                raise UiApiError(
+                    "STEP_BLOCKED",
+                    "Upload PD Specifications workbook before running import-pd-spec-ground.",
+                    409,
+                )
+            result = pipeline_v2.run_import_pd_spec_grounding(
+                study_id,
+                self.output_dir,
+                workbook_bytes=workbook_bytes,
+            )
+            version = result.get("import_version", "")
+            self._write_upload_manifest(
+                study_id,
+                active_deviations_source=f"import_{version}",
+            )
+            summary = (
+                f"Imported and grounded {len(result.get('deviations', []))} deviations "
+                f"(version {version})."
+            )
+        elif step_id == "import-pd-spec-map":
+            workbook_bytes = self._read_pd_spec_workbook_bytes(study_id)
+            if not workbook_bytes:
+                raise UiApiError(
+                    "STEP_BLOCKED",
+                    "Upload PD Specifications workbook before mapping to review.",
+                    409,
+                )
+            result = pipeline_v2.run_import_pd_spec_map(
+                study_id,
+                self.output_dir,
+                workbook_bytes=workbook_bytes,
+                pd_spec_import_mode="map",
+            )
+            version = result.get("import_version", "")
+            self._write_upload_manifest(
+                study_id,
+                entry_mode=ENTRY_MODE_IMPORTED_PD_SPEC,
+                active_deviations_source=f"import_{version}",
+                pd_spec_import_mode="map",
+            )
+            summary = (
+                f"Mapped {len(result.get('deviations', []))} imported deviations to review "
+                f"(version {version})."
+            )
+        elif step_id == "import-pd-spec-enrich":
+            workbook_bytes = self._read_pd_spec_workbook_bytes(study_id)
+            if not workbook_bytes:
+                raise UiApiError(
+                    "STEP_BLOCKED",
+                    "Upload PD Specifications workbook before enrich.",
+                    409,
+                )
+            result = pipeline_v2.run_import_pd_spec_map(
+                study_id,
+                self.output_dir,
+                workbook_bytes=workbook_bytes,
+                pd_spec_import_mode="enrich_stub",
+            )
+            version = result.get("import_version", "")
+            self._write_upload_manifest(
+                study_id,
+                entry_mode=ENTRY_MODE_IMPORTED_PD_SPEC,
+                active_deviations_source=f"import_{version}",
+                pd_spec_import_mode="enrich_stub",
+            )
+            summary = (
+                f"Imported PD Specifications for review (enrich preview; version {version}, "
+                f"{len(result.get('deviations', []))} rows)."
+            )
+        elif step_id == "merge-pd-spec-imports":
+            merge_result = pipeline_v2.merge_imported_deviation_snapshots(study_id, self.output_dir)
+            merged_version = merge_result.get("merged_version", "")
+            pipeline_v2.apply_active_deviations_source(
+                study_id,
+                self.output_dir,
+                f"merged_{merged_version}",
+            )
+            self._write_upload_manifest(
+                study_id,
+                active_deviations_source=f"merged_{merged_version}",
+            )
+            summary = (
+                f"Merged import snapshots into {merged_version} "
+                f"({merge_result.get('deviation_count', 0)} deviations)."
+            )
         elif step_id == "review-and-finalize":
             validated_path = paths.local_deviations_validated_json(study_id, self.output_dir)
             if not validated_path.exists():
@@ -1011,7 +1752,8 @@ class UiStepService:
 
     def get_step_preview(self, study_id: str, step_id: str) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
-        if step_id not in STEP_ORDER:
+        allowed_steps = set(STEP_ORDER) | set(IMPORT_STEP_ORDER)
+        if step_id not in allowed_steps:
             raise UiApiError("NOT_FOUND", f"Unknown stepId '{step_id}'", 404)
 
         p = self._study_paths(study_id)
@@ -1070,6 +1812,32 @@ class UiStepService:
                 {
                     "title": "Review state preview",
                     "body": self._read_excerpt(p.deviations_review_state),
+                }
+            )
+        elif step_id == "import-pd-spec-ground":
+            review_dir = paths.local_review_dir(study_id, self.output_dir)
+            import_files = sorted(review_dir.glob("deviations_import_*.json")) if review_dir.exists() else []
+            previews.append(
+                {
+                    "title": "Import snapshots",
+                    "body": "\n".join(file.name for file in import_files) or "No import snapshots yet.",
+                    "highlight": True,
+                }
+            )
+            previews.append(
+                {
+                    "title": "Active review state",
+                    "body": self._read_excerpt(p.deviations_review_state),
+                }
+            )
+        elif step_id == "merge-pd-spec-imports":
+            review_dir = paths.local_review_dir(study_id, self.output_dir)
+            merged_files = sorted(review_dir.glob("deviations_merged_*.json")) if review_dir.exists() else []
+            previews.append(
+                {
+                    "title": "Merged snapshots",
+                    "body": "\n".join(file.name for file in merged_files) or "No merged snapshots yet.",
+                    "highlight": True,
                 }
             )
         elif step_id == "review-and-finalize":

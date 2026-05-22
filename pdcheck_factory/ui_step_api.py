@@ -72,7 +72,8 @@ class StepApiHandler(BaseHTTPRequestHandler):
             if path.startswith("/api/step1/preview"):
                 qs = parse_qs(parsed.query)
                 study_id = (qs.get("studyId") or [""])[0]
-                data = self.service.get_step1_preview(study_id)
+                full = (qs.get("full") or ["false"])[0].lower() in {"1", "true", "yes"}
+                data = self.service.get_step1_preview(study_id, full=full)
                 _json_response(self, HTTPStatus.OK, _response_payload(request_id=request_id, data=data))
                 return
             if path == "/api/v1/studies":
@@ -94,13 +95,19 @@ class StepApiHandler(BaseHTTPRequestHandler):
 
             study_id, tail = v1
             if tail == "step1/preview":
-                data = self.service.get_step1_preview(study_id)
+                qs = parse_qs(parsed.query)
+                full = (qs.get("full") or ["false"])[0].lower() in {"1", "true", "yes"}
+                data = self.service.get_step1_preview(study_id, full=full)
+            elif tail == "specifications/preview":
+                data = self.service.get_specifications_preview(study_id)
             elif tail == "step1/upload-status":
                 data = self.service.get_step1_upload_status(study_id)
             elif tail == "step1/run-state":
                 data = self.service.get_step1_run_state(study_id)
             elif tail == "steps/status":
                 data = self.service.get_status(study_id)
+            elif tail == "import-versions":
+                data = self.service.get_import_versions(study_id)
             elif tail == "step7/deviations":
                 data = self.service.get_step7_deviations(study_id)
             elif tail == "step7/deviations/export/coding":
@@ -175,6 +182,16 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 data = self._parse_step1_upload(study_id)
             elif tail == "step1/extract":
                 data = self._parse_step1_extract(study_id)
+            elif tail == "upload-pd-spec":
+                data = self._parse_upload_pd_spec(study_id)
+            elif tail == "preprocess/protocol":
+                data = self.service.preprocess_protocol(study_id)
+            elif tail == "preprocess/acrf":
+                data = self.service.preprocess_acrf(study_id)
+            elif tail == "entry-mode":
+                data = self._parse_entry_mode(study_id)
+            elif tail == "active-deviations-source":
+                data = self._parse_active_deviations_source(study_id)
             elif tail.startswith("step7/deviations/") and tail.endswith("/refine"):
                 deviation_id = tail[len("step7/deviations/") : -len("/refine")]
                 data = self._parse_step7_refine(study_id, deviation_id)
@@ -184,6 +201,8 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 data = self._parse_step7_deviation_create(study_id)
             elif tail == "step7/rules":
                 data = self._parse_step7_rule_create(study_id)
+            elif tail == "coding/accept":
+                data = self.service.accept_coding_phase(study_id)
             elif tail == "step7/deviations/accept-all":
                 data = self.service.accept_step7_deviations_bulk(study_id)
             elif tail == "step7/pseudo-logic/generate-all":
@@ -434,6 +453,47 @@ class StepApiHandler(BaseHTTPRequestHandler):
             raise UiApiError("BAD_JSON", "Missing JSON body", 400)
         payload = parse_json_body(self.rfile.read(length))
         return self.service.patch_step7_deviation_fields(study_id, deviation_id, payload)
+
+    def _parse_upload_pd_spec(self, study_id: str) -> Dict[str, Any]:
+        content_type = self.headers.get("Content-Type", "")
+        if "multipart/form-data" not in content_type:
+            raise UiApiError("VALIDATION_ERROR", "Content-Type must be multipart/form-data", 400)
+        form = cgi.FieldStorage(
+            fp=self.rfile,
+            headers=self.headers,
+            environ={
+                "REQUEST_METHOD": "POST",
+                "CONTENT_TYPE": content_type,
+            },
+        )
+        workbook_item = form["workbook"] if "workbook" in form else None
+        if workbook_item is None:
+            workbook_item = form["pdSpecFile"] if "pdSpecFile" in form else None
+        if workbook_item is None:
+            raise UiApiError("VALIDATION_ERROR", "workbook or pdSpecFile is required", 400)
+        file_name = getattr(workbook_item, "filename", None)
+        return self.service.upload_pd_spec_workbook(
+            study_id,
+            workbook_item.file.read(),
+            file_name=file_name,
+        )
+
+    def _parse_entry_mode(self, study_id: str) -> Dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0:
+            raise UiApiError("BAD_JSON", "Missing JSON body", 400)
+        payload = parse_json_body(self.rfile.read(length))
+        return self.service.set_study_entry_mode(study_id, str(payload.get("entryMode", "")))
+
+    def _parse_active_deviations_source(self, study_id: str) -> Dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0:
+            raise UiApiError("BAD_JSON", "Missing JSON body", 400)
+        payload = parse_json_body(self.rfile.read(length))
+        return self.service.set_active_deviations_source(
+            study_id,
+            str(payload.get("activeDeviationsSource", "")),
+        )
 
     def _match_v1(self, path: str) -> Tuple[str, str] | None:
         prefix = "/api/v1/studies/"

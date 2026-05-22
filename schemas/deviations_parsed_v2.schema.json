@@ -5,9 +5,11 @@
   "type": "object",
   "required": ["schema_version", "study_id", "generated_at", "deviations"],
   "properties": {
-    "schema_version": { "type": "string", "const": "1.0.0" },
+    "schema_version": { "type": "string", "enum": ["1.0.0", "1.1.0"] },
     "study_id": { "type": "string", "minLength": 1 },
     "generated_at": { "type": "string", "format": "date-time" },
+    "import_version": { "type": "string" },
+    "source_type": { "type": "string", "enum": ["import", "merged"] },
     "deviations": {
       "type": "array",
       "items": {
@@ -19,7 +21,6 @@
           "text": { "type": "string", "minLength": 1 },
           "paragraph_refs": {
             "type": "array",
-            "minItems": 1,
             "items": { "type": "string", "pattern": "^p[0-9]+$" }
           },
           "data_support_note": { "type": "string" },
@@ -27,7 +28,25 @@
           "dm_comment": { "type": "string" },
           "entry_source": {
             "type": "string",
-            "enum": ["extracted", "imported"]
+            "enum": ["extracted", "imported", "imported_pd_spec"]
+          },
+          "protocol_deviation_category": { "type": "string" },
+          "protocol_deviation_sub_category": { "type": "string" },
+          "classification": { "type": "string" },
+          "data_source": { "type": "string" },
+          "manual_or_programmable": { "type": "string" },
+          "programming_status": { "type": "string" },
+          "programmer_comments": { "type": "string" },
+          "reviewer_comments": { "type": "string" },
+          "aa_comment": { "type": "string" },
+          "grounding_error": { "type": "string" },
+          "occurrence_date": { "type": "string" },
+          "additional_information": { "type": "string" },
+          "pseudo_logic_seed": { "type": "string" },
+          "merge_action": { "type": "string", "enum": ["keep", "update", "add"] },
+          "merge_source_ids": {
+            "type": "array",
+            "items": { "type": "string" }
           }
         },
         "additionalProperties": false

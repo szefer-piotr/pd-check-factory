@@ -131,7 +131,15 @@ def test_status_progression_and_dependency_guard(tmp_path: Path, monkeypatch: py
         service.run_step(study_id, "extract-rules")
     assert blocked.value.code == "STEP_BLOCKED"
 
-    for step_id in STEP_ORDER[1:]:
+    extract_pipeline_steps = [
+        "index-protocol",
+        "acrf-split-toc",
+        "acrf-summary-text",
+        "extract-rules",
+        "extract-deviations",
+        "review-and-finalize",
+    ]
+    for step_id in extract_pipeline_steps:
         service.run_step(study_id, step_id)
 
     assert all(called.values())
@@ -723,6 +731,154 @@ def test_get_step1_preview_filename_fallback_without_manifest(tmp_path: Path) ->
     assert preview["acrfFileName"] == "acrf.pdf"
 
 
+def test_get_specifications_preview_maps_workbook_and_review_state(tmp_path: Path) -> None:
+    from io import BytesIO
+
+    from openpyxl import Workbook
+
+    from pdcheck_factory.pd_spec_export import PD_SPEC_HEADERS, PD_SPEC_SHEET_TITLE
+
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "SPEC-PREV"
+
+    workbook_path = paths.local_pd_spec_workbook(study_id, tmp_path)
+    workbook_path.parent.mkdir(parents=True, exist_ok=True)
+    wb = Workbook()
+    ws = wb.active
+    ws.title = PD_SPEC_SHEET_TITLE
+    ws.append(PD_SPEC_HEADERS)
+    ws.append(
+        [
+            "Eligibility Criteria",
+            "Age",
+            "Subject enrolled below minimum age",
+            "",
+            "Major",
+            "Programmable",
+            "",
+            "",
+            "RAVE",
+            "",
+            "",
+            "",
+            "",
+        ]
+    )
+    buffer = BytesIO()
+    wb.save(buffer)
+    workbook_path.write_bytes(buffer.getvalue())
+
+    review_path = paths.local_deviations_review_state(study_id, tmp_path)
+    review_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(
+        review_path,
+        {
+            "schema_version": "1.0.0",
+            "study_id": study_id,
+            "deviations": [
+                {
+                    "deviation_id": "dev-0001",
+                    "rule_id": "rule-001",
+                    "text": "Generated deviation text",
+                    "paragraph_refs": [],
+                    "status": "pending",
+                    "entry_source": "extracted",
+                }
+            ],
+        },
+    )
+
+    preview = service.get_specifications_preview(study_id)
+    keys = {source["key"] for source in preview["sources"]}
+    assert "pd_spec_workbook" in keys
+    assert "review_state" in keys
+
+    workbook_source = next(s for s in preview["sources"] if s["key"] == "pd_spec_workbook")
+    assert workbook_source["columns"] == PD_SPEC_HEADERS
+    assert len(workbook_source["rows"]) == 1
+    row = workbook_source["rows"][0]
+    assert row[PD_SPEC_HEADERS[0]] == "Eligibility Criteria"
+    assert row[PD_SPEC_HEADERS[2]] == "Subject enrolled below minimum age"
+    assert row[PD_SPEC_HEADERS[9]] == "RAVE"
+
+    review_source = next(s for s in preview["sources"] if s["key"] == "review_state")
+    assert review_source["rows"][0]["deviation_text"] == "Generated deviation text"
+
+
+def test_get_specifications_preview_loads_pd_spec_from_blob(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from io import BytesIO
+
+    from openpyxl import Workbook
+
+    from pdcheck_factory.pd_spec_export import PD_SPEC_HEADERS, PD_SPEC_SHEET_TITLE
+
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "SPEC-BLOB"
+    local_path = paths.local_pd_spec_workbook(study_id, tmp_path)
+    assert not local_path.is_file()
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = PD_SPEC_SHEET_TITLE
+    ws.append(PD_SPEC_HEADERS)
+    ws.append(
+        [
+            "Eligibility Criteria",
+            "Age",
+            "Blob-only row",
+            "",
+            "Major",
+            "Programmable",
+            "",
+            "",
+            "RAVE",
+            "",
+            "",
+            "",
+            "",
+        ]
+    )
+    buffer = BytesIO()
+    wb.save(buffer)
+    blob_bytes = buffer.getvalue()
+
+    monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
+    monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
+    monkeypatch.setattr(blob_io, "blob_exists", lambda **_kwargs: True)
+    monkeypatch.setattr(blob_io, "download_blob_bytes", lambda **_kwargs: blob_bytes)
+    monkeypatch.setattr(blob_io, "upload_blob_bytes", lambda **_kwargs: None)
+
+    preview = service.get_specifications_preview(study_id)
+    workbook_source = next(s for s in preview["sources"] if s["key"] == "pd_spec_workbook")
+    assert workbook_source["rows"][0][PD_SPEC_HEADERS[2]] == "Blob-only row"
+    assert local_path.is_file()
+
+
+def test_get_step1_upload_status_includes_pd_spec_from_blob(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "PD-STATUS"
+    manifest_path = paths.local_ui_upload_manifest(study_id, tmp_path)
+    manifest_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(
+        manifest_path,
+        {
+            "study_id": study_id,
+            "pdSpecFileName": "company_specs.xlsx",
+            "pdSpecSize": 2048,
+        },
+    )
+
+    monkeypatch.setattr(service, "_blob_has_upload", lambda _sid, role: False)
+    monkeypatch.setattr(service, "_blob_has_pd_spec_workbook", lambda _sid: True)
+    monkeypatch.setattr(service, "_read_pd_spec_workbook_bytes", lambda _sid: b"cached")
+
+    status = service.get_step1_upload_status(study_id)
+    assert status["pdSpec"]["uploaded"] is True
+    assert status["pdSpec"]["fileName"] == "company_specs.xlsx"
+    assert status["pdSpec"]["size"] == 2048
+    assert status["pdSpec"]["blob"] == paths.pd_spec_workbook_blob(study_id)
+
+
 def test_get_step1_upload_status_reflects_blob_presence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = UiStepService(output_dir=tmp_path)
     study_id = "US-S"
@@ -734,9 +890,12 @@ def test_get_step1_upload_status_reflects_blob_presence(tmp_path: Path, monkeypa
     monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
     monkeypatch.setattr(blob_io, "blob_exists", fake_exists)
 
+    monkeypatch.setattr(service, "_blob_has_pd_spec_workbook", lambda _sid: False)
+
     status = service.get_step1_upload_status(study_id)
     assert status["protocol"]["uploaded"] is True
     assert status["acrf"]["uploaded"] is False
+    assert status["pdSpec"]["uploaded"] is False
     assert status["bothUploaded"] is False
 
 

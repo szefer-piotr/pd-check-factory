@@ -8,7 +8,7 @@ import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Callable, Dict, List, Literal, Optional, Tuple
 
 import typer
 from dotenv import load_dotenv
@@ -455,8 +455,14 @@ def run_extract(
     run_opendataloader_ocr: bool,
     opendataloader_only: bool,
     debug_blob: bool = False,
+    log_callback: Optional[Callable[[str], None]] = None,
 ) -> None:
     """Run extraction for protocol (+ optional aCRF) PDFs in Blob."""
+
+    def _log(message: str) -> None:
+        if log_callback is not None:
+            log_callback(message)
+
     _load_env()
     if skip_acrf and skip_protocol:
         raise typer.BadParameter("Cannot use --skip-acrf and --skip-protocol together.")
@@ -545,6 +551,7 @@ def run_extract(
         return
 
     if opendataloader_only:
+        _log("Extractor mode: OpenDataLoader only")
         if not skip_protocol:
             if not blob_io.blob_exists(
                 blob_service=bs, container_name=container, blob_path=protocol_resolved
@@ -552,6 +559,7 @@ def run_extract(
                 raise typer.BadParameter(
                     f"Protocol blob not found: {protocol_resolved} (container {container})"
                 )
+            _log("OpenDataLoader: protocol — starting")
             opendataloader_ocr.run_ocr_for_blob(
                 doc_role="protocol",
                 source_blob_path=protocol_resolved,
@@ -561,6 +569,7 @@ def run_extract(
                 blob_service=bs,
                 container_name=container,
             )
+            _log("OpenDataLoader: protocol complete")
         if skip_acrf:
             return
         if not blob_io.blob_exists(
@@ -569,6 +578,7 @@ def run_extract(
             raise typer.BadParameter(
                 f"aCRF blob not found: {acrf_resolved}. Upload it or pass --skip-acrf."
             )
+        _log("OpenDataLoader: aCRF — starting")
         opendataloader_ocr.run_ocr_for_blob(
             doc_role="acrf",
             source_blob_path=acrf_resolved,
@@ -578,11 +588,17 @@ def run_extract(
             blob_service=bs,
             container_name=container,
         )
+        _log("OpenDataLoader: aCRF complete")
         return
 
     cs = blob_io.require_env("STORAGE_CONNECTION_STRING")
     di_endpoint = blob_io.require_env("DI_ENDPOINT")
     di_key = blob_io.require_env("DI_KEY")
+
+    if run_opendataloader_ocr:
+        _log("Extractor mode: Document Intelligence + OpenDataLoader")
+    else:
+        _log("Extractor mode: Document Intelligence only")
 
     if debug_blob:
         _debug_log_extract_blob_state(
@@ -606,6 +622,7 @@ def run_extract(
             )
 
         local_proto = paths.local_extraction_layout(study_id, "protocol", output_dir)
+        _log("DI: analyzing protocol…")
         di_layout.run_layout_for_blob(
             study_id=study_id,
             doc_role="protocol",
@@ -621,7 +638,9 @@ def run_extract(
             upload_to_blob=upload,
             debug_blob=debug_blob,
         )
+        _log("DI: protocol complete")
         if run_opendataloader_ocr:
+            _log("OpenDataLoader: protocol — starting")
             opendataloader_ocr.run_ocr_for_blob(
                 doc_role="protocol",
                 source_blob_path=protocol_resolved,
@@ -631,6 +650,7 @@ def run_extract(
                 blob_service=bs,
                 container_name=container,
             )
+            _log("OpenDataLoader: protocol complete")
 
         if debug_blob:
             _debug_log_extract_blob_state(
@@ -656,6 +676,7 @@ def run_extract(
         )
 
     local_acrf = paths.local_extraction_layout(study_id, "acrf", output_dir)
+    _log("DI: analyzing aCRF…")
     di_layout.run_layout_for_blob(
         study_id=study_id,
         doc_role="acrf",
@@ -671,7 +692,9 @@ def run_extract(
         upload_to_blob=upload,
         debug_blob=debug_blob,
     )
+    _log("DI: aCRF complete")
     if run_opendataloader_ocr:
+        _log("OpenDataLoader: aCRF — starting")
         opendataloader_ocr.run_ocr_for_blob(
             doc_role="acrf",
             source_blob_path=acrf_resolved,
@@ -681,6 +704,7 @@ def run_extract(
             blob_service=bs,
             container_name=container,
         )
+        _log("OpenDataLoader: aCRF complete")
 
     if debug_blob:
         _debug_log_extract_blob_state(

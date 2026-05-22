@@ -1,10 +1,18 @@
 import type { DeviationPreviewRow } from "../../../utils/previewFormat";
 
-interface DeviationsPreviewProps {
-  rows: DeviationPreviewRow[];
+export interface ExtendedDeviationPreviewRow extends DeviationPreviewRow {
+  deviation_text?: string;
+  rule_title?: string;
+  entry_source?: string;
+  status?: string;
 }
 
-export function DeviationsPreview({ rows }: DeviationsPreviewProps): JSX.Element {
+interface DeviationsPreviewProps {
+  rows: ExtendedDeviationPreviewRow[];
+  showExtendedColumns?: boolean;
+}
+
+export function DeviationsPreview({ rows, showExtendedColumns = false }: DeviationsPreviewProps): JSX.Element {
   if (rows.length === 0) {
     return <p className="preview-empty">No deviations found in preview.</p>;
   }
@@ -15,16 +23,30 @@ export function DeviationsPreview({ rows }: DeviationsPreviewProps): JSX.Element
         <thead>
           <tr>
             <th>Deviation ID</th>
+            {showExtendedColumns ? <th>Rule title</th> : null}
             <th>Rule ID</th>
             <th>Text</th>
+            {showExtendedColumns ? (
+              <>
+                <th>Source</th>
+                <th>Status</th>
+              </>
+            ) : null}
           </tr>
         </thead>
         <tbody>
           {rows.map((row) => (
             <tr key={row.deviation_id}>
               <td>{row.deviation_id}</td>
+              {showExtendedColumns ? <td>{row.rule_title || "—"}</td> : null}
               <td>{row.rule_id || "—"}</td>
-              <td>{row.text || "—"}</td>
+              <td>{row.text || row.deviation_text || "—"}</td>
+              {showExtendedColumns ? (
+                <>
+                  <td>{row.entry_source || "—"}</td>
+                  <td>{row.status || "—"}</td>
+                </>
+              ) : null}
             </tr>
           ))}
         </tbody>

@@ -7,6 +7,12 @@ interface DocumentUploadCardProps {
   disabled?: boolean;
   onFileSelected: (file: File) => void;
   onRetry?: () => void;
+  onPreview?: () => void;
+  previewDisabled?: boolean;
+  previewLabel?: string;
+  accept?: string;
+  chooseLabel?: string;
+  preprocessLine?: string;
 }
 
 function formatSize(bytes?: number): string {
@@ -28,8 +34,15 @@ export function DocumentUploadCard({
   slot,
   disabled = false,
   onFileSelected,
-  onRetry
+  onRetry,
+  onPreview,
+  previewDisabled = false,
+  previewLabel = "Preview",
+  accept = ".pdf,application/pdf",
+  chooseLabel,
+  preprocessLine
 }: DocumentUploadCardProps): JSX.Element {
+  const filePrompt = chooseLabel ?? (slot.status === "uploaded" ? "Replace PDF" : "Choose PDF");
   const isBusy = slot.status === "uploading";
   const inputDisabled = disabled || isBusy || slot.status === "uploaded";
 
@@ -50,13 +63,19 @@ export function DocumentUploadCard({
         </div>
       ) : null}
 
+      {preprocessLine ? (
+        <p className="upload-card-preprocess-status" role="status" aria-live="polite">
+          {preprocessLine}
+        </p>
+      ) : null}
+
       <label className="control-group" htmlFor={inputId}>
-        <span className="control-label">{slot.status === "uploaded" ? "Replace PDF" : "Choose PDF"}</span>
+        <span className="control-label">{filePrompt}</span>
         <input
           id={inputId}
           className="input"
           type="file"
-          accept=".pdf,application/pdf"
+          accept={accept}
           disabled={inputDisabled}
           onChange={(event) => {
             const file = event.target.files?.[0];
@@ -97,6 +116,17 @@ export function DocumentUploadCard({
           </div>
         ) : null}
       </div>
+
+      {onPreview && slot.status === "uploaded" ? (
+        <button
+          className="button button-secondary upload-card-preview-btn"
+          type="button"
+          onClick={onPreview}
+          disabled={previewDisabled || disabled}
+        >
+          {previewLabel}
+        </button>
+      ) : null}
     </article>
   );
 }

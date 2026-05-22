@@ -15,12 +15,16 @@ import {
   type Step7RulePayload,
   type StepStatus
 } from "../../services/stepApi";
+import { SpecificationPreviewPanel } from "./SpecificationPreviewPanel";
 import { Step7DeviationDrawer } from "./Step7DeviationDrawer";
 import { Step7RuleGroups, groupDeviationsByRule } from "./Step7RuleGroups";
 
 interface Step7ReviewPanelProps {
   studyId: string;
   onStepStatusesChange: (statuses: Record<string, StepStatus>) => void;
+  onAcceptAndContinue?: () => void;
+  isAcceptingCoding?: boolean;
+  codingAcceptError?: string;
 }
 
 const EMPTY_DEVIATION_FORM: Step7DeviationPayload = {
@@ -51,7 +55,13 @@ function refsToText(value: string[]): string {
   return value.join(", ");
 }
 
-export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewPanelProps): JSX.Element {
+export function Step7ReviewPanel({
+  studyId,
+  onStepStatusesChange,
+  onAcceptAndContinue,
+  isAcceptingCoding = false,
+  codingAcceptError = ""
+}: Step7ReviewPanelProps): JSX.Element {
   const [rows, setRows] = useState<Step7DeviationRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
@@ -87,6 +97,13 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
 
   const acceptedCount = statusCounts.accepted;
   const acceptAllCount = statusCounts.pending + statusCounts.to_review;
+  const incompleteReviewCount = acceptAllCount;
+  const canContinueToCoding =
+    rows.length === 0 || rows.every((row) => row.status === "accepted" || row.status === "rejected");
+  const continueBlockReason =
+    incompleteReviewCount > 0
+      ? `${incompleteReviewCount} deviation${incompleteReviewCount === 1 ? "" : "s"} still pending or to review. Accept or reject each before continuing to coding.`
+      : "";
 
   useEffect(() => {
     async function loadRows(): Promise<void> {
@@ -275,6 +292,7 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
 
   return (
     <section className="step7-panel workflow-panel" aria-label="Deviation review">
+      <SpecificationPreviewPanel studyId={studyId} />
       <div className="step7-summary-bar">
         <span className="chip">
           Total <strong>{rows.length}</strong>
@@ -296,6 +314,8 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
       {bulkStatus ? <p className="step7-muted">{bulkStatus}</p> : null}
       {exportStatus ? <p className="step7-muted">{exportStatus}</p> : null}
       {exportCodingStatus ? <p className="step7-muted">{exportCodingStatus}</p> : null}
+      {codingAcceptError ? <p className="step1-error">{codingAcceptError}</p> : null}
+      {!canContinueToCoding && continueBlockReason ? <p className="step7-muted">{continueBlockReason}</p> : null}
       {isLoading ? <p className="step7-muted">Loading deviations...</p> : null}
 
       <div className="step7-toolbar">
@@ -331,6 +351,18 @@ export function Step7ReviewPanel({ studyId, onStepStatusesChange }: Step7ReviewP
         >
           {isBulkGenerating ? "Generating..." : `Generate all pseudo (${acceptedCount})`}
         </button>
+        {onAcceptAndContinue ? (
+          <button
+            className="button button-primary step7-accept-continue"
+            type="button"
+            aria-label="Accept and continue to coding"
+            onClick={onAcceptAndContinue}
+            disabled={!canContinueToCoding || isAcceptingCoding || isLoading || !studyId.trim()}
+            title={!canContinueToCoding ? continueBlockReason : "Continue to coding phase"}
+          >
+            {isAcceptingCoding ? "Continuing…" : "Accept"}
+          </button>
+        ) : null}
         <div className="step7-overflow-menu">
           <button className="button button-secondary" type="button" onClick={() => setMenuOpen((open) => !open)}>
             More actions

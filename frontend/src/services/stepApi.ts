@@ -1,4 +1,6 @@
-export type StepStatus = "pending" | "done";
+export type StepStatus = "pending" | "done" | "skipped";
+
+export type EntryMode = "extracted" | "imported_pd_spec";
 
 export interface ApiErrorPayload {
   code: string;
@@ -19,8 +21,31 @@ export interface StepItemStatus {
 
 export interface StepStatusesResponse {
   studyId: string;
+  entryMode?: EntryMode;
+  activeDeviationsSource?: string | null;
+  codingPhaseAccepted?: boolean;
+  codingPhaseAcceptedAt?: string | null;
+  importVersions?: ImportVersionsInfo;
   steps: StepItemStatus[];
   nextStepId: string | null;
+}
+
+export interface AcceptCodingPhaseResponse {
+  studyId: string;
+  codingPhaseAccepted: boolean;
+  codingPhaseAcceptedAt?: string | null;
+  stepStatuses: Record<string, StepStatus>;
+}
+
+export interface ImportVersionsInfo {
+  imports: string[];
+  merged: string[];
+}
+
+export interface ImportSourceOption {
+  key: string;
+  label: string;
+  type: "import" | "merged";
 }
 
 export interface StudyOption {
@@ -30,6 +55,9 @@ export interface StudyOption {
   protocolFileName?: string;
   acrfFileName?: string;
   bothUploaded?: boolean;
+  entryMode?: EntryMode;
+  activeDeviationsSource?: string | null;
+  importVersions?: ImportVersionsInfo;
   stepStatuses: Record<string, StepStatus>;
   nextStepId: string | null;
 }
@@ -83,7 +111,20 @@ export interface Step1UploadStatusResponse {
   studyId: string;
   protocol: Step1UploadSlotStatus;
   acrf: Step1UploadSlotStatus;
+  pdSpec: Step1UploadSlotStatus;
   bothUploaded: boolean;
+  allThreeUploaded?: boolean;
+  protocolPreprocessed?: boolean;
+  acrfPreprocessed?: boolean;
+  stepStatuses: Record<string, StepStatus>;
+}
+
+export interface PreprocessResponse {
+  studyId: string;
+  role: "protocol" | "acrf";
+  message: string;
+  protocolPreprocessed?: boolean;
+  acrfPreprocessed?: boolean;
   stepStatuses: Record<string, StepStatus>;
 }
 
@@ -125,6 +166,32 @@ export interface Step1PreviewResponse {
   protocolFileName?: string;
   acrfFileName?: string;
   extractor?: string | null;
+  stepStatuses: Record<string, StepStatus>;
+}
+
+export interface SpecificationPreviewDeviationRow {
+  deviation_id: string;
+  rule_id: string;
+  rule_title: string;
+  deviation_text: string;
+  text: string;
+  entry_source: string;
+  status: string;
+}
+
+export type SpecificationPreviewRow = SpecificationPreviewDeviationRow | Record<string, string>;
+
+export interface SpecificationPreviewSource {
+  key: string;
+  label: string;
+  /** When set, rows are spreadsheet cells keyed by these column headers (workbook import). */
+  columns?: string[];
+  rows: SpecificationPreviewRow[];
+}
+
+export interface SpecificationsPreviewResponse {
+  studyId: string;
+  sources: SpecificationPreviewSource[];
   stepStatuses: Record<string, StepStatus>;
 }
 
@@ -265,6 +332,15 @@ export async function fetchStepStatuses(studyId: string): Promise<StepStatusesRe
   return parseApiResponse<StepStatusesResponse>(response);
 }
 
+export async function acceptCodingPhase(studyId: string): Promise<AcceptCodingPhaseResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/coding/accept`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: "{}"
+  });
+  return parseApiResponse<AcceptCodingPhaseResponse>(response);
+}
+
 export interface SyncStudyResponse {
   studyId: string;
   sync: {
@@ -330,6 +406,21 @@ export async function fetchStep1UploadStatus(studyId: string): Promise<Step1Uplo
   return parseApiResponse<Step1UploadStatusResponse>(response);
 }
 
+export async function preprocessProtocol(studyId: string): Promise<PreprocessResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/preprocess/protocol`,
+    { method: "POST" }
+  );
+  return parseApiResponse<PreprocessResponse>(response);
+}
+
+export async function preprocessAcrf(studyId: string): Promise<PreprocessResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/preprocess/acrf`, {
+    method: "POST"
+  });
+  return parseApiResponse<PreprocessResponse>(response);
+}
+
 export async function fetchStep1RunState(studyId: string): Promise<Step1RunStateResponse> {
   const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step1/run-state`);
   return parseApiResponse<Step1RunStateResponse>(response);
@@ -344,9 +435,22 @@ export async function runStep1Extraction(studyId: string, extractor: Step1PdfExt
   return parseApiResponse<Step1ExtractResponse>(response);
 }
 
-export async function fetchStep1Preview(studyId: string): Promise<Step1PreviewResponse> {
-  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step1/preview`);
+export async function fetchStep1Preview(
+  studyId: string,
+  options?: { full?: boolean }
+): Promise<Step1PreviewResponse> {
+  const query = options?.full ? "?full=true" : "";
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step1/preview${query}`
+  );
   return parseApiResponse<Step1PreviewResponse>(response);
+}
+
+export async function fetchSpecificationsPreview(studyId: string): Promise<SpecificationsPreviewResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/specifications/preview`
+  );
+  return parseApiResponse<SpecificationsPreviewResponse>(response);
 }
 
 export async function runStep(
@@ -605,4 +709,73 @@ export async function generateStep7PseudoLogicAll(studyId: string): Promise<Step
     }
   );
   return parseApiResponse<Step7PseudoLogicBulkResponse>(response);
+}
+
+export interface SetEntryModeResponse {
+  studyId: string;
+  entryMode: EntryMode;
+  stepStatuses: Record<string, StepStatus>;
+}
+
+export async function setStudyEntryMode(studyId: string, entryMode: EntryMode): Promise<SetEntryModeResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/entry-mode`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ entryMode })
+  });
+  return parseApiResponse<SetEntryModeResponse>(response);
+}
+
+export interface UploadPdSpecResponse {
+  studyId: string;
+  pdSpecPath: string;
+  pdSpecBlob: string;
+  pdSpecFileName?: string;
+  pdSpecSize?: number;
+  entryMode: EntryMode;
+  stepStatuses: Record<string, StepStatus>;
+}
+
+export async function uploadPdSpecWorkbook(studyId: string, file: File): Promise<UploadPdSpecResponse> {
+  const formData = new FormData();
+  formData.append("workbook", file);
+  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/upload-pd-spec`, {
+    method: "POST",
+    body: formData
+  });
+  return parseApiResponse<UploadPdSpecResponse>(response);
+}
+
+export interface ImportVersionsResponse {
+  studyId: string;
+  activeDeviationsSource?: string | null;
+  importVersions: ImportVersionsInfo;
+  sources: ImportSourceOption[];
+}
+
+export async function fetchImportVersions(studyId: string): Promise<ImportVersionsResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/import-versions`);
+  return parseApiResponse<ImportVersionsResponse>(response);
+}
+
+export interface SetActiveDeviationsSourceResponse {
+  studyId: string;
+  activeDeviationsSource: string;
+  deviationCount: number;
+  stepStatuses: Record<string, StepStatus>;
+}
+
+export async function setActiveDeviationsSource(
+  studyId: string,
+  activeDeviationsSource: string
+): Promise<SetActiveDeviationsSourceResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/active-deviations-source`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ activeDeviationsSource })
+    }
+  );
+  return parseApiResponse<SetActiveDeviationsSourceResponse>(response);
 }
