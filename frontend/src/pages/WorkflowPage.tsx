@@ -309,14 +309,14 @@ export function WorkflowPage(): JSX.Element {
     }
   }
 
-  async function handleRunProcessing(extractor: Step1PdfExtractor): Promise<void> {
+  async function handleRunProcessing(extractor: Step1PdfExtractor, forceReRun = false): Promise<void> {
     const trimmedStudyId = studyId.trim();
     if (!trimmedStudyId || isProcessing) {
       return;
     }
 
     setProcessingProgress(initialProcessingProgress());
-    setProcessingMessage("Starting extraction pipeline.");
+    setProcessingMessage(forceReRun ? "Re-running extraction pipeline." : "Starting extraction pipeline.");
     setProcessingError("");
     setIsProcessing(true);
     setRuntimeStates((previous) => ({ ...previous, processing: { status: "running", message: "Running" } }));
@@ -332,7 +332,8 @@ export function WorkflowPage(): JSX.Element {
     try {
       let stepStatuses = { ...backendStatuses };
       for (const { stepId, title } of PROCESSING_SUB_STEPS) {
-        const alreadyDone = stepStatuses[stepId] === "done" || stepStatuses[stepId] === "skipped";
+        const alreadyDone =
+          !forceReRun && (stepStatuses[stepId] === "done" || stepStatuses[stepId] === "skipped");
         if (alreadyDone) {
           setProcessingProgress((previous) =>
             previous.map((item) =>
@@ -361,15 +362,15 @@ export function WorkflowPage(): JSX.Element {
 
         let summary: string;
         if (stepId === "extract-inputs") {
-          const extract = await runStep1Extraction(trimmedStudyId, extractor);
+          const extract = await runStep1Extraction(trimmedStudyId, extractor, { force: forceReRun });
           stepStatuses = extract.stepStatuses;
           applyBackendStatuses(stepStatuses);
           summary = extract.message;
         } else {
           const runOpts =
             stepId === "extract-rules" || stepId === "extract-deviations"
-              ? { llmInstructions: extractionLlmInstructions }
-              : undefined;
+              ? { llmInstructions: extractionLlmInstructions, force: forceReRun }
+              : { force: forceReRun };
           const response = await runStep(trimmedStudyId, stepId, runOpts);
           stepStatuses = response.stepStatuses;
           applyBackendStatuses(stepStatuses);
@@ -536,8 +537,10 @@ export function WorkflowPage(): JSX.Element {
               <StudyPipelineView
                 studyId={studyId}
                 pipelineState={pipelineState}
+                backendStatuses={backendStatuses}
                 onStatusesChange={applyBackendStatuses}
-                onRunFullPipeline={handleRunProcessing}
+                onRunFullPipeline={(extractor) => void handleRunProcessing(extractor, false)}
+                onReRunPipeline={(extractor) => void handleRunProcessing(extractor, true)}
                 onMapPdSpecToReview={handleMapPdSpecToReview}
                 onEnrichPdSpecToReview={handleEnrichPdSpecToReview}
                 processingProgress={processingProgress}

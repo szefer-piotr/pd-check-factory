@@ -24,6 +24,22 @@ class UiApiError(Exception):
         self.status_code = status_code
 
 
+PROCESSING_CORE_STEP_IDS: List[str] = [
+    "extract-inputs",
+    "index-protocol",
+    "acrf-split-toc",
+    "acrf-summary-text",
+]
+
+PROCESSING_BACKEND_STEP_IDS: List[str] = [
+    "extract-inputs",
+    "index-protocol",
+    "acrf-split-toc",
+    "acrf-summary-text",
+    "extract-rules",
+    "extract-deviations",
+]
+
 STEP_ORDER: List[str] = [
     "extract-inputs",
     "index-protocol",
@@ -214,25 +230,42 @@ class UiStepService:
         manifest = self._read_upload_manifest_obj(study_id)
         return str(manifest.get("pdSpecImportMode") or "") == "enrich_stub"
 
-    def _step_statuses(self, study_id: str) -> Dict[str, str]:
+    def _step_artifact_complete(self, study_id: str, step_id: str) -> bool:
         p = self._study_paths(study_id)
-        entry_mode = self._get_entry_mode(study_id)
+        if step_id == "extract-inputs":
+            return p.protocol_source.exists() and p.acrf_source.exists()
+        if step_id == "index-protocol":
+            return p.paragraph_index.exists()
+        if step_id == "acrf-split-toc":
+            return p.acrf_sections_toc_dir.exists() and any(p.acrf_sections_toc_dir.glob("*.md"))
+        if step_id == "acrf-summary-text":
+            return p.acrf_summary_text_merged.exists()
+        if step_id == "extract-rules":
+            return p.rules_parsed.exists()
+        if step_id == "extract-deviations":
+            return p.deviations_parsed.exists() and p.deviations_review_state.exists()
+        if step_id == "import-pd-spec-ground":
+            return self._has_import_snapshot(study_id)
+        if step_id == "import-pd-spec-map":
+            return self._pd_spec_map_done(study_id)
+        if step_id == "import-pd-spec-enrich":
+            return self._pd_spec_enrich_done(study_id)
+        if step_id == "merge-pd-spec-imports":
+            return self._has_merged_snapshot(study_id)
+        if step_id == "review-and-finalize":
+            return p.final_json.exists() and p.final_xlsx.exists()
+        return False
+
+    def _processing_core_complete(self, study_id: str) -> bool:
+        return all(self._step_artifact_complete(study_id, step_id) for step_id in PROCESSING_CORE_STEP_IDS)
+
+    def _processing_complete(self, study_id: str) -> bool:
+        return all(self._step_artifact_complete(study_id, step_id) for step_id in PROCESSING_BACKEND_STEP_IDS)
+
+    def _step_statuses(self, study_id: str) -> Dict[str, str]:
         statuses: Dict[str, str] = {
-            "extract-inputs": "done" if p.protocol_source.exists() and p.acrf_source.exists() else "pending",
-            "index-protocol": "done" if p.paragraph_index.exists() else "pending",
-            "acrf-split-toc": "done"
-            if p.acrf_sections_toc_dir.exists() and any(p.acrf_sections_toc_dir.glob("*.md"))
-            else "pending",
-            "acrf-summary-text": "done" if p.acrf_summary_text_merged.exists() else "pending",
-            "extract-rules": "done" if p.rules_parsed.exists() else "pending",
-            "extract-deviations": "done"
-            if p.deviations_parsed.exists() and p.deviations_review_state.exists()
-            else "pending",
-            "import-pd-spec-ground": "done" if self._has_import_snapshot(study_id) else "pending",
-            "import-pd-spec-map": "done" if self._pd_spec_map_done(study_id) else "pending",
-            "import-pd-spec-enrich": "done" if self._pd_spec_enrich_done(study_id) else "pending",
-            "merge-pd-spec-imports": "done" if self._has_merged_snapshot(study_id) else "pending",
-            "review-and-finalize": "done" if p.final_json.exists() and p.final_xlsx.exists() else "pending",
+            step_id: "done" if self._step_artifact_complete(study_id, step_id) else "pending"
+            for step_id in STEP_ORDER
         }
         versions = pipeline_v2.list_import_versions(study_id, self.output_dir)
         if len(versions.get("imports", [])) < 2:
@@ -458,6 +491,8 @@ class UiStepService:
             "allThreeUploaded": protocol_uploaded and acrf_uploaded and pd_spec_uploaded,
             "protocolPreprocessed": p.paragraph_index.exists(),
             "acrfPreprocessed": p.acrf_summary_text_merged.exists(),
+            "processingCoreComplete": self._processing_core_complete(study_id),
+            "processingComplete": self._processing_complete(study_id),
             "stepStatuses": self._step_statuses(study_id),
         }
 
@@ -993,11 +1028,27 @@ class UiStepService:
             "stepStatuses": self._step_statuses(study_id),
         }
 
-    def run_step1_extract(self, study_id: str, extractor: str | None = None) -> Dict[str, Any]:
+    def run_step1_extract(
+        self,
+        study_id: str,
+        extractor: str | None = None,
+        *,
+        force: bool = False,
+    ) -> Dict[str, Any]:
         from pdcheck_factory.cli import run_extract
 
         study_id = self._require_study_id(study_id)
         self._assert_both_uploads_ready(study_id)
+
+        if not force and self._step_artifact_complete(study_id, "extract-inputs"):
+            mode = extraction_resolve.read_ui_extractor_choice(study_id, self.output_dir)
+            return {
+                "studyId": study_id,
+                "message": "Extraction already complete",
+                "skipped": True,
+                "extractor": mode or extraction_resolve.UI_EXTRACTOR_BOTH,
+                "stepStatuses": self._step_statuses(study_id),
+            }
 
         raw = (extractor or "").strip().lower()
         if not raw:
@@ -1086,8 +1137,16 @@ class UiStepService:
         skip_protocol: bool,
         skip_acrf: bool,
         log_prefix: str,
+        force: bool = False,
     ) -> None:
         from pdcheck_factory.cli import run_extract
+
+        if not force:
+            p = self._study_paths(study_id)
+            if skip_acrf and p.protocol_source.exists():
+                return
+            if skip_protocol and p.acrf_source.exists():
+                return
 
         mode = extraction_resolve.read_ui_extractor_choice(study_id, self.output_dir)
         if not mode:
@@ -1120,6 +1179,19 @@ class UiStepService:
     def preprocess_protocol(self, study_id: str) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         self._assert_protocol_upload_ready(study_id)
+
+        p = self._study_paths(study_id)
+        if p.paragraph_index.exists():
+            summary = "Protocol already indexed."
+            status = self.get_step1_upload_status(study_id)
+            return {
+                "studyId": study_id,
+                "role": "protocol",
+                "message": summary,
+                "skipped": True,
+                "protocolPreprocessed": status["protocolPreprocessed"],
+                "stepStatuses": status["stepStatuses"],
+            }
 
         self._write_pipeline_run_state(
             study_id,
@@ -1181,6 +1253,19 @@ class UiStepService:
     def preprocess_acrf(self, study_id: str) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         self._assert_acrf_upload_ready(study_id)
+
+        p = self._study_paths(study_id)
+        if p.acrf_summary_text_merged.exists():
+            summary = "aCRF already summarized."
+            status = self.get_step1_upload_status(study_id)
+            return {
+                "studyId": study_id,
+                "role": "acrf",
+                "message": summary,
+                "skipped": True,
+                "acrfPreprocessed": status["acrfPreprocessed"],
+                "stepStatuses": status["stepStatuses"],
+            }
 
         self._write_pipeline_run_state(
             study_id,
@@ -1542,6 +1627,7 @@ class UiStepService:
         step_id: str,
         *,
         llm_instructions: str | None = None,
+        force: bool = False,
     ) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         allowed_steps = set(STEP_ORDER) | set(IMPORT_STEP_ORDER)
@@ -1550,6 +1636,16 @@ class UiStepService:
 
         statuses = self._step_statuses(study_id)
         self._assert_step_dependencies(statuses, step_id, study_id)
+
+        if not force and self._step_artifact_complete(study_id, step_id):
+            summary = "Already complete (skipped)"
+            return {
+                "studyId": study_id,
+                "stepId": step_id,
+                "summary": summary,
+                "skipped": True,
+                "stepStatuses": self._step_statuses(study_id),
+            }
 
         extra = (llm_instructions or "").strip()
         stage_labels = {
@@ -1577,7 +1673,7 @@ class UiStepService:
         self._append_pipeline_log(study_id, f"Starting step {step_id}")
 
         try:
-            summary = self._execute_run_step(study_id, step_id, extra=extra)
+            summary = self._execute_run_step(study_id, step_id, extra=extra, force=force)
         except Exception as exc:  # noqa: BLE001
             self._append_pipeline_log(study_id, f"Step {step_id} failed: {exc}", level="error")
             self._write_pipeline_run_state(
@@ -1606,7 +1702,10 @@ class UiStepService:
             "stepStatuses": self._step_statuses(study_id),
         }
 
-    def _execute_run_step(self, study_id: str, step_id: str, *, extra: str) -> str:
+    def _execute_run_step(self, study_id: str, step_id: str, *, extra: str, force: bool = False) -> str:
+        if not force and self._step_artifact_complete(study_id, step_id):
+            return "Already complete (skipped)"
+
         if step_id == "index-protocol":
             result = pipeline_v2.step2_protocol_paragraph_index(study_id, self.output_dir)
             summary = f"Indexed {len(result.get('paragraphs', []))} protocol paragraphs."

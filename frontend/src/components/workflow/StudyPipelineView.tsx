@@ -16,13 +16,16 @@ import { DocumentPreviewModal } from "./DocumentPreviewModal";
 import { ExtractionStatusPanel } from "./ExtractionStatusPanel";
 import type { ProcessingSubProgressItem } from "./ProcessingPanel";
 import { PipelineActionTiles } from "./PipelineActionTiles";
+import { ProcessingStepStatusBar } from "./ProcessingStepStatusBar";
 import type { ExtendedDeviationPreviewRow } from "./preview/DeviationsPreview";
 
 interface StudyPipelineViewProps {
   studyId: string;
   pipelineState: UseStudyPipelineStateResult;
+  backendStatuses: Record<string, StepStatus>;
   onStatusesChange: (statuses: Record<string, StepStatus>) => void;
   onRunFullPipeline: (extractor: Step1PdfExtractor) => Promise<void>;
+  onReRunPipeline: (extractor: Step1PdfExtractor) => Promise<void>;
   onMapPdSpecToReview: () => Promise<void>;
   onEnrichPdSpecToReview: () => Promise<void>;
   processingProgress: ProcessingSubProgressItem[];
@@ -71,8 +74,10 @@ function preprocessLine(status: PreprocessStatus, uploaded: boolean): string | u
 export function StudyPipelineView({
   studyId,
   pipelineState,
+  backendStatuses,
   onStatusesChange,
   onRunFullPipeline,
+  onReRunPipeline,
   onMapPdSpecToReview,
   onEnrichPdSpecToReview,
   processingProgress,
@@ -173,10 +178,18 @@ export function StudyPipelineView({
   }, [studyId, isProcessing, pipeline.preprocess.protocol, pipeline.preprocess.acrf]);
 
   const triggerBackgroundPreprocess = useCallback(
-    (slot: "protocol" | "acrf") => {
+    (slot: "protocol" | "acrf", options?: { afterUpload?: boolean }) => {
       const trimmed = studyId.trim();
       if (!trimmed) {
         return;
+      }
+      if (!options?.afterUpload) {
+        if (slot === "protocol" && pipeline.preprocess.protocol === "done") {
+          return;
+        }
+        if (slot === "acrf" && pipeline.preprocess.acrf === "done") {
+          return;
+        }
       }
       setPreprocess(slot, "running");
       const run = slot === "protocol" ? preprocessProtocol : preprocessAcrf;
@@ -191,7 +204,14 @@ export function StudyPipelineView({
           void refreshUploadStatus(trimmed);
         });
     },
-    [onStatusesChange, refreshUploadStatus, setPreprocess, studyId]
+    [
+      onStatusesChange,
+      pipeline.preprocess.acrf,
+      pipeline.preprocess.protocol,
+      refreshUploadStatus,
+      setPreprocess,
+      studyId
+    ]
   );
 
   const openMarkdownPreview = useCallback(
@@ -283,7 +303,7 @@ export function StudyPipelineView({
       } else {
         setPendingAcrfFile(null);
       }
-      triggerBackgroundPreprocess(slot);
+      triggerBackgroundPreprocess(slot, { afterUpload: true });
     } catch (uploadError) {
       setUploadSlot(slot, {
         status: "error",
@@ -322,7 +342,7 @@ export function StudyPipelineView({
     }
   }
 
-  async function handleRunFullPipelineClick(): Promise<void> {
+  async function handleRunFullPipelineClick(forceReRun = false): Promise<void> {
     if (!studyId.trim() || !pipeline.bothUploaded) {
       return;
     }
@@ -330,12 +350,13 @@ export function StudyPipelineView({
       status: "running",
       currentStage: "extract",
       currentSubStepId: "extract-inputs",
-      message: "Starting extraction pipeline…",
+      message: forceReRun ? "Re-running extraction pipeline…" : "Starting extraction pipeline…",
       error: "",
       logs: []
     });
     try {
-      await onRunFullPipeline(extractorChoice);
+      const run = forceReRun ? onReRunPipeline : onRunFullPipeline;
+      await run(extractorChoice);
       setExtraction({ status: "done", currentStage: "complete", message: "Processing completed." });
       await refreshRunState();
     } catch (runError) {
@@ -432,16 +453,20 @@ export function StudyPipelineView({
       </div>
 
       <div className="study-pipeline-stage">
+        <ProcessingStepStatusBar backendStatuses={backendStatuses} visible={pipeline.bothUploaded} />
+
         <PipelineActionTiles
           bothUploaded={pipeline.bothUploaded}
           allThreeUploaded={pipeline.allThreeUploaded}
           isBusy={isBusy}
           isProcessing={isProcessing}
+          backendStatuses={backendStatuses}
           extractorChoice={extractorChoice}
           extractionLlmInstructions={extractionLlmInstructions}
           onExtractorChange={setExtractorChoice}
           onLlmInstructionsChange={onExtractionLlmInstructionsChange}
-          onRunFullPipeline={() => void handleRunFullPipelineClick()}
+          onRunFullPipeline={() => void handleRunFullPipelineClick(false)}
+          onReRunPipeline={() => void handleRunFullPipelineClick(true)}
           onMapPdSpecToReview={() => void onMapPdSpecToReview()}
           onEnrichPdSpecToReview={() => void onEnrichPdSpecToReview()}
           pipelineMessage={pdSpecActionMessage || processingMessage || pipeline.extraction.message}

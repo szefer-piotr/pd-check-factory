@@ -773,6 +773,12 @@ body {
 .auto-run-circle-done {
   border-color: var(--accent);
   background: var(--accent);
+  color: #fff;
+}
+
+.auto-run-circle-pending {
+  border-color: var(--border);
+  background: transparent;
 }
 
 .auto-run-circle-failed {
@@ -1594,6 +1600,67 @@ body {
 .pipeline-action-tile-advanced summary {
   cursor: pointer;
   color: var(--text-muted);
+}
+
+.processing-step-status-bar {
+  display: grid;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+
+.processing-step-status-bar-title {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+
+.processing-step-status-grid {
+  margin: 0;
+}
+
+.pipeline-processing-complete {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  flex-wrap: wrap;
+  padding: var(--space-sm) var(--space-md);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: var(--surface-muted);
+}
+
+.pipeline-processing-complete-indicator {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex: 1;
+  min-width: 12rem;
+}
+
+.pipeline-processing-complete-circle {
+  width: 1.25rem;
+  height: 1.25rem;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  border: 2px solid var(--accent);
+  background: var(--accent);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.7rem;
+  font-weight: 700;
+}
+
+.pipeline-processing-complete-label {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.button-compact-rerun {
+  padding: 0.35rem 0.75rem;
+  font-size: 0.85rem;
 }
 
 .extraction-status-panel-simplified .extraction-wait-banner {

@@ -214,10 +214,17 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 step_id = tail[len("steps/") : -len("/run")]
                 length = int(self.headers.get("Content-Length", "0"))
                 llm_instructions: str | None = None
+                force = False
                 if length > 0:
                     payload = parse_json_body(self.rfile.read(length))
                     llm_instructions = str(payload.get("llmInstructions", "") or "")
-                data = self.service.run_step(study_id, step_id, llm_instructions=llm_instructions)
+                    force = bool(payload.get("force", False))
+                data = self.service.run_step(
+                    study_id,
+                    step_id,
+                    llm_instructions=llm_instructions,
+                    force=force,
+                )
             else:
                 raise UiApiError("NOT_FOUND", "Not found", 404)
 
@@ -394,7 +401,8 @@ class StepApiHandler(BaseHTTPRequestHandler):
         else:
             payload = parse_json_body(self.rfile.read(length))
         extractor = str(payload.get("extractor", "")).strip() or None
-        return self.service.run_step1_extract(study_id, extractor=extractor)
+        force = bool(payload.get("force", False))
+        return self.service.run_step1_extract(study_id, extractor=extractor, force=force)
 
     def _parse_step7_refine(self, study_id: str, deviation_id: str) -> Dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))

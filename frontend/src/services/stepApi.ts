@@ -116,6 +116,8 @@ export interface Step1UploadStatusResponse {
   allThreeUploaded?: boolean;
   protocolPreprocessed?: boolean;
   acrfPreprocessed?: boolean;
+  processingCoreComplete?: boolean;
+  processingComplete?: boolean;
   stepStatuses: Record<string, StepStatus>;
 }
 
@@ -152,6 +154,7 @@ export interface Step1ExtractResponse {
   studyId: string;
   message: string;
   extractor?: string;
+  skipped?: boolean;
   stepStatuses: Record<string, StepStatus>;
 }
 
@@ -199,6 +202,7 @@ export interface StepRunResponse {
   studyId: string;
   stepId: string;
   summary: string;
+  skipped?: boolean;
   stepStatuses: Record<string, StepStatus>;
 }
 
@@ -426,11 +430,15 @@ export async function fetchStep1RunState(studyId: string): Promise<Step1RunState
   return parseApiResponse<Step1RunStateResponse>(response);
 }
 
-export async function runStep1Extraction(studyId: string, extractor: Step1PdfExtractor): Promise<Step1ExtractResponse> {
+export async function runStep1Extraction(
+  studyId: string,
+  extractor: Step1PdfExtractor,
+  options?: { force?: boolean }
+): Promise<Step1ExtractResponse> {
   const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step1/extract`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ extractor })
+    body: JSON.stringify({ extractor, force: options?.force === true })
   });
   return parseApiResponse<Step1ExtractResponse>(response);
 }
@@ -456,12 +464,15 @@ export async function fetchSpecificationsPreview(studyId: string): Promise<Speci
 export async function runStep(
   studyId: string,
   stepId: string,
-  options?: { llmInstructions?: string }
+  options?: { llmInstructions?: string; force?: boolean }
 ): Promise<StepRunResponse> {
-  const body: Record<string, string> = {};
+  const body: Record<string, string | boolean> = {};
   const note = options?.llmInstructions?.trim();
   if (note) {
     body.llmInstructions = note;
+  }
+  if (options?.force === true) {
+    body.force = true;
   }
   const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/steps/${encodeURIComponent(stepId)}/run`, {
     method: "POST",

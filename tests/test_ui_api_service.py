@@ -979,3 +979,105 @@ def test_sync_study_returns_report_and_statuses(tmp_path: Path, monkeypatch: pyt
     assert out["sync"]["skipped"] == 3
     assert out["sync"]["errors"] == 0
     assert "extract-inputs" in out["stepStatuses"]
+
+
+def _seed_processing_artifacts(service: UiStepService, study_id: str, tmp_path: Path) -> None:
+    proto = extraction_resolve.resolve_protocol_rendered_source_md(study_id, tmp_path)
+    acrf = extraction_resolve.resolve_acrf_rendered_source_md(study_id, tmp_path)
+    _touch(proto)
+    _touch(acrf)
+    pindex = paths.local_protocol_paragraph_index_json(study_id, tmp_path)
+    _touch(pindex, '{"paragraphs": []}')
+    sections = extraction_resolve.resolve_acrf_sections_toc_dir(study_id, tmp_path)
+    sections.mkdir(parents=True, exist_ok=True)
+    _touch(sections / "section_01.md", "# Section")
+    summary = paths.local_acrf_summary_text_merged(study_id, tmp_path)
+    _touch(summary, '{"datasets": []}')
+    rules = paths.local_rules_parsed_json(study_id, tmp_path)
+    _touch(rules, '{"rules": []}')
+    dev = paths.local_deviations_parsed_json(study_id, tmp_path)
+    _touch(dev, '{"deviations": []}')
+    review = paths.local_deviations_review_state(study_id, tmp_path)
+    _touch(review, '{"deviations": []}')
+
+
+def test_run_step1_extract_skips_when_artifacts_exist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "SKIP-EX"
+    _seed_processing_artifacts(service, study_id, tmp_path)
+
+    monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
+    monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
+    monkeypatch.setattr(blob_io, "blob_exists", lambda **_kwargs: True)
+
+    called = {"run_extract": False}
+
+    def fake_run_extract(**_kwargs: object) -> None:
+        called["run_extract"] = True
+
+    from pdcheck_factory import cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "run_extract", fake_run_extract)
+
+    out = service.run_step1_extract(study_id, extractor="both", force=False)
+    assert out.get("skipped") is True
+    assert called["run_extract"] is False
+    assert out["stepStatuses"]["extract-inputs"] == "done"
+
+
+def test_run_step1_extract_force_runs_when_artifacts_exist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "FORCE-EX"
+    _seed_processing_artifacts(service, study_id, tmp_path)
+
+    monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
+    monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
+    monkeypatch.setattr(blob_io, "blob_exists", lambda **_kwargs: True)
+    monkeypatch.setattr(blob_io, "upload_blob_bytes", lambda **_kwargs: None)
+
+    called = {"run_extract": False}
+
+    def fake_run_extract(**_kwargs: object) -> None:
+        called["run_extract"] = True
+
+    from pdcheck_factory import cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "run_extract", fake_run_extract)
+
+    out = service.run_step1_extract(study_id, extractor="both", force=True)
+    assert out.get("skipped") is not True
+    assert called["run_extract"] is True
+
+
+def test_run_step_skips_when_artifact_exists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pdcheck_factory import pipeline_v2
+
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "SKIP-RULES"
+    _seed_processing_artifacts(service, study_id, tmp_path)
+
+    called = {"rules": False}
+
+    def fake_rules(sid: str, output_dir: Path, *args, **kwargs):
+        called["rules"] = True
+        return {"rules": []}
+
+    monkeypatch.setattr(pipeline_v2, "step3_extract_rules", fake_rules)
+
+    out = service.run_step(study_id, "extract-rules", force=False)
+    assert out.get("skipped") is True
+    assert called["rules"] is False
+    assert "skipped" in out["summary"].lower()
+
+
+def test_upload_status_includes_processing_complete_flags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "PROC-COMPLETE"
+    _seed_processing_artifacts(service, study_id, tmp_path)
+
+    monkeypatch.setattr(service, "_blob_has_upload", lambda _sid, role: True)
+    monkeypatch.setattr(service, "_blob_has_pd_spec_workbook", lambda _sid: False)
+
+    status = service.get_step1_upload_status(study_id)
+    assert status["processingCoreComplete"] is True
+    assert status["processingComplete"] is True

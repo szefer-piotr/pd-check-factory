@@ -130,3 +130,24 @@ def test_preprocess_protocol_indexes(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert "Protocol" in result["message"]
     index_path = paths.local_protocol_paragraph_index_json(study_id, tmp_path)
     assert index_path.is_file()
+
+
+def test_preprocess_protocol_skips_when_already_indexed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "PREPROTO-SKIP"
+    index_path = paths.local_protocol_paragraph_index_json(study_id, tmp_path)
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.write_text('{"paragraphs": []}', encoding="utf-8")
+
+    monkeypatch.setattr(service, "_assert_protocol_upload_ready", lambda _sid: None)
+    called = {"extract": False}
+    monkeypatch.setattr(
+        service,
+        "_run_partial_extract",
+        lambda *_a, **_k: called.__setitem__("extract", True),
+    )
+
+    result = service.preprocess_protocol(study_id)
+    assert result.get("skipped") is True
+    assert called["extract"] is False
+    assert "already" in result["message"].lower()

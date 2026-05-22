@@ -401,6 +401,8 @@ vi.mock("../services/stepApi", () => ({
     allThreeUploaded: false,
     protocolPreprocessed: true,
     acrfPreprocessed: true,
+    processingCoreComplete: true,
+    processingComplete: true,
     stepStatuses: DONE_STATUSES
   })),
   preprocessProtocol: vi.fn(async () => ({
@@ -518,8 +520,9 @@ describe("Workflow pipeline pages", () => {
 
     expect((await screen.findAllByText(/1 project in blob/)).length).toBeGreaterThan(0);
     expect(screen.getAllByText("Processing").length).toBeGreaterThan(0);
-    expect(screen.getByRole("button", { name: /Run pipeline to review/i })).toBeInTheDocument();
-    expect(screen.getByText("Extract deviations from protocol")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^Re-run$/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Run pipeline to review/i })).not.toBeInTheDocument();
+    expect(screen.getByText("Pipeline progress")).toBeInTheDocument();
     expect(screen.getByText("PD Specification")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Use ID" }).length).toBeGreaterThan(0);
     expect(screen.getAllByPlaceholderText(/Type a new project ID/i).length).toBeGreaterThan(0);
@@ -637,8 +640,74 @@ describe("Workflow pipeline pages", () => {
     expect(await within(transcript).findByText("Updated deviation from your message.")).toBeInTheDocument();
   });
 
+  it("shows Continue pipeline when some processing steps are already complete", async () => {
+    const stepApi = await import("../services/stepApi");
+    const partialStatuses: Record<string, StepStatus> = {
+      "extract-inputs": "done",
+      "index-protocol": "done",
+      "acrf-split-toc": "pending",
+      "acrf-summary-text": "pending",
+      "extract-rules": "pending",
+      "extract-deviations": "pending",
+      "review-and-finalize": "pending"
+    };
+    vi.mocked(stepApi.fetchStudies).mockResolvedValueOnce({
+      studies: [
+        {
+          studyId: "MY-STUDY",
+          protocolBlob: "raw/MY-STUDY/protocol.pdf",
+          acrfBlob: "raw/MY-STUDY/acrf.pdf",
+          bothUploaded: true,
+          stepStatuses: partialStatuses,
+          nextStepId: "acrf-split-toc"
+        }
+      ]
+    });
+    vi.mocked(stepApi.syncStudy).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      sync: { uploaded: 0, downloaded: 0, skipped: 0, errors: 0, errorMessages: [] },
+      stepStatuses: partialStatuses
+    });
+    vi.mocked(stepApi.fetchStepStatuses).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      codingPhaseAccepted: false,
+      steps: Object.entries(partialStatuses).map(([stepId, status]) => ({ stepId, status })),
+      nextStepId: "acrf-split-toc"
+    });
+    vi.mocked(stepApi.fetchStep1UploadStatus).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      protocol: { uploaded: true, fileName: "protocol.pdf", size: 100, blob: "raw/MY-STUDY/protocol.pdf" },
+      acrf: { uploaded: true, fileName: "acrf.pdf", size: 100, blob: "raw/MY-STUDY/acrf.pdf" },
+      pdSpec: { uploaded: false, fileName: "pd_specifications.xlsx", size: 0, blob: "pipeline/MY-STUDY/imports/pd_specifications.xlsx" },
+      bothUploaded: true,
+      allThreeUploaded: false,
+      protocolPreprocessed: true,
+      acrfPreprocessed: false,
+      processingCoreComplete: false,
+      processingComplete: false,
+      stepStatuses: partialStatuses
+    });
+
+    render(<App />);
+
+    expect(await screen.findByRole("button", { name: /Continue pipeline to review/i })).toBeInTheDocument();
+    const statusBar = screen.getByLabelText("Processing step status");
+    expect(within(statusBar).getByText("Extract PDFs")).toBeInTheDocument();
+    expect(within(statusBar).getAllByText("Complete").length).toBeGreaterThan(0);
+    expect(within(statusBar).getAllByText("Not started").length).toBeGreaterThan(0);
+  });
+
   it("sends llmInstructions when running the extraction pipeline", async () => {
     const stepApi = await import("../services/stepApi");
+    const pendingStatuses: Record<string, StepStatus> = {
+      "extract-inputs": "pending",
+      "index-protocol": "pending",
+      "acrf-split-toc": "pending",
+      "acrf-summary-text": "pending",
+      "extract-rules": "pending",
+      "extract-deviations": "pending",
+      "review-and-finalize": "pending"
+    };
     const afterExtract: Record<string, StepStatus> = {
       "extract-inputs": "done",
       "index-protocol": "done",
@@ -648,12 +717,6 @@ describe("Workflow pipeline pages", () => {
       "extract-deviations": "pending",
       "review-and-finalize": "pending"
     };
-    vi.mocked(stepApi.runStep1Extraction).mockResolvedValueOnce({
-      studyId: "MY-STUDY",
-      message: "Extraction completed.",
-      extractor: "document_intelligence",
-      stepStatuses: afterExtract
-    });
     vi.mocked(stepApi.fetchStudies).mockResolvedValueOnce({
       studies: [
         {
@@ -661,23 +724,26 @@ describe("Workflow pipeline pages", () => {
           protocolBlob: "raw/MY-STUDY/protocol.pdf",
           acrfBlob: "raw/MY-STUDY/acrf.pdf",
           bothUploaded: true,
-          stepStatuses: afterExtract,
-          nextStepId: "extract-rules"
+          stepStatuses: pendingStatuses,
+          nextStepId: "extract-inputs"
         }
       ]
+    });
+    vi.mocked(stepApi.syncStudy).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      sync: { uploaded: 0, downloaded: 0, skipped: 0, errors: 0, errorMessages: [] },
+      stepStatuses: pendingStatuses
+    });
+    vi.mocked(stepApi.runStep1Extraction).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      message: "Extraction completed.",
+      extractor: "document_intelligence",
+      stepStatuses: afterExtract
     });
     vi.mocked(stepApi.fetchStepStatuses).mockResolvedValueOnce({
       studyId: "MY-STUDY",
       codingPhaseAccepted: false,
-      steps: [
-        { stepId: "extract-inputs", status: "pending" },
-        { stepId: "index-protocol", status: "pending" },
-        { stepId: "acrf-split-toc", status: "pending" },
-        { stepId: "acrf-summary-text", status: "pending" },
-        { stepId: "extract-rules", status: "pending" },
-        { stepId: "extract-deviations", status: "pending" },
-        { stepId: "review-and-finalize", status: "pending" }
-      ],
+      steps: Object.entries(pendingStatuses).map(([stepId, status]) => ({ stepId, status })),
       nextStepId: "extract-inputs"
     });
     vi.mocked(stepApi.fetchStep1UploadStatus).mockResolvedValueOnce({
@@ -711,7 +777,7 @@ describe("Workflow pipeline pages", () => {
     });
     const call = vi.mocked(stepApi.runStep).mock.calls.find(([_, id]) => id === "extract-rules");
     expect(call).toBeDefined();
-    expect(call![2]).toEqual({ llmInstructions: "Emphasize dosing" });
+    expect(call![2]).toEqual({ llmInstructions: "Emphasize dosing", force: false });
   });
 
   it("accepts all pending deviations in bulk and enables pseudo generation", async () => {
@@ -901,7 +967,7 @@ describe("Workflow pipeline pages", () => {
       stepStatuses: DONE_STATUSES
     });
     render(<App />);
-    expect(await screen.findByRole("button", { name: /Run pipeline to review/i })).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: /^Re-run$/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Map to review/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Enrich and open review/i })).toBeInTheDocument();
   });
