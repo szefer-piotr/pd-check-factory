@@ -524,9 +524,16 @@ def step10_finalize(study_id: str, output_dir: Path) -> Dict[str, Any]:
 
 
 def initialize_review_states(study_id: str, output_dir: Path) -> None:
+    from pdcheck_factory import review_sources
+
     deviations = read_json(paths.local_deviations_parsed_json(study_id, output_dir))
+    generated_path = review_sources.review_state_path(
+        study_id, output_dir, review_sources.REVIEW_SOURCE_GENERATED
+    )
+    write_json(generated_path, deviations)
     write_json(paths.local_deviations_review_state(study_id, output_dir), deviations)
     write_json(paths.local_deviations_validated_json(study_id, output_dir), deviations)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, generated_path)
     study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_deviations_review_state(study_id, output_dir))
     study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_deviations_validated_json(study_id, output_dir))
 
@@ -813,6 +820,7 @@ def run_import_pd_spec_map(
         deviations=raw_deviations,
         import_version=import_version,
         source_type="import",
+        pd_spec_import_mode=pd_spec_import_mode,
     )
     errs = validate(snapshot, load_schema("deviations_parsed_v2.schema.json"))
     if errs:
@@ -821,6 +829,17 @@ def run_import_pd_spec_map(
     snapshot_path = paths.local_deviations_import_snapshot(study_id, output_dir, import_version)
     write_json(snapshot_path, snapshot)
     study_artifact_sync.mirror_upload_path(study_id, output_dir, snapshot_path)
+
+    from pdcheck_factory import review_sources
+
+    review_source_key = (
+        review_sources.REVIEW_SOURCE_ENRICHED_PD_SPEC
+        if pd_spec_import_mode in {"enrich_stub", "enrich"}
+        else review_sources.REVIEW_SOURCE_IMPORTED_PD_SPEC
+    )
+    per_source_path = review_sources.review_state_path(study_id, output_dir, review_source_key)
+    write_json(per_source_path, snapshot)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, per_source_path)
 
     review_path = paths.local_deviations_review_state(study_id, output_dir)
     validated_path = paths.local_deviations_validated_json(study_id, output_dir)
@@ -833,8 +852,29 @@ def run_import_pd_spec_map(
         "import_version": import_version,
         "deviations": raw_deviations,
         "pd_spec_import_mode": pd_spec_import_mode,
+        "review_source": review_source_key,
         "snapshot_path": str(snapshot_path),
     }
+
+
+def run_import_pd_spec_enrich(
+    study_id: str,
+    output_dir: Path,
+    *,
+    workbook_bytes: bytes | None = None,
+    workbook_path: Path | None = None,
+    version_label: str | None = None,
+) -> Dict[str, Any]:
+    """Parse PD spec workbook and run protocol enrichment (parallel LLM per deviation)."""
+    from pdcheck_factory import protocol_enrichment
+
+    return protocol_enrichment.run_protocol_enrichment(
+        study_id,
+        output_dir,
+        workbook_bytes=workbook_bytes,
+        workbook_path=workbook_path,
+        version_label=version_label,
+    )
 
 
 def run_import_pd_spec_grounding(
@@ -892,6 +932,7 @@ def run_import_pd_spec_grounding(
         deviations=grounded,
         import_version=import_version,
         source_type="import",
+        pd_spec_import_mode="ground",
     )
     errs = validate(snapshot, load_schema("deviations_parsed_v2.schema.json"))
     if errs:
@@ -900,6 +941,14 @@ def run_import_pd_spec_grounding(
     snapshot_path = paths.local_deviations_import_snapshot(study_id, output_dir, import_version)
     write_json(snapshot_path, snapshot)
     study_artifact_sync.mirror_upload_path(study_id, output_dir, snapshot_path)
+
+    from pdcheck_factory import review_sources
+
+    imported_path = review_sources.review_state_path(
+        study_id, output_dir, review_sources.REVIEW_SOURCE_IMPORTED_PD_SPEC
+    )
+    write_json(imported_path, snapshot)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, imported_path)
 
     review_path = paths.local_deviations_review_state(study_id, output_dir)
     validated_path = paths.local_deviations_validated_json(study_id, output_dir)

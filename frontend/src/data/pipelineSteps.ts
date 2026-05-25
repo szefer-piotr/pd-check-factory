@@ -303,7 +303,17 @@ export const IMPORT_PIPELINE_STEPS: PipelineStepDefinition[] = [
       {
         label: "Deviation context",
         path: "output/<study_id>/pipeline/coding/deviation_context/<deviation_id>.json",
-        description: "Per-deviation enriched grounding context."
+        description: "Per-deviation grounding context from import-ground step."
+      },
+      {
+        label: "Protocol enrichment",
+        path: "output/<study_id>/pipeline/coding/protocol_enrichment/<deviation_id>.json",
+        description: "Per-deviation parallel LLM enrichment (logic, caveats, critique)."
+      },
+      {
+        label: "Enriched review lane",
+        path: "output/<study_id>/pipeline/review/deviations_review_enriched_pd_spec.json",
+        description: "Imported PD spec rows after protocol enrichment."
       },
       {
         label: "Review state",

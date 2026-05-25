@@ -12,8 +12,17 @@ from typing import Any, Dict, List
 
 from openpyxl import Workbook, load_workbook
 
-from pdcheck_factory import blob_io, coding_workbook_export, extraction_resolve, paths, pipeline_v2, study_artifact_sync
+from pdcheck_factory import (
+    blob_io,
+    coding_workbook_export,
+    extraction_resolve,
+    paths,
+    pipeline_v2,
+    review_sources,
+    study_artifact_sync,
+)
 from pdcheck_factory.json_util import read_json, write_json
+from pdcheck_factory.pd_spec_import import parse_pd_spec_xlsx, programmable_from_manual_or_programmable
 
 
 class UiApiError(Exception):
@@ -63,7 +72,7 @@ STEP_DEPENDENCIES: Dict[str, List[str]] = {
     "extract-deviations": ["extract-rules", "acrf-summary-text"],
     "import-pd-spec-ground": ["index-protocol", "acrf-summary-text"],
     "import-pd-spec-map": [],
-    "import-pd-spec-enrich": [],
+    "import-pd-spec-enrich": ["index-protocol", "acrf-summary-text"],
     "merge-pd-spec-imports": ["import-pd-spec-ground"],
     "review-and-finalize": [],
 }
@@ -90,7 +99,7 @@ IMPORT_STEP_DEPENDENCIES: Dict[str, List[str]] = {
     "acrf-summary-text": ["acrf-split-toc"],
     "import-pd-spec-ground": ["index-protocol", "acrf-summary-text"],
     "import-pd-spec-map": [],
-    "import-pd-spec-enrich": [],
+    "import-pd-spec-enrich": ["index-protocol", "acrf-summary-text"],
     "merge-pd-spec-imports": ["import-pd-spec-ground"],
     "review-and-finalize": ["import-pd-spec-ground"],
 }
@@ -224,11 +233,23 @@ class UiStepService:
     def _pd_spec_map_done(self, study_id: str) -> bool:
         manifest = self._read_upload_manifest_obj(study_id)
         mode = str(manifest.get("pdSpecImportMode") or "")
-        return mode in {"map", "enrich_stub"} or self._has_import_snapshot(study_id)
+        return mode in {"map", "enrich_stub", "enrich"} or self._has_import_snapshot(study_id)
 
     def _pd_spec_enrich_done(self, study_id: str) -> bool:
         manifest = self._read_upload_manifest_obj(study_id)
-        return str(manifest.get("pdSpecImportMode") or "") == "enrich_stub"
+        mode = str(manifest.get("pdSpecImportMode") or "")
+        if mode == "enrich":
+            return True
+        if mode == "enrich_stub":
+            return True
+        enriched_path = paths.local_deviations_review_enriched_pd_spec_json(study_id, self.output_dir)
+        if enriched_path.is_file():
+            try:
+                obj = read_json(enriched_path)
+                return str(obj.get("pd_spec_import_mode") or "") == "enrich"
+            except (OSError, ValueError):
+                pass
+        return False
 
     def _step_artifact_complete(self, study_id: str, step_id: str) -> bool:
         p = self._study_paths(study_id)
@@ -331,6 +352,7 @@ class UiStepService:
         pd_spec_size: int | None = None,
         pd_spec_import_mode: str | None = None,
         coding_phase_accepted: bool | None = None,
+        review_display_source: str | None = None,
     ) -> Dict[str, Any]:
         existing = self._read_upload_manifest_obj(study_id)
         manifest = {
@@ -352,6 +374,9 @@ class UiStepService:
             "codingPhaseAccepted": coding_phase_accepted
             if coding_phase_accepted is not None
             else existing.get("codingPhaseAccepted", False),
+            "reviewDisplaySource": review_display_source
+            if review_display_source is not None
+            else existing.get("reviewDisplaySource"),
         }
         if coding_phase_accepted:
             manifest["codingPhaseAcceptedAt"] = datetime.now(timezone.utc).isoformat()
@@ -601,10 +626,98 @@ class UiStepService:
             "logs": list(state.get("logs", [])),
         }
 
-    def _load_state(self, study_id: str) -> Dict[str, Any]:
-        path = paths.local_deviations_review_state(study_id, self.output_dir)
-        if not path.is_file():
-            raise UiApiError("NOT_FOUND", f"Missing review state: {path}", 404)
+    def _resolve_review_source(self, study_id: str, review_source: str | None) -> str:
+        if review_source:
+            try:
+                return review_sources.normalize_review_source(review_source)
+            except ValueError as exc:
+                raise UiApiError("VALIDATION_ERROR", str(exc), 400) from exc
+        manifest = self._read_upload_manifest_obj(study_id)
+        stored = str(manifest.get("reviewDisplaySource") or "").strip()
+        if stored in review_sources.VALID_REVIEW_SOURCES:
+            return stored
+        return review_sources.REVIEW_SOURCE_GENERATED
+
+    def _latest_import_snapshot_obj(
+        self, study_id: str, *, pd_spec_import_mode: str | None
+    ) -> Dict[str, Any] | None:
+        review_dir = paths.local_review_dir(study_id, self.output_dir)
+        if not review_dir.is_dir():
+            return None
+        mode_filter = str(pd_spec_import_mode or "").strip()
+        for snapshot_path in sorted(review_dir.glob("deviations_import_*.json"), reverse=True):
+            try:
+                snapshot_obj = read_json(snapshot_path)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if mode_filter and str(snapshot_obj.get("pd_spec_import_mode", "")).strip() != mode_filter:
+                continue
+            return snapshot_obj
+        return None
+
+    def _seed_review_state_from_workbook(
+        self, study_id: str, review_source: str, *, pd_spec_import_mode: str
+    ) -> Dict[str, Any]:
+        from pdcheck_factory import import_grounding
+
+        workbook_bytes = self._read_pd_spec_workbook_bytes(study_id)
+        if not workbook_bytes:
+            return review_sources.empty_review_state(study_id)
+        raw_deviations = parse_pd_spec_xlsx(workbook_bytes)
+        snapshot = import_grounding.build_deviations_state(
+            study_id=study_id,
+            deviations=raw_deviations,
+            import_version="seed",
+            source_type="import",
+            pd_spec_import_mode=pd_spec_import_mode,
+        )
+        return snapshot
+
+    def _ensure_review_source_state(self, study_id: str, review_source: str) -> None:
+        path = review_sources.review_state_path(study_id, self.output_dir, review_source)
+        if path.is_file():
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+
+        if review_source == review_sources.REVIEW_SOURCE_GENERATED:
+            legacy = paths.local_deviations_review_state(study_id, self.output_dir)
+            parsed = paths.local_deviations_parsed_json(study_id, self.output_dir)
+            if legacy.is_file():
+                state_obj = read_json(legacy)
+            elif parsed.is_file():
+                state_obj = read_json(parsed)
+            else:
+                state_obj = review_sources.empty_review_state(study_id)
+            write_json(path, state_obj)
+            self._mirror_upload(study_id, path)
+            return
+
+        if review_source == review_sources.REVIEW_SOURCE_IMPORTED_PD_SPEC:
+            snapshot = self._latest_import_snapshot_obj(study_id, pd_spec_import_mode="map")
+            if snapshot is None:
+                snapshot = self._latest_import_snapshot_obj(study_id, pd_spec_import_mode="ground")
+            if snapshot is None:
+                snapshot = self._seed_review_state_from_workbook(
+                    study_id, review_source, pd_spec_import_mode="map"
+                )
+            write_json(path, snapshot)
+            self._mirror_upload(study_id, path)
+            return
+
+        snapshot = self._latest_import_snapshot_obj(study_id, pd_spec_import_mode="enrich")
+        if snapshot is None:
+            snapshot = self._latest_import_snapshot_obj(study_id, pd_spec_import_mode="enrich_stub")
+        if snapshot is None:
+            snapshot = self._seed_review_state_from_workbook(
+                study_id, review_source, pd_spec_import_mode="map"
+            )
+        write_json(path, snapshot)
+        self._mirror_upload(study_id, path)
+
+    def _load_state(self, study_id: str, review_source: str | None = None) -> Dict[str, Any]:
+        source = self._resolve_review_source(study_id, review_source)
+        self._ensure_review_source_state(study_id, source)
+        path = review_sources.review_state_path(study_id, self.output_dir, source)
         return read_json(path)
 
     def _load_pseudo_state(self, study_id: str) -> Dict[str, Any]:
@@ -711,20 +824,36 @@ class UiStepService:
         state_obj["deviations"] = rows
         return state_obj
 
-    def _persist_state(self, study_id: str, state_obj: Dict[str, Any], audit_obj: Dict[str, Any]) -> None:
+    def _persist_state(
+        self,
+        study_id: str,
+        state_obj: Dict[str, Any],
+        audit_obj: Dict[str, Any],
+        *,
+        review_source: str | None = None,
+    ) -> None:
+        source = self._resolve_review_source(study_id, review_source)
         state_obj["schema_version"] = state_obj.get("schema_version", "1.0.0")
         state_obj["study_id"] = study_id
         if not state_obj.get("generated_at"):
             state_obj["generated_at"] = datetime.now(timezone.utc).isoformat()
-        write_json(paths.local_deviations_review_state(study_id, self.output_dir), state_obj)
-        write_json(paths.local_deviations_validated_json(study_id, self.output_dir), state_obj)
+        per_source_path = review_sources.review_state_path(study_id, self.output_dir, source)
+        write_json(per_source_path, state_obj)
         write_json(paths.local_deviations_review_audit_json(study_id, self.output_dir), audit_obj)
-        self._mirror_upload(
-            study_id,
-            paths.local_deviations_review_state(study_id, self.output_dir),
-            paths.local_deviations_validated_json(study_id, self.output_dir),
+        mirror_paths: List[Path] = [
+            per_source_path,
             paths.local_deviations_review_audit_json(study_id, self.output_dir),
-        )
+        ]
+        if source == review_sources.REVIEW_SOURCE_GENERATED:
+            write_json(paths.local_deviations_review_state(study_id, self.output_dir), state_obj)
+            write_json(paths.local_deviations_validated_json(study_id, self.output_dir), state_obj)
+            mirror_paths.extend(
+                [
+                    paths.local_deviations_review_state(study_id, self.output_dir),
+                    paths.local_deviations_validated_json(study_id, self.output_dir),
+                ]
+            )
+        self._mirror_upload(study_id, *mirror_paths)
 
     def _audit(self, study_id: str, *, action: str, target_id: str, updated_rows: int) -> Dict[str, Any]:
         return {
@@ -809,12 +938,58 @@ class UiStepService:
             "paragraph_refs": self._normalize_refs(refs_value) if refs_value else [],
         }
 
+    def _load_protocol_enrichment_artifact(
+        self, study_id: str, deviation_id: str
+    ) -> Dict[str, Any] | None:
+        path = paths.local_protocol_enrichment_json(study_id, self.output_dir, deviation_id)
+        if not path.is_file():
+            return None
+        try:
+            return read_json(path)
+        except (OSError, ValueError):
+            return None
+
+    def _enrichment_api_fields(
+        self, study_id: str, row: Dict[str, Any], *, review_source: str
+    ) -> Dict[str, Any]:
+        from pdcheck_factory import review_sources
+
+        if review_source != review_sources.REVIEW_SOURCE_ENRICHED_PD_SPEC:
+            return {}
+        deviation_id = str(row.get("deviation_id", ""))
+        artifact = self._load_protocol_enrichment_artifact(study_id, deviation_id)
+        merged = (artifact or {}).get("merged") or {}
+        return {
+            "enrichment_status": str(
+                row.get("enrichment_status") or (artifact or {}).get("enrichment_status") or ""
+            ),
+            "enrichment_summary": str(
+                row.get("enrichment_summary") or (artifact or {}).get("enrichment_summary") or ""
+            ),
+            "assumptions": list(merged.get("assumptions") or []),
+            "caveats": list(merged.get("caveats") or []),
+            "data_gaps": list(merged.get("data_gaps") or []),
+            "weak_spots": list(merged.get("weak_spots") or []),
+            "suggested_changes": list(merged.get("suggested_changes") or []),
+            "protocol_conflicts": list(merged.get("protocol_conflicts") or []),
+            "programmability_risk": str(merged.get("programmability_risk") or ""),
+            "required_datasets": list(merged.get("required_datasets") or []),
+            "required_fields": list(merged.get("required_fields") or []),
+            "enrichment_errors": dict((artifact or {}).get("enrichment_errors") or {}),
+            "improved_pseudo_logic_plain_english": str(
+                merged.get("improved_pseudo_logic_plain_english") or row.get("pseudo_logic_seed") or ""
+            ),
+        }
+
     def _normalized_step7_row(
         self,
         row: Dict[str, Any],
         pseudo_by_dev: Dict[str, Dict[str, Any]],
         rule_by_id: Dict[str, Dict[str, Any]],
         paragraph_by_ref: Dict[str, Dict[str, Any]] | None = None,
+        *,
+        study_id: str = "",
+        review_source: str = "",
     ) -> Dict[str, Any]:
         deviation_id = str(row.get("deviation_id", ""))
         rule_id = str(row.get("rule_id", ""))
@@ -830,13 +1005,25 @@ class UiStepService:
         category = str(row.get("protocol_deviation_category", "")).strip()
         sub_category = str(row.get("protocol_deviation_sub_category", "")).strip()
         rule_title = str(rule.get("title", "")).strip()
-        if not rule_title and (category or sub_category):
-            rule_title = f"{category} / {sub_category}".strip(" /")
-        return {
+        entry_source = str(row.get("entry_source", "extracted"))
+        if not rule_title:
+            if sub_category:
+                rule_title = sub_category
+            elif category or sub_category:
+                rule_title = f"{category} / {sub_category}".strip(" /")
+        programmable = pseudo.get("programmable")
+        if programmable is None:
+            programmable = programmable_from_manual_or_programmable(
+                str(row.get("manual_or_programmable", "")).strip()
+            )
+        rule_text = str(rule.get("text") or rule.get("rule_text") or rule.get("description") or "")
+        if not rule_text and category and entry_source == "imported_pd_spec":
+            rule_text = category
+        result = {
             "rule_id": rule_id,
             "deviation_id": deviation_id,
             "rule_title": rule_title,
-            "rule_text": str(rule.get("text") or rule.get("rule_text") or rule.get("description") or ""),
+            "rule_text": rule_text,
             "deviation_text": str(row.get("text", "")),
             "paragraph_refs": refs,
             "paragraph_refs_text": ", ".join(refs),
@@ -845,10 +1032,13 @@ class UiStepService:
             "pseudo_logic": str(pseudo.get("pseudo_logic", "")),
             "status": str(row.get("status", "pending")),
             "dm_comment": str(row.get("dm_comment", "")),
-            "entry_source": str(row.get("entry_source", "extracted")),
-            "programmable": pseudo.get("programmable"),
+            "entry_source": entry_source,
+            "programmable": programmable,
             "programmability_note": str(pseudo.get("programmability_note", "")),
         }
+        if study_id and review_source:
+            result.update(self._enrichment_api_fields(study_id, row, review_source=review_source))
+        return result
 
     def list_studies(self) -> Dict[str, Any]:
         blob_service = blob_io.blob_service_from_env()
@@ -1778,6 +1968,7 @@ class UiStepService:
                 entry_mode=ENTRY_MODE_IMPORTED_PD_SPEC,
                 active_deviations_source=f"import_{version}",
                 pd_spec_import_mode="map",
+                review_display_source=review_sources.REVIEW_SOURCE_IMPORTED_PD_SPEC,
             )
             summary = (
                 f"Mapped {len(result.get('deviations', []))} imported deviations to review "
@@ -1791,22 +1982,23 @@ class UiStepService:
                     "Upload PD Specifications workbook before enrich.",
                     409,
                 )
-            result = pipeline_v2.run_import_pd_spec_map(
+            result = pipeline_v2.run_import_pd_spec_enrich(
                 study_id,
                 self.output_dir,
                 workbook_bytes=workbook_bytes,
-                pd_spec_import_mode="enrich_stub",
             )
             version = result.get("import_version", "")
             self._write_upload_manifest(
                 study_id,
                 entry_mode=ENTRY_MODE_IMPORTED_PD_SPEC,
                 active_deviations_source=f"import_{version}",
-                pd_spec_import_mode="enrich_stub",
+                pd_spec_import_mode="enrich",
+                review_display_source=review_sources.REVIEW_SOURCE_ENRICHED_PD_SPEC,
             )
+            count = result.get("deviation_count", len(result.get("deviations", [])))
             summary = (
-                f"Imported PD Specifications for review (enrich preview; version {version}, "
-                f"{len(result.get('deviations', []))} rows)."
+                f"Enriched {count} imported deviations with protocol and aCRF analysis "
+                f"(version {version})."
             )
         elif step_id == "merge-pd-spec-imports":
             merge_result = pipeline_v2.merge_imported_deviation_snapshots(study_id, self.output_dir)
@@ -1961,20 +2153,116 @@ class UiStepService:
             "stepStatuses": self._step_statuses(study_id),
         }
 
-    def get_step7_deviations(self, study_id: str) -> Dict[str, Any]:
+    def _pd_spec_workbook_available(self, study_id: str) -> bool:
+        if paths.local_pd_spec_workbook(study_id, self.output_dir).is_file():
+            return True
+        try:
+            return bool(self._read_pd_spec_workbook_bytes(study_id))
+        except Exception:  # noqa: BLE001
+            return False
+
+    def get_step7_review_sources(self, study_id: str) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
-        state_obj = self._load_state(study_id)
+        manifest = self._read_upload_manifest_obj(study_id)
+        selected = self._resolve_review_source(study_id, None)
+        sources: List[Dict[str, Any]] = []
+
+        generated_path = paths.local_deviations_parsed_json(study_id, self.output_dir)
+        if generated_path.is_file():
+            self._ensure_review_source_state(study_id, review_sources.REVIEW_SOURCE_GENERATED)
+            gen_state = read_json(
+                review_sources.review_state_path(
+                    study_id, self.output_dir, review_sources.REVIEW_SOURCE_GENERATED
+                )
+            )
+            sources.append(
+                {
+                    "key": review_sources.REVIEW_SOURCE_GENERATED,
+                    "label": review_sources.REVIEW_SOURCE_LABELS[review_sources.REVIEW_SOURCE_GENERATED],
+                    "available": True,
+                    "rowCount": len(gen_state.get("deviations", [])),
+                }
+            )
+
+        if self._pd_spec_workbook_available(study_id):
+            self._ensure_review_source_state(study_id, review_sources.REVIEW_SOURCE_IMPORTED_PD_SPEC)
+            imp_state = read_json(
+                review_sources.review_state_path(
+                    study_id, self.output_dir, review_sources.REVIEW_SOURCE_IMPORTED_PD_SPEC
+                )
+            )
+            sources.append(
+                {
+                    "key": review_sources.REVIEW_SOURCE_IMPORTED_PD_SPEC,
+                    "label": review_sources.REVIEW_SOURCE_LABELS[
+                        review_sources.REVIEW_SOURCE_IMPORTED_PD_SPEC
+                    ],
+                    "available": True,
+                    "rowCount": len(imp_state.get("deviations", [])),
+                }
+            )
+
+        if self._pd_spec_enrich_done(study_id):
+            self._ensure_review_source_state(study_id, review_sources.REVIEW_SOURCE_ENRICHED_PD_SPEC)
+            enr_state = read_json(
+                review_sources.review_state_path(
+                    study_id, self.output_dir, review_sources.REVIEW_SOURCE_ENRICHED_PD_SPEC
+                )
+            )
+            sources.append(
+                {
+                    "key": review_sources.REVIEW_SOURCE_ENRICHED_PD_SPEC,
+                    "label": review_sources.REVIEW_SOURCE_LABELS[
+                        review_sources.REVIEW_SOURCE_ENRICHED_PD_SPEC
+                    ],
+                    "available": True,
+                    "rowCount": len(enr_state.get("deviations", [])),
+                }
+            )
+
+        available_keys = {item["key"] for item in sources}
+        if selected not in available_keys and sources:
+            selected = str(sources[0]["key"])
+
+        return {
+            "studyId": study_id,
+            "sources": sources,
+            "selectedSource": selected,
+            "stepStatuses": self._step_statuses(study_id),
+        }
+
+    def set_step7_review_display_source(self, study_id: str, review_source: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        source = self._resolve_review_source(study_id, review_source)
+        self._ensure_review_source_state(study_id, source)
+        self._write_upload_manifest(study_id, review_display_source=source)
+        payload = self.get_step7_review_sources(study_id)
+        payload["selectedSource"] = source
+        return payload
+
+    def get_step7_deviations(self, study_id: str, *, review_source: str | None = None) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        source = self._resolve_review_source(study_id, review_source)
+        state_obj = self._load_state(study_id, source)
         pseudo_obj = self._load_pseudo_state(study_id)
         rules_obj = self._load_rules(study_id)
         paragraph_by_ref = self._load_paragraph_index(study_id)
         pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in pseudo_obj.get("items", [])}
         rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
         rows = [
-            self._normalized_step7_row(row, pseudo_by_dev, rule_by_id, paragraph_by_ref)
+            self._normalized_step7_row(
+                row,
+                pseudo_by_dev,
+                rule_by_id,
+                paragraph_by_ref,
+                study_id=study_id,
+                review_source=source,
+            )
             for row in state_obj.get("deviations", [])
         ]
         return {
             "studyId": study_id,
+            "reviewSource": source,
             "columns": [
                 "rule_id",
                 "deviation_id",
@@ -1987,22 +2275,38 @@ class UiStepService:
             "stepStatuses": self._step_statuses(study_id),
         }
 
-    def create_step7_deviation(self, study_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def create_step7_deviation(
+        self, study_id: str, payload: Dict[str, Any], *, review_source: str | None = None
+    ) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
+        source = self._resolve_review_source(study_id, review_source)
         new_row = self._normalize_deviation_payload(payload, default_source="imported")
-        state_obj = self._load_state(study_id)
+        state_obj = self._load_state(study_id, source)
         rows = list(state_obj.get("deviations", []))
         if any(str(row.get("deviation_id", "")) == new_row["deviation_id"] for row in rows):
             raise UiApiError("VALIDATION_ERROR", f"Duplicate deviation_id '{new_row['deviation_id']}'", 400)
         rows.append(new_row)
         state_obj["deviations"] = rows
-        self._persist_state(study_id, state_obj, self._audit(study_id, action="create_deviation", target_id=new_row["deviation_id"], updated_rows=1))
-        return self.get_step7_deviations(study_id)
+        self._persist_state(
+            study_id,
+            state_obj,
+            self._audit(study_id, action="create_deviation", target_id=new_row["deviation_id"], updated_rows=1),
+            review_source=source,
+        )
+        return self.get_step7_deviations(study_id, review_source=source)
 
-    def patch_step7_deviation_fields(self, study_id: str, deviation_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def patch_step7_deviation_fields(
+        self,
+        study_id: str,
+        deviation_id: str,
+        payload: Dict[str, Any],
+        *,
+        review_source: str | None = None,
+    ) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
+        source = self._resolve_review_source(study_id, review_source)
         dev_id = str(deviation_id).strip()
-        state_obj = self._load_state(study_id)
+        state_obj = self._load_state(study_id, source)
         rows = list(state_obj.get("deviations", []))
         row = next((item for item in rows if str(item.get("deviation_id", "")) == dev_id), None)
         if row is None:
@@ -2027,19 +2331,32 @@ class UiStepService:
         normalized = self._normalize_deviation_payload(merged, default_source=str(row.get("entry_source", "extracted")))
         normalized["deviation_id"] = dev_id
         state_obj = self._replace_row(state_obj, normalized)
-        self._persist_state(study_id, state_obj, self._audit(study_id, action="update_deviation", target_id=dev_id, updated_rows=1))
-        return self._single_step7_deviation_response(study_id, normalized)
+        self._persist_state(
+            study_id,
+            state_obj,
+            self._audit(study_id, action="update_deviation", target_id=dev_id, updated_rows=1),
+            review_source=source,
+        )
+        return self._single_step7_deviation_response(study_id, normalized, review_source=source)
 
-    def delete_step7_deviation(self, study_id: str, deviation_id: str) -> Dict[str, Any]:
+    def delete_step7_deviation(
+        self, study_id: str, deviation_id: str, *, review_source: str | None = None
+    ) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
+        source = self._resolve_review_source(study_id, review_source)
         dev_id = str(deviation_id).strip()
-        state_obj = self._load_state(study_id)
+        state_obj = self._load_state(study_id, source)
         rows = list(state_obj.get("deviations", []))
         next_rows = [row for row in rows if str(row.get("deviation_id", "")) != dev_id]
         if len(next_rows) == len(rows):
             raise UiApiError("NOT_FOUND", f"Unknown deviationId '{dev_id}'", 404)
         state_obj["deviations"] = next_rows
-        self._persist_state(study_id, state_obj, self._audit(study_id, action="delete_deviation", target_id=dev_id, updated_rows=1))
+        self._persist_state(
+            study_id,
+            state_obj,
+            self._audit(study_id, action="delete_deviation", target_id=dev_id, updated_rows=1),
+            review_source=source,
+        )
 
         pseudo_obj = self._load_pseudo_state(study_id)
         pseudo_items = [item for item in pseudo_obj.get("items", []) if str(item.get("deviation_id", "")) != dev_id]
@@ -2052,9 +2369,11 @@ class UiStepService:
                 paths.local_pseudo_logic_review_state(study_id, self.output_dir),
                 paths.local_pseudo_logic_validated_json(study_id, self.output_dir),
             )
-        return self.get_step7_deviations(study_id)
+        return self.get_step7_deviations(study_id, review_source=source)
 
-    def import_step7_deviations_xlsx(self, study_id: str, workbook_bytes: bytes) -> Dict[str, Any]:
+    def import_step7_deviations_xlsx(
+        self, study_id: str, workbook_bytes: bytes, *, review_source: str | None = None
+    ) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         if not workbook_bytes:
             raise UiApiError("VALIDATION_ERROR", "Workbook must not be empty", 400)
@@ -2099,7 +2418,8 @@ class UiStepService:
         if not imported:
             raise UiApiError("VALIDATION_ERROR", "Workbook did not contain any deviation rows", 400)
 
-        state_obj = self._load_state(study_id)
+        source = self._resolve_review_source(study_id, review_source)
+        state_obj = self._load_state(study_id, source)
         existing_ids = {str(row.get("deviation_id", "")) for row in state_obj.get("deviations", [])}
         imported_ids = [row["deviation_id"] for row in imported]
         duplicate_ids = sorted({dev_id for dev_id in imported_ids if imported_ids.count(dev_id) > 1 or dev_id in existing_ids})
@@ -2107,8 +2427,13 @@ class UiStepService:
             raise UiApiError("VALIDATION_ERROR", f"Duplicate deviation_id values: {', '.join(duplicate_ids)}", 400)
 
         state_obj["deviations"] = list(state_obj.get("deviations", [])) + imported
-        self._persist_state(study_id, state_obj, self._audit(study_id, action="import_deviations", target_id="xlsx", updated_rows=len(imported)))
-        payload = self.get_step7_deviations(study_id)
+        self._persist_state(
+            study_id,
+            state_obj,
+            self._audit(study_id, action="import_deviations", target_id="xlsx", updated_rows=len(imported)),
+            review_source=source,
+        )
+        payload = self.get_step7_deviations(study_id, review_source=source)
         payload["imported"] = len(imported)
         return payload
 
@@ -2134,9 +2459,9 @@ class UiStepService:
             return "false"
         return ""
 
-    def export_step7_deviations_xlsx(self, study_id: str) -> Dict[str, Any]:
+    def export_step7_deviations_xlsx(self, study_id: str, *, review_source: str | None = None) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
-        payload = self.get_step7_deviations(study_id)
+        payload = self.get_step7_deviations(study_id, review_source=review_source)
         rows = list(payload.get("rows", []))
         rules_obj = self._load_rules(study_id)
         rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
@@ -2204,9 +2529,11 @@ class UiStepService:
             "content": content,
         }
 
-    def export_step7_deviations_coding_xlsx(self, study_id: str) -> Dict[str, Any]:
+    def export_step7_deviations_coding_xlsx(
+        self, study_id: str, *, review_source: str | None = None
+    ) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
-        payload = self.get_step7_deviations(study_id)
+        payload = self.get_step7_deviations(study_id, review_source=review_source)
         rows = list(payload.get("rows", []))
         exported_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
         timestamp_slug = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -2232,15 +2559,19 @@ class UiStepService:
             "content": content,
         }
 
-    def _single_step7_deviation_response(self, study_id: str, row: Dict[str, Any]) -> Dict[str, Any]:
+    def _single_step7_deviation_response(
+        self, study_id: str, row: Dict[str, Any], *, review_source: str | None = None
+    ) -> Dict[str, Any]:
         pseudo_obj = self._load_pseudo_state(study_id)
         rules_obj = self._load_rules(study_id)
         paragraph_by_ref = self._load_paragraph_index(study_id)
         pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in pseudo_obj.get("items", [])}
         rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
         dev_id = str(row.get("deviation_id", ""))
+        source = self._resolve_review_source(study_id, review_source)
         return {
             "studyId": study_id,
+            "reviewSource": source,
             "deviationId": dev_id,
             "row": self._normalized_step7_row(row, pseudo_by_dev, rule_by_id, paragraph_by_ref),
             "stepStatuses": self._step_statuses(study_id),
@@ -2274,10 +2605,13 @@ class UiStepService:
         self._save_rules(study_id, rules_obj)
         return {"studyId": study_id, "rule": updated, "stepStatuses": self._step_statuses(study_id)}
 
-    def delete_step7_rule(self, study_id: str, rule_id: str) -> Dict[str, Any]:
+    def delete_step7_rule(
+        self, study_id: str, rule_id: str, *, review_source: str | None = None
+    ) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         rid = str(rule_id).strip()
-        state_obj = self._load_state(study_id)
+        source = self._resolve_review_source(study_id, review_source)
+        state_obj = self._load_state(study_id, source)
         if any(str(row.get("rule_id", "")) == rid for row in state_obj.get("deviations", [])):
             raise UiApiError("VALIDATION_ERROR", f"Rule '{rid}' is used by one or more deviations", 400)
         rules_obj = self._load_rules(study_id)
@@ -2310,14 +2644,16 @@ class UiStepService:
         dm_comment: str,
         run_revision_cycle: bool = True,
         also_generate_pseudo: bool = False,
+        review_source: str | None = None,
     ) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
+        source = self._resolve_review_source(study_id, review_source)
         dev_id = str(deviation_id).strip()
         if not dev_id:
             raise UiApiError("VALIDATION_ERROR", "deviationId is required", 400)
         comment = str(dm_comment or "")
 
-        state_obj = self._load_state(study_id)
+        state_obj = self._load_state(study_id, source)
         rows = list(state_obj.get("deviations", []))
         row = next((item for item in rows if str(item.get("deviation_id", "")) == dev_id), None)
         if row is None:
@@ -2351,7 +2687,7 @@ class UiStepService:
             raise UiApiError("REFINE_FAILED", str(exc), 500) from exc
 
         state_obj = self._replace_row(state_obj, revised_row)
-        self._persist_state(study_id, state_obj, audit)
+        self._persist_state(study_id, state_obj, audit, review_source=source)
         self._save_chat_state(study_id, chat_obj)
 
         pseudo_obj = self._load_pseudo_state(study_id)
@@ -2390,6 +2726,7 @@ class UiStepService:
 
         return {
             "studyId": study_id,
+            "reviewSource": source,
             "deviationId": dev_id,
             "row": self._normalized_step7_row(revised_row, pseudo_by_dev, rule_by_id),
             "messages": list(chat_obj.get("deviations", {}).get(dev_id, {}).get("messages", []))[-25:],
@@ -2407,14 +2744,16 @@ class UiStepService:
         deviation_id: str,
         status: str,
         dm_comment: str | None = None,
+        review_source: str | None = None,
     ) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
+        source = self._resolve_review_source(study_id, review_source)
         dev_id = str(deviation_id).strip()
         next_status = str(status).strip().lower()
         if next_status not in {"pending", "to_review", "accepted", "rejected"}:
             raise UiApiError("VALIDATION_ERROR", "Invalid status value", 400)
 
-        state_obj = self._load_state(study_id)
+        state_obj = self._load_state(study_id, source)
         row = next((item for item in state_obj.get("deviations", []) if str(item.get("deviation_id", "")) == dev_id), None)
         if row is None:
             raise UiApiError("NOT_FOUND", f"Unknown deviationId '{dev_id}'", 404)
@@ -2431,7 +2770,7 @@ class UiStepService:
             "run_revision_cycle": False,
         }
         state_obj = self._replace_row(state_obj, updated)
-        self._persist_state(study_id, state_obj, audit)
+        self._persist_state(study_id, state_obj, audit, review_source=source)
 
         pseudo_obj = self._load_pseudo_state(study_id)
         rules_obj = read_json(paths.local_rules_parsed_json(study_id, self.output_dir))
@@ -2439,20 +2778,22 @@ class UiStepService:
         rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
         return {
             "studyId": study_id,
+            "reviewSource": source,
             "deviationId": dev_id,
             "row": self._normalized_step7_row(updated, pseudo_by_dev, rule_by_id),
             "stepStatuses": self._step_statuses(study_id),
         }
 
     def generate_step7_pseudo_logic_for_deviation(
-        self, study_id: str, deviation_id: str
+        self, study_id: str, deviation_id: str, *, review_source: str | None = None
     ) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
+        source = self._resolve_review_source(study_id, review_source)
         dev_id = str(deviation_id).strip()
         if not dev_id:
             raise UiApiError("VALIDATION_ERROR", "deviationId is required", 400)
 
-        state_obj = self._load_state(study_id)
+        state_obj = self._load_state(study_id, source)
         row = next(
             (item for item in state_obj.get("deviations", []) if str(item.get("deviation_id", "")) == dev_id),
             None,
@@ -2502,14 +2843,16 @@ class UiStepService:
         rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
         return {
             "studyId": study_id,
+            "reviewSource": source,
             "deviationId": dev_id,
             "row": self._normalized_step7_row(row, pseudo_by_dev, rule_by_id),
             "stepStatuses": self._step_statuses(study_id),
         }
 
-    def accept_step7_deviations_bulk(self, study_id: str) -> Dict[str, Any]:
+    def accept_step7_deviations_bulk(self, study_id: str, *, review_source: str | None = None) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
-        state_obj = self._load_state(study_id)
+        source = self._resolve_review_source(study_id, review_source)
+        state_obj = self._load_state(study_id, source)
         rows = list(state_obj.get("deviations", []))
         accepted_count = 0
         for row in rows:
@@ -2528,6 +2871,7 @@ class UiStepService:
             ]
             return {
                 "studyId": study_id,
+                "reviewSource": source,
                 "accepted": 0,
                 "rows": normalized,
                 "stepStatuses": self._step_statuses(study_id),
@@ -2538,6 +2882,7 @@ class UiStepService:
             study_id,
             state_obj,
             self._audit(study_id, action="accept_all_deviations", target_id="bulk", updated_rows=accepted_count),
+            review_source=source,
         )
 
         pseudo_obj = self._load_pseudo_state(study_id)
@@ -2549,26 +2894,36 @@ class UiStepService:
         ]
         return {
             "studyId": study_id,
+            "reviewSource": source,
             "accepted": accepted_count,
             "rows": normalized,
             "stepStatuses": self._step_statuses(study_id),
         }
 
-    def generate_step7_pseudo_logic_bulk(self, study_id: str) -> Dict[str, Any]:
+    def generate_step7_pseudo_logic_bulk(self, study_id: str, *, review_source: str | None = None) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
+        source = self._resolve_review_source(study_id, review_source)
 
         validated_path = paths.local_deviations_validated_json(study_id, self.output_dir)
-        if not validated_path.exists():
-            review_state_path = paths.local_deviations_review_state(study_id, self.output_dir)
-            if not review_state_path.exists():
-                raise UiApiError(
-                    "STEP_BLOCKED",
-                    "Missing deviation review state; run extract-deviations first.",
-                    409,
-                )
-            validated_path.parent.mkdir(parents=True, exist_ok=True)
-            validated_path.write_text(review_state_path.read_text(encoding="utf-8"), encoding="utf-8")
-            self._mirror_upload(study_id, validated_path)
+        if source == review_sources.REVIEW_SOURCE_GENERATED:
+            generated_review = review_sources.review_state_path(
+                study_id, self.output_dir, review_sources.REVIEW_SOURCE_GENERATED
+            )
+            if not validated_path.exists():
+                if not generated_review.is_file():
+                    legacy = paths.local_deviations_review_state(study_id, self.output_dir)
+                    if not legacy.is_file():
+                        raise UiApiError(
+                            "STEP_BLOCKED",
+                            "Missing deviation review state; run extract-deviations first.",
+                            409,
+                        )
+                    seed_path = legacy
+                else:
+                    seed_path = generated_review
+                validated_path.parent.mkdir(parents=True, exist_ok=True)
+                validated_path.write_text(seed_path.read_text(encoding="utf-8"), encoding="utf-8")
+                self._mirror_upload(study_id, validated_path)
 
         try:
             pseudo_out = pipeline_v2.step8_generate_pseudo_logic(study_id, self.output_dir)
@@ -2576,13 +2931,14 @@ class UiStepService:
             raise UiApiError("PSEUDO_LOGIC_FAILED", str(exc), 500) from exc
 
         items = list(pseudo_out.get("items", []))
-        state_obj = self._load_state(study_id)
+        state_obj = self._load_state(study_id, source)
         rules_obj = read_json(paths.local_rules_parsed_json(study_id, self.output_dir))
         pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in items}
         rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
         rows = [self._normalized_step7_row(row, pseudo_by_dev, rule_by_id) for row in state_obj.get("deviations", [])]
         return {
             "studyId": study_id,
+            "reviewSource": source,
             "generated": len(items),
             "rows": rows,
             "stepStatuses": self._step_statuses(study_id),

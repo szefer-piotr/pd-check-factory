@@ -86,6 +86,46 @@ class PromptTemplateTests(unittest.TestCase):
         self.assertIn("Additional instructions", rendered)
         self.assertIn("Emphasize dosing rules.", rendered)
 
+    def test_protocol_enrich_logic_user_formats(self) -> None:
+        template = load_prompt("protocol_enrich_logic_user")
+        rendered = template.format(
+            study_id="study-x",
+            deviation_id="dev-import-1",
+            protocol_deviation_category="Visit",
+            protocol_deviation_sub_category="Timing",
+            classification="Major",
+            deviation_text="Out of window",
+            pseudo_logic_seed="",
+            paragraph_candidates="p1: text",
+            acrf_summary="{}",
+        )
+        self.assertIn("Current deviation text", rendered)
+        self.assertIn("p1: text", rendered)
+
+    def test_protocol_enrich_caveats_user_formats(self) -> None:
+        template = load_prompt("protocol_enrich_caveats_user")
+        rendered = template.format(
+            study_id="study-x",
+            deviation_id="dev-import-1",
+            deviation_text="Out of window",
+            paragraph_candidates="p1: text",
+            acrf_summary="{}",
+        )
+        self.assertIn("Merged aCRF summary", rendered)
+
+    def test_protocol_enrich_critique_user_formats(self) -> None:
+        template = load_prompt("protocol_enrich_critique_user")
+        rendered = template.format(
+            study_id="study-x",
+            deviation_id="dev-import-1",
+            protocol_deviation_category="Visit",
+            protocol_deviation_sub_category="Timing",
+            deviation_text="Out of window",
+            paragraph_candidates="p1: text",
+            acrf_summary="{}",
+        )
+        self.assertIn("protocol_deviation_category", rendered)
+
 
 if __name__ == "__main__":
     unittest.main()

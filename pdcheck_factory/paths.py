@@ -242,6 +242,18 @@ def local_deviations_review_state(study_id: str, output_dir: Path) -> Path:
     return local_review_dir(study_id, output_dir) / "deviations_review_state.json"
 
 
+def local_deviations_review_generated_json(study_id: str, output_dir: Path) -> Path:
+    return local_review_dir(study_id, output_dir) / "deviations_review_generated.json"
+
+
+def local_deviations_review_imported_pd_spec_json(study_id: str, output_dir: Path) -> Path:
+    return local_review_dir(study_id, output_dir) / "deviations_review_imported_pd_spec.json"
+
+
+def local_deviations_review_enriched_pd_spec_json(study_id: str, output_dir: Path) -> Path:
+    return local_review_dir(study_id, output_dir) / "deviations_review_enriched_pd_spec.json"
+
+
 def local_deviations_validated_json(study_id: str, output_dir: Path) -> Path:
     return local_review_dir(study_id, output_dir) / "deviations_validated.json"
 
@@ -320,3 +332,12 @@ def local_deviation_context_dir(study_id: str, output_dir: Path) -> Path:
 def local_deviation_context_json(study_id: str, output_dir: Path, deviation_id: str) -> Path:
     safe = deviation_id.replace("/", "_").replace("\\", "_")
     return local_deviation_context_dir(study_id, output_dir) / f"{safe}.json"
+
+
+def local_protocol_enrichment_dir(study_id: str, output_dir: Path) -> Path:
+    return local_pipeline_v2_dir(study_id, output_dir) / "coding" / "protocol_enrichment"
+
+
+def local_protocol_enrichment_json(study_id: str, output_dir: Path, deviation_id: str) -> Path:
+    safe = deviation_id.replace("/", "_").replace("\\", "_")
+    return local_protocol_enrichment_dir(study_id, output_dir) / f"{safe}.json"

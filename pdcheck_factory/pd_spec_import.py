@@ -44,8 +44,44 @@ def stable_deviation_id(category: str, sub_category: str, description: str) -> s
     return f"dev-import-{digest}"
 
 
+def stable_pd_spec_rule_id(category: str, sub_category: str) -> str:
+    """Stable rule id per PD spec category + sub-category (protocol deviation sub-category)."""
+    normalized = "|".join(part.strip().lower() for part in (category, sub_category))
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:12]
+    return f"pd-spec-rule-{digest}"
+
+
 def synthetic_rule_id(deviation_id: str) -> str:
+    """Deprecated: per-deviation rule id; kept for tests referencing old behavior."""
     return f"pd-spec-{deviation_id}"
+
+
+def programmable_from_manual_or_programmable(value: str) -> bool | None:
+    text = str(value or "").strip().lower()
+    if text == "manual":
+        return False
+    if text == "programmable":
+        return True
+    return None
+
+
+def build_pd_spec_deviation_text(row_values: Mapping[str, str]) -> str:
+    """Compose display text from PD spec columns (description + supplemental fields)."""
+    parts: List[str] = []
+    description = str(row_values.get("text", "") or "").strip()
+    if description:
+        parts.append(description)
+    for label, key in (
+        ("Additional information", "additional_information"),
+        ("Data source", "data_source"),
+        ("Programming information", "pseudo_logic_seed"),
+        ("Programmer comments", "programmer_comments"),
+        ("Reviewer comments", "reviewer_comments"),
+    ):
+        value = str(row_values.get(key, "") or "").strip()
+        if value:
+            parts.append(f"{label}: {value}")
+    return "\n\n".join(parts)
 
 
 def _build_header_map(headers: Tuple[Any, ...]) -> Dict[str, int]:
@@ -87,14 +123,15 @@ def map_pd_spec_row_to_deviation(
         )
 
     deviation_id = stable_deviation_id(category, sub_category, text)
-    rule_id = synthetic_rule_id(deviation_id)
-
+    rule_id = stable_pd_spec_rule_id(category, sub_category)
+    composite_text = build_pd_spec_deviation_text(row_values)
     data_support = str(row_values.get("data_source", "") or "").strip()
+    manual_prog = str(row_values.get("manual_or_programmable", "") or "").strip()
 
-    return {
+    row: Dict[str, Any] = {
         "deviation_id": deviation_id,
         "rule_id": rule_id,
-        "text": text,
+        "text": composite_text,
         "paragraph_refs": [],
         "data_support_note": data_support,
         "status": "pending",
@@ -104,7 +141,7 @@ def map_pd_spec_row_to_deviation(
         "protocol_deviation_sub_category": sub_category,
         "classification": str(row_values.get("classification", "") or "").strip(),
         "data_source": data_support,
-        "manual_or_programmable": str(row_values.get("manual_or_programmable", "") or "").strip(),
+        "manual_or_programmable": manual_prog,
         "programming_status": str(row_values.get("programming_status", "") or "").strip(),
         "programmer_comments": str(row_values.get("programmer_comments", "") or "").strip(),
         "reviewer_comments": str(row_values.get("reviewer_comments", "") or "").strip(),
@@ -114,6 +151,7 @@ def map_pd_spec_row_to_deviation(
         "pseudo_logic_seed": str(row_values.get("pseudo_logic_seed", "") or "").strip(),
         "grounding_error": "",
     }
+    return row
 
 
 def _unique_column_headers(raw_headers: Tuple[Any, ...]) -> List[str]:

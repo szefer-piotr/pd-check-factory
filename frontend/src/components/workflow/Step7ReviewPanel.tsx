@@ -6,16 +6,19 @@ import {
   deleteStep7Rule,
   acceptStep7DeviationsAll,
   fetchStep7Deviations,
+  fetchStep7ReviewSources,
   generateStep7PseudoLogicAll,
   exportStep7DeviationsWorkbook,
   exportStep7DeviationsCodingWorkbook,
   importStep7DeviationsWorkbook,
+  setStep7ReviewDisplaySource,
   type Step7DeviationPayload,
   type Step7DeviationRow,
+  type Step7ReviewSource,
+  type Step7ReviewSourceOption,
   type Step7RulePayload,
   type StepStatus
 } from "../../services/stepApi";
-import { SpecificationPreviewPanel } from "./SpecificationPreviewPanel";
 import { Step7DeviationDrawer } from "./Step7DeviationDrawer";
 import { Step7RuleGroups, groupDeviationsByRule } from "./Step7RuleGroups";
 
@@ -79,6 +82,9 @@ export function Step7ReviewPanel({
   const [deviationForm, setDeviationForm] = useState<Step7DeviationPayload>(EMPTY_DEVIATION_FORM);
   const [ruleForm, setRuleForm] = useState<Step7RulePayload>(EMPTY_RULE_FORM);
   const [workbookFile, setWorkbookFile] = useState<File | null>(null);
+  const [reviewSources, setReviewSources] = useState<Step7ReviewSourceOption[]>([]);
+  const [reviewSource, setReviewSource] = useState<Step7ReviewSource>("generated");
+  const [sourcesLoading, setSourcesLoading] = useState(false);
 
   const selectedRow = useMemo(
     () => rows.find((row) => row.deviation_id === selectedId) ?? null,
@@ -106,26 +112,54 @@ export function Step7ReviewPanel({
       : "";
 
   useEffect(() => {
-    async function loadRows(): Promise<void> {
+    async function loadSources(): Promise<void> {
       if (!studyId.trim()) {
+        setReviewSources([]);
         setRows([]);
         return;
       }
-      setIsLoading(true);
+      setSourcesLoading(true);
       setError("");
       try {
-        const response = await fetchStep7Deviations(studyId.trim());
-        setRows(response.rows);
-        onStepStatusesChange(response.stepStatuses);
+        const sourcesResponse = await fetchStep7ReviewSources(studyId.trim());
+        setReviewSources(sourcesResponse.sources);
+        const selected = sourcesResponse.selectedSource;
+        setReviewSource(selected);
+        setIsLoading(true);
+        const deviationsResponse = await fetchStep7Deviations(studyId.trim(), selected);
+        setRows(deviationsResponse.rows);
+        onStepStatusesChange(deviationsResponse.stepStatuses);
       } catch (loadError) {
+        setReviewSources([]);
         setRows([]);
-        setError(loadError instanceof Error ? loadError.message : "Unable to load deviations.");
+        setError(loadError instanceof Error ? loadError.message : "Unable to load review sources.");
       } finally {
+        setSourcesLoading(false);
         setIsLoading(false);
       }
     }
-    void loadRows();
+    void loadSources();
   }, [studyId, onStepStatusesChange]);
+
+  async function handleReviewSourceChange(nextSource: Step7ReviewSource): Promise<void> {
+    if (!studyId.trim() || nextSource === reviewSource) {
+      return;
+    }
+    setReviewSource(nextSource);
+    setSelectedId(null);
+    setIsLoading(true);
+    setError("");
+    try {
+      await setStep7ReviewDisplaySource(studyId.trim(), nextSource);
+      const response = await fetchStep7Deviations(studyId.trim(), nextSource);
+      setRows(response.rows);
+      onStepStatusesChange(response.stepStatuses);
+    } catch (switchError) {
+      setError(switchError instanceof Error ? switchError.message : "Unable to switch review source.");
+    } finally {
+      setIsLoading(false);
+    }
+  }
 
   function handleRowUpdated(row: Step7DeviationRow): void {
     setRows((previous) => previous.map((item) => (item.deviation_id === row.deviation_id ? row : item)));
@@ -139,7 +173,7 @@ export function Step7ReviewPanel({
     setError("");
     setExportStatus("");
     try {
-      const result = await exportStep7DeviationsWorkbook(studyId.trim());
+      const result = await exportStep7DeviationsWorkbook(studyId.trim(), reviewSource);
       const url = URL.createObjectURL(result.blob);
       const anchor = document.createElement("a");
       anchor.href = url;
@@ -162,7 +196,7 @@ export function Step7ReviewPanel({
     setError("");
     setExportCodingStatus("");
     try {
-      const result = await exportStep7DeviationsCodingWorkbook(studyId.trim());
+      const result = await exportStep7DeviationsCodingWorkbook(studyId.trim(), reviewSource);
       const url = URL.createObjectURL(result.blob);
       const anchor = document.createElement("a");
       anchor.href = url;
@@ -182,7 +216,7 @@ export function Step7ReviewPanel({
     setError("");
     setAcceptStatus("");
     try {
-      const result = await acceptStep7DeviationsAll(studyId.trim());
+      const result = await acceptStep7DeviationsAll(studyId.trim(), reviewSource);
       setRows(result.rows);
       onStepStatusesChange(result.stepStatuses);
       setAcceptStatus(
@@ -202,7 +236,7 @@ export function Step7ReviewPanel({
     setError("");
     setBulkStatus("");
     try {
-      const result = await generateStep7PseudoLogicAll(studyId.trim());
+      const result = await generateStep7PseudoLogicAll(studyId.trim(), reviewSource);
       setRows(result.rows);
       onStepStatusesChange(result.stepStatuses);
       setBulkStatus(`Generated pseudo logic for ${result.generated} accepted deviation${result.generated === 1 ? "" : "s"}.`);
@@ -217,7 +251,7 @@ export function Step7ReviewPanel({
     setError("");
     setMutationStatus("");
     try {
-      const result = await createStep7Deviation(studyId.trim(), deviationForm);
+      const result = await createStep7Deviation(studyId.trim(), deviationForm, reviewSource);
       setRows(result.rows);
       onStepStatusesChange(result.stepStatuses);
       setDeviationForm(EMPTY_DEVIATION_FORM);
@@ -249,7 +283,7 @@ export function Step7ReviewPanel({
     setError("");
     setMutationStatus("");
     try {
-      const result = await importStep7DeviationsWorkbook(studyId.trim(), workbookFile);
+      const result = await importStep7DeviationsWorkbook(studyId.trim(), workbookFile, reviewSource);
       setRows(result.rows);
       onStepStatusesChange(result.stepStatuses);
       setWorkbookFile(null);
@@ -266,7 +300,7 @@ export function Step7ReviewPanel({
     }
     setError("");
     try {
-      const result = await deleteStep7Deviation(studyId.trim(), selectedRow.deviation_id);
+      const result = await deleteStep7Deviation(studyId.trim(), selectedRow.deviation_id, reviewSource);
       setRows(result.rows);
       onStepStatusesChange(result.stepStatuses);
       setSelectedId(null);
@@ -290,9 +324,35 @@ export function Step7ReviewPanel({
     }
   }
 
+  const activeSourceMeta = reviewSources.find((source) => source.key === reviewSource);
+
   return (
     <section className="step7-panel workflow-panel" aria-label="Deviation review">
-      <SpecificationPreviewPanel studyId={studyId} />
+      {reviewSources.length > 0 ? (
+        <label className="control-group" htmlFor="step7-review-source">
+          <span className="control-label">Data to review</span>
+          <select
+            id="step7-review-source"
+            className="input"
+            value={reviewSource}
+            onChange={(event) => void handleReviewSourceChange(event.target.value as Step7ReviewSource)}
+            disabled={sourcesLoading || isLoading}
+          >
+            {reviewSources.map((source) => (
+              <option key={source.key} value={source.key}>
+                {source.label} ({source.rowCount} rows)
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : sourcesLoading ? (
+        <p className="step7-muted">Loading review data sources…</p>
+      ) : (
+        <p className="step7-muted">
+          No review data yet. Run extraction or upload and map PD Specifications from the processing step.
+        </p>
+      )}
+
       <div className="step7-summary-bar">
         <span className="chip">
           Total <strong>{rows.length}</strong>
@@ -316,6 +376,11 @@ export function Step7ReviewPanel({
       {exportCodingStatus ? <p className="step7-muted">{exportCodingStatus}</p> : null}
       {codingAcceptError ? <p className="step1-error">{codingAcceptError}</p> : null}
       {!canContinueToCoding && continueBlockReason ? <p className="step7-muted">{continueBlockReason}</p> : null}
+      {activeSourceMeta ? (
+        <p className="step7-muted">
+          Reviewing <strong>{activeSourceMeta.label}</strong>. Changes apply only to this dataset.
+        </p>
+      ) : null}
       {isLoading ? <p className="step7-muted">Loading deviations...</p> : null}
 
       <div className="step7-toolbar">
@@ -423,6 +488,7 @@ export function Step7ReviewPanel({
         {selectedRow ? (
           <Step7DeviationDrawer
             studyId={studyId}
+            reviewSource={reviewSource}
             row={selectedRow}
             onClose={() => setSelectedId(null)}
             onRowUpdated={handleRowUpdated}

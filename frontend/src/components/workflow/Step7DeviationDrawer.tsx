@@ -8,11 +8,13 @@ import {
   type Step7ChatMessage,
   type Step7DeviationPayload,
   type Step7DeviationRow,
+  type Step7ReviewSource,
   type StepStatus
 } from "../../services/stepApi";
 
 interface Step7DeviationDrawerProps {
   studyId: string;
+  reviewSource: Step7ReviewSource;
   row: Step7DeviationRow | null;
   onClose: () => void;
   onRowUpdated: (row: Step7DeviationRow) => void;
@@ -38,8 +40,27 @@ function formatChatTime(ts: string): string {
   }
 }
 
+function EnrichmentBulletList({ title, items }: { title: string; items: string[] }): JSX.Element | null {
+  if (!items.length) {
+    return null;
+  }
+  return (
+    <>
+      <h6>{title}</h6>
+      <ul className="step7-enrichment-list">
+        {items.map((item, index) => (
+          <li key={`${title}-${index}`} className="step7-evidence-body">
+            {item}
+          </li>
+        ))}
+      </ul>
+    </>
+  );
+}
+
 export function Step7DeviationDrawer({
   studyId,
+  reviewSource,
   row,
   onClose,
   onRowUpdated,
@@ -95,7 +116,13 @@ export function Step7DeviationDrawer({
   async function handleStatusUpdate(status: Step7DeviationRow["status"]): Promise<void> {
     setError("");
     try {
-      const updated = await updateStep7DeviationStatus(studyId.trim(), activeRow.deviation_id, status);
+      const updated = await updateStep7DeviationStatus(
+        studyId.trim(),
+        activeRow.deviation_id,
+        status,
+        undefined,
+        reviewSource
+      );
       onRowUpdated(updated.row);
       onStepStatusesChange(updated.stepStatuses);
     } catch (updateError) {
@@ -116,7 +143,8 @@ export function Step7DeviationDrawer({
         activeRow.deviation_id,
         message,
         true,
-        alsoPseudo
+        alsoPseudo,
+        reviewSource
       );
       let currentRow = result.row;
       setMessages(result.messages);
@@ -126,7 +154,7 @@ export function Step7DeviationDrawer({
       onStepStatusesChange(result.stepStatuses);
 
       if (alsoPseudo && currentRow.status === "accepted" && !currentRow.pseudo_logic) {
-        const pseudo = await generateStep7PseudoLogic(studyId.trim(), activeRow.deviation_id);
+        const pseudo = await generateStep7PseudoLogic(studyId.trim(), activeRow.deviation_id, reviewSource);
         currentRow = pseudo.row;
         onRowUpdated(currentRow);
         onStepStatusesChange(pseudo.stepStatuses);
@@ -148,7 +176,7 @@ export function Step7DeviationDrawer({
     setIsSending(true);
     setError("");
     try {
-      const result = await generateStep7PseudoLogic(studyId.trim(), activeRow.deviation_id);
+      const result = await generateStep7PseudoLogic(studyId.trim(), activeRow.deviation_id, reviewSource);
       onRowUpdated(result.row);
       onStepStatusesChange(result.stepStatuses);
       try {
@@ -170,7 +198,7 @@ export function Step7DeviationDrawer({
     }
     setError("");
     try {
-      const result = await updateStep7Deviation(studyId.trim(), activeRow.deviation_id, editForm);
+      const result = await updateStep7Deviation(studyId.trim(), activeRow.deviation_id, editForm, reviewSource);
       onRowUpdated(result.row);
       onStepStatusesChange(result.stepStatuses);
       setIsEditing(false);
@@ -353,6 +381,52 @@ export function Step7DeviationDrawer({
         </section>
 
         <div className="step7-drawer-upper-scroll">
+          {reviewSource === "enriched_pd_spec" ? (
+            <details className="step7-drawer-collapsible" open>
+              <summary>Protocol enrichment</summary>
+              <div className="step7-drawer-collapsible-inner">
+                <div className="step7-evidence-panel">
+                  {row.enrichment_summary ? (
+                    <>
+                      <h6>Summary</h6>
+                      <p className="step7-evidence-body">{row.enrichment_summary}</p>
+                    </>
+                  ) : null}
+                  {row.enrichment_status ? (
+                    <p className="step7-muted">Status: {row.enrichment_status}</p>
+                  ) : null}
+                  {row.programmability_risk ? (
+                    <p className="step7-muted">Programmability risk: {row.programmability_risk}</p>
+                  ) : null}
+                  <EnrichmentBulletList title="Assumptions" items={row.assumptions ?? []} />
+                  <EnrichmentBulletList title="Caveats" items={row.caveats ?? []} />
+                  <EnrichmentBulletList title="Data gaps" items={row.data_gaps ?? []} />
+                  <EnrichmentBulletList title="Weak spots" items={row.weak_spots ?? []} />
+                  <EnrichmentBulletList title="Suggested changes" items={row.suggested_changes ?? []} />
+                  <EnrichmentBulletList title="Protocol conflicts" items={row.protocol_conflicts ?? []} />
+                  {row.improved_pseudo_logic_plain_english ? (
+                    <>
+                      <h6>Improved check logic (plain English)</h6>
+                      <p className="step7-evidence-body">{row.improved_pseudo_logic_plain_english}</p>
+                    </>
+                  ) : null}
+                  {row.enrichment_errors && Object.keys(row.enrichment_errors).length > 0 ? (
+                    <>
+                      <h6>Enrichment task errors</h6>
+                      <ul className="step7-enrichment-list">
+                        {Object.entries(row.enrichment_errors).map(([task, message]) => (
+                          <li key={task} className="step7-evidence-body">
+                            <strong>{task}:</strong> {message}
+                          </li>
+                        ))}
+                      </ul>
+                    </>
+                  ) : null}
+                </div>
+              </div>
+            </details>
+          ) : null}
+
           <details className="step7-drawer-collapsible">
             <summary>Supporting evidence</summary>
             <div className="step7-drawer-collapsible-inner">

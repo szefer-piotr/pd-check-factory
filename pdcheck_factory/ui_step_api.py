@@ -13,6 +13,8 @@ from dotenv import load_dotenv
 
 from pdcheck_factory.ui_api.service import UiApiError, UiStepService, parse_json_body
 
+_CLIENT_DISCONNECT_ERRORS = (BrokenPipeError, ConnectionResetError)
+
 
 def _response_payload(*, request_id: str, data: Dict[str, Any] | None = None, error: Dict[str, Any] | None = None) -> Dict[str, Any]:
     return {
@@ -25,14 +27,17 @@ def _response_payload(*, request_id: str, data: Dict[str, Any] | None = None, er
 
 def _json_response(handler: BaseHTTPRequestHandler, status: int, payload: Dict[str, Any]) -> None:
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-    handler.send_response(status)
-    handler.send_header("Content-Type", "application/json; charset=utf-8")
-    handler.send_header("Content-Length", str(len(body)))
-    handler.send_header("Access-Control-Allow-Origin", "*")
-    handler.send_header("Access-Control-Allow-Headers", "Content-Type")
-    handler.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
-    handler.end_headers()
-    handler.wfile.write(body)
+    try:
+        handler.send_response(status)
+        handler.send_header("Content-Type", "application/json; charset=utf-8")
+        handler.send_header("Content-Length", str(len(body)))
+        handler.send_header("Access-Control-Allow-Origin", "*")
+        handler.send_header("Access-Control-Allow-Headers", "Content-Type")
+        handler.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
+        handler.end_headers()
+        handler.wfile.write(body)
+    except _CLIENT_DISCONNECT_ERRORS:
+        return
 
 
 def _file_response(
@@ -43,15 +48,18 @@ def _file_response(
     content_type: str,
     content_disposition: str,
 ) -> None:
-    handler.send_response(status)
-    handler.send_header("Content-Type", content_type)
-    handler.send_header("Content-Length", str(len(body)))
-    handler.send_header("Content-Disposition", content_disposition)
-    handler.send_header("Access-Control-Allow-Origin", "*")
-    handler.send_header("Access-Control-Allow-Headers", "Content-Type")
-    handler.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
-    handler.end_headers()
-    handler.wfile.write(body)
+    try:
+        handler.send_response(status)
+        handler.send_header("Content-Type", content_type)
+        handler.send_header("Content-Length", str(len(body)))
+        handler.send_header("Content-Disposition", content_disposition)
+        handler.send_header("Access-Control-Allow-Origin", "*")
+        handler.send_header("Access-Control-Allow-Headers", "Content-Type")
+        handler.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
+        handler.end_headers()
+        handler.wfile.write(body)
+    except _CLIENT_DISCONNECT_ERRORS:
+        return
 
 
 class StepApiHandler(BaseHTTPRequestHandler):
@@ -108,10 +116,16 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 data = self.service.get_status(study_id)
             elif tail == "import-versions":
                 data = self.service.get_import_versions(study_id)
+            elif tail == "step7/review-sources":
+                data = self.service.get_step7_review_sources(study_id)
             elif tail == "step7/deviations":
-                data = self.service.get_step7_deviations(study_id)
+                data = self.service.get_step7_deviations(
+                    study_id, review_source=self._review_source_from_query()
+                )
             elif tail == "step7/deviations/export/coding":
-                export_payload = self.service.export_step7_deviations_coding_xlsx(study_id)
+                export_payload = self.service.export_step7_deviations_coding_xlsx(
+                    study_id, review_source=self._review_source_from_query()
+                )
                 _file_response(
                     self,
                     status=HTTPStatus.OK,
@@ -121,7 +135,9 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 )
                 return
             elif tail == "step7/deviations/export":
-                export_payload = self.service.export_step7_deviations_xlsx(study_id)
+                export_payload = self.service.export_step7_deviations_xlsx(
+                    study_id, review_source=self._review_source_from_query()
+                )
                 _file_response(
                     self,
                     status=HTTPStatus.OK,
@@ -203,13 +219,23 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 data = self._parse_step7_rule_create(study_id)
             elif tail == "coding/accept":
                 data = self.service.accept_coding_phase(study_id)
+            elif tail == "step7/review-sources/select":
+                data = self._parse_step7_review_source_select(study_id)
             elif tail == "step7/deviations/accept-all":
-                data = self.service.accept_step7_deviations_bulk(study_id)
+                data = self.service.accept_step7_deviations_bulk(
+                    study_id, review_source=self._review_source_from_json_body()
+                )
             elif tail == "step7/pseudo-logic/generate-all":
-                data = self.service.generate_step7_pseudo_logic_bulk(study_id)
+                data = self.service.generate_step7_pseudo_logic_bulk(
+                    study_id, review_source=self._review_source_from_json_body()
+                )
             elif tail.startswith("step7/deviations/") and tail.endswith("/pseudo-logic"):
                 deviation_id = tail[len("step7/deviations/") : -len("/pseudo-logic")]
-                data = self.service.generate_step7_pseudo_logic_for_deviation(study_id, deviation_id)
+                data = self.service.generate_step7_pseudo_logic_for_deviation(
+                    study_id,
+                    deviation_id,
+                    review_source=self._review_source_from_json_body(),
+                )
             elif tail.startswith("steps/") and tail.endswith("/run"):
                 step_id = tail[len("steps/") : -len("/run")]
                 length = int(self.headers.get("Content-Length", "0"))
@@ -294,7 +320,9 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 data = self.service.delete_study(study_id)
             elif tail.startswith("step7/deviations/"):
                 deviation_id = tail[len("step7/deviations/") :]
-                data = self.service.delete_step7_deviation(study_id, deviation_id)
+                data = self.service.delete_step7_deviation(
+                    study_id, deviation_id, review_source=self._review_source_from_query()
+                )
             elif tail.startswith("step7/rules/"):
                 rule_id = tail[len("step7/rules/") :]
                 data = self.service.delete_step7_rule(study_id, rule_id)
@@ -404,17 +432,49 @@ class StepApiHandler(BaseHTTPRequestHandler):
         force = bool(payload.get("force", False))
         return self.service.run_step1_extract(study_id, extractor=extractor, force=force)
 
+    def _review_source_from_query(self) -> str | None:
+        parsed = urlparse(self.path)
+        qs = parse_qs(parsed.query)
+        value = (qs.get("reviewSource") or qs.get("review_source") or [None])[0]
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
+
+    def _review_source_from_json_body(self) -> str | None:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0:
+            return self._review_source_from_query()
+        payload = parse_json_body(self.rfile.read(length))
+        value = payload.get("reviewSource") or payload.get("review_source")
+        if value is not None:
+            text = str(value).strip()
+            return text or None
+        return self._review_source_from_query()
+
+    def _parse_step7_review_source_select(self, study_id: str) -> Dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0:
+            raise UiApiError("BAD_JSON", "Missing JSON body", 400)
+        payload = parse_json_body(self.rfile.read(length))
+        review_source = str(payload.get("reviewSource") or payload.get("review_source") or "").strip()
+        if not review_source:
+            raise UiApiError("VALIDATION_ERROR", "reviewSource is required", 400)
+        return self.service.set_step7_review_display_source(study_id, review_source)
+
     def _parse_step7_refine(self, study_id: str, deviation_id: str) -> Dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
         if length <= 0:
             raise UiApiError("BAD_JSON", "Missing JSON body", 400)
         payload = parse_json_body(self.rfile.read(length))
+        review_source = str(payload.get("reviewSource") or payload.get("review_source") or "").strip() or None
         return self.service.refine_step7_deviation(
             study_id=study_id,
             deviation_id=deviation_id,
             dm_comment=str(payload.get("message", "")),
             run_revision_cycle=bool(payload.get("runRevisionCycle", True)),
             also_generate_pseudo=bool(payload.get("alsoPseudo", False)),
+            review_source=review_source,
         )
 
     def _parse_step7_deviation_create(self, study_id: str) -> Dict[str, Any]:
@@ -422,7 +482,8 @@ class StepApiHandler(BaseHTTPRequestHandler):
         if length <= 0:
             raise UiApiError("BAD_JSON", "Missing JSON body", 400)
         payload = parse_json_body(self.rfile.read(length))
-        return self.service.create_step7_deviation(study_id, payload)
+        review_source = str(payload.get("reviewSource") or payload.get("review_source") or "").strip() or None
+        return self.service.create_step7_deviation(study_id, payload, review_source=review_source)
 
     def _parse_step7_deviation_import(self, study_id: str) -> Dict[str, Any]:
         content_type = self.headers.get("Content-Type", "")
@@ -439,7 +500,10 @@ class StepApiHandler(BaseHTTPRequestHandler):
         workbook_item = form["workbook"] if "workbook" in form else None
         if workbook_item is None:
             raise UiApiError("VALIDATION_ERROR", "workbook is required", 400)
-        return self.service.import_step7_deviations_xlsx(study_id, workbook_item.file.read())
+        review_source = self._review_source_from_query()
+        return self.service.import_step7_deviations_xlsx(
+            study_id, workbook_item.file.read(), review_source=review_source
+        )
 
     def _parse_step7_rule_create(self, study_id: str) -> Dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
@@ -460,7 +524,24 @@ class StepApiHandler(BaseHTTPRequestHandler):
         if length <= 0:
             raise UiApiError("BAD_JSON", "Missing JSON body", 400)
         payload = parse_json_body(self.rfile.read(length))
-        return self.service.patch_step7_deviation_fields(study_id, deviation_id, payload)
+        review_source = str(payload.get("reviewSource") or payload.get("review_source") or "").strip() or None
+        if "status" in payload and not any(
+            key in payload
+            for key in ("text", "deviation_text", "deviationText", "rule_id", "ruleId", "paragraph_refs", "paragraphRefs")
+        ):
+            dm_comment: str | None = None
+            if "dm_comment" in payload or "dmComment" in payload:
+                dm_comment = str(payload.get("dm_comment") or payload.get("dmComment") or "")
+            return self.service.update_step7_deviation(
+                study_id=study_id,
+                deviation_id=deviation_id,
+                status=str(payload.get("status", "")),
+                dm_comment=dm_comment,
+                review_source=review_source,
+            )
+        return self.service.patch_step7_deviation_fields(
+            study_id, deviation_id, payload, review_source=review_source
+        )
 
     def _parse_upload_pd_spec(self, study_id: str) -> Dict[str, Any]:
         content_type = self.headers.get("Content-Type", "")

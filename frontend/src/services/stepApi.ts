@@ -2,6 +2,22 @@ export type StepStatus = "pending" | "done" | "skipped";
 
 export type EntryMode = "extracted" | "imported_pd_spec";
 
+export type Step7ReviewSource = "generated" | "imported_pd_spec" | "enriched_pd_spec";
+
+export interface Step7ReviewSourceOption {
+  key: Step7ReviewSource;
+  label: string;
+  available: boolean;
+  rowCount: number;
+}
+
+export interface Step7ReviewSourcesResponse {
+  studyId: string;
+  sources: Step7ReviewSourceOption[];
+  selectedSource: Step7ReviewSource;
+  stepStatuses: Record<string, StepStatus>;
+}
+
 export interface ApiErrorPayload {
   code: string;
   message: string;
@@ -222,6 +238,19 @@ export interface Step7DeviationRow {
   entry_source: string;
   programmable: boolean | null;
   programmability_note: string;
+  enrichment_status?: string;
+  enrichment_summary?: string;
+  assumptions?: string[];
+  caveats?: string[];
+  data_gaps?: string[];
+  weak_spots?: string[];
+  suggested_changes?: string[];
+  protocol_conflicts?: string[];
+  programmability_risk?: string;
+  required_datasets?: string[];
+  required_fields?: string[];
+  enrichment_errors?: Record<string, string>;
+  improved_pseudo_logic_plain_english?: string;
 }
 
 export interface Step7DeviationPayload {
@@ -243,9 +272,22 @@ export interface Step7RulePayload {
 
 export interface Step7DeviationsResponse {
   studyId: string;
+  reviewSource?: Step7ReviewSource;
   columns: string[];
   rows: Step7DeviationRow[];
   stepStatuses: Record<string, StepStatus>;
+}
+
+function step7ReviewQuery(reviewSource?: Step7ReviewSource): string {
+  if (!reviewSource) {
+    return "";
+  }
+  return `?reviewSource=${encodeURIComponent(reviewSource)}`;
+}
+
+function step7ReviewJsonBody(payload: Record<string, unknown>, reviewSource?: Step7ReviewSource): string {
+  const body = reviewSource ? { ...payload, reviewSource } : payload;
+  return JSON.stringify(body);
 }
 
 export interface Step7ChatMessage {
@@ -489,8 +531,35 @@ export async function fetchStepPreview(studyId: string, stepId: string): Promise
   return parseApiResponse<StepPreviewResponse>(response);
 }
 
-export async function fetchStep7Deviations(studyId: string): Promise<Step7DeviationsResponse> {
-  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations`);
+export async function fetchStep7ReviewSources(studyId: string): Promise<Step7ReviewSourcesResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/review-sources`
+  );
+  return parseApiResponse<Step7ReviewSourcesResponse>(response);
+}
+
+export async function setStep7ReviewDisplaySource(
+  studyId: string,
+  reviewSource: Step7ReviewSource
+): Promise<Step7ReviewSourcesResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/review-sources/select`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reviewSource })
+    }
+  );
+  return parseApiResponse<Step7ReviewSourcesResponse>(response);
+}
+
+export async function fetchStep7Deviations(
+  studyId: string,
+  reviewSource?: Step7ReviewSource
+): Promise<Step7DeviationsResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations${step7ReviewQuery(reviewSource)}`
+  );
   return parseApiResponse<Step7DeviationsResponse>(response);
 }
 
@@ -506,14 +575,15 @@ export async function refineStep7Deviation(
   deviationId: string,
   message: string,
   runRevisionCycle = true,
-  alsoPseudo = false
+  alsoPseudo = false,
+  reviewSource?: Step7ReviewSource
 ): Promise<Step7RefineResponse> {
   const response = await fetch(
     `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/${encodeURIComponent(deviationId)}/refine`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ message, runRevisionCycle, alsoPseudo })
+      body: step7ReviewJsonBody({ message, runRevisionCycle, alsoPseudo }, reviewSource)
     }
   );
   return parseApiResponse<Step7RefineResponse>(response);
@@ -523,14 +593,15 @@ export async function updateStep7DeviationStatus(
   studyId: string,
   deviationId: string,
   status: Step7DeviationRow["status"],
-  dmComment?: string
+  dmComment?: string,
+  reviewSource?: Step7ReviewSource
 ): Promise<Step7UpdateResponse> {
   const response = await fetch(
     `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/${encodeURIComponent(deviationId)}`,
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status, dmComment })
+      body: step7ReviewJsonBody({ status, dmComment }, reviewSource)
     }
   );
   return parseApiResponse<Step7UpdateResponse>(response);
@@ -538,12 +609,13 @@ export async function updateStep7DeviationStatus(
 
 export async function createStep7Deviation(
   studyId: string,
-  payload: Step7DeviationPayload
+  payload: Step7DeviationPayload,
+  reviewSource?: Step7ReviewSource
 ): Promise<Step7DeviationListMutationResponse> {
   const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
+    body: step7ReviewJsonBody(payload, reviewSource)
   });
   return parseApiResponse<Step7DeviationListMutationResponse>(response);
 }
@@ -551,14 +623,15 @@ export async function createStep7Deviation(
 export async function updateStep7Deviation(
   studyId: string,
   deviationId: string,
-  payload: Partial<Step7DeviationPayload>
+  payload: Partial<Step7DeviationPayload>,
+  reviewSource?: Step7ReviewSource
 ): Promise<Step7UpdateResponse> {
   const response = await fetch(
     `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/${encodeURIComponent(deviationId)}`,
     {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
+      body: step7ReviewJsonBody(payload, reviewSource)
     }
   );
   return parseApiResponse<Step7UpdateResponse>(response);
@@ -566,10 +639,11 @@ export async function updateStep7Deviation(
 
 export async function deleteStep7Deviation(
   studyId: string,
-  deviationId: string
+  deviationId: string,
+  reviewSource?: Step7ReviewSource
 ): Promise<Step7DeviationListMutationResponse> {
   const response = await fetch(
-    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/${encodeURIComponent(deviationId)}`,
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/${encodeURIComponent(deviationId)}${step7ReviewQuery(reviewSource)}`,
     { method: "DELETE" }
   );
   return parseApiResponse<Step7DeviationListMutationResponse>(response);
@@ -597,9 +671,12 @@ function parseContentDispositionFileName(header: string | null, fallback: string
   return plainMatch?.[1]?.trim() || fallback;
 }
 
-export async function exportStep7DeviationsWorkbook(studyId: string): Promise<Step7ExportWorkbookResult> {
+export async function exportStep7DeviationsWorkbook(
+  studyId: string,
+  reviewSource?: Step7ReviewSource
+): Promise<Step7ExportWorkbookResult> {
   const response = await fetch(
-    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/export`
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/export${step7ReviewQuery(reviewSource)}`
   );
   if (!response.ok) {
     let message = `HTTP ${response.status}`;
@@ -619,9 +696,12 @@ export async function exportStep7DeviationsWorkbook(studyId: string): Promise<St
   return { blob, fileName };
 }
 
-export async function exportStep7DeviationsCodingWorkbook(studyId: string): Promise<Step7ExportWorkbookResult> {
+export async function exportStep7DeviationsCodingWorkbook(
+  studyId: string,
+  reviewSource?: Step7ReviewSource
+): Promise<Step7ExportWorkbookResult> {
   const response = await fetch(
-    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/export/coding`
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/export/coding${step7ReviewQuery(reviewSource)}`
   );
   if (!response.ok) {
     let message = `HTTP ${response.status}`;
@@ -643,14 +723,18 @@ export async function exportStep7DeviationsCodingWorkbook(studyId: string): Prom
 
 export async function importStep7DeviationsWorkbook(
   studyId: string,
-  workbook: File
+  workbook: File,
+  reviewSource?: Step7ReviewSource
 ): Promise<Step7DeviationListMutationResponse> {
   const formData = new FormData();
   formData.append("workbook", workbook);
-  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/import`, {
-    method: "POST",
-    body: formData
-  });
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/import${step7ReviewQuery(reviewSource)}`,
+    {
+      method: "POST",
+      body: formData
+    }
+  );
   return parseApiResponse<Step7DeviationListMutationResponse>(response);
 }
 
@@ -685,38 +769,45 @@ export async function deleteStep7Rule(studyId: string, ruleId: string): Promise<
 
 export async function generateStep7PseudoLogic(
   studyId: string,
-  deviationId: string
+  deviationId: string,
+  reviewSource?: Step7ReviewSource
 ): Promise<Step7PseudoLogicSingleResponse> {
   const response = await fetch(
     `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/${encodeURIComponent(deviationId)}/pseudo-logic`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({})
+      body: step7ReviewJsonBody({}, reviewSource)
     }
   );
   return parseApiResponse<Step7PseudoLogicSingleResponse>(response);
 }
 
-export async function acceptStep7DeviationsAll(studyId: string): Promise<Step7AcceptAllResponse> {
+export async function acceptStep7DeviationsAll(
+  studyId: string,
+  reviewSource?: Step7ReviewSource
+): Promise<Step7AcceptAllResponse> {
   const response = await fetch(
     `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/accept-all`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({})
+      body: step7ReviewJsonBody({}, reviewSource)
     }
   );
   return parseApiResponse<Step7AcceptAllResponse>(response);
 }
 
-export async function generateStep7PseudoLogicAll(studyId: string): Promise<Step7PseudoLogicBulkResponse> {
+export async function generateStep7PseudoLogicAll(
+  studyId: string,
+  reviewSource?: Step7ReviewSource
+): Promise<Step7PseudoLogicBulkResponse> {
   const response = await fetch(
     `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/pseudo-logic/generate-all`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({})
+      body: step7ReviewJsonBody({}, reviewSource)
     }
   );
   return parseApiResponse<Step7PseudoLogicBulkResponse>(response);

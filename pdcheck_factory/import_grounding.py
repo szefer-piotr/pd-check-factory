@@ -184,8 +184,9 @@ def build_deviations_state(
     deviations: List[Dict[str, Any]],
     import_version: str,
     source_type: str = "import",
+    pd_spec_import_mode: str = "",
 ) -> Dict[str, Any]:
-    return {
+    state: Dict[str, Any] = {
         "schema_version": "1.1.0",
         "study_id": study_id,
         "generated_at": _iso_now(),
@@ -193,3 +194,7 @@ def build_deviations_state(
         "source_type": source_type,
         "deviations": deviations,
     }
+    mode = str(pd_spec_import_mode or "").strip()
+    if mode:
+        state["pd_spec_import_mode"] = mode
+    return state

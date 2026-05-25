@@ -24,6 +24,7 @@ import {
   fetchStudies,
   runStep,
   runStep1Extraction,
+  setStep7ReviewDisplaySource,
   syncStudy,
   type Step1PdfExtractor,
   type StepStatus,
@@ -426,6 +427,7 @@ export function WorkflowPage(): JSX.Element {
     try {
       const response = await runStep(trimmedStudyId, "import-pd-spec-map");
       applyBackendStatuses(response.stepStatuses);
+      await setStep7ReviewDisplaySource(trimmedStudyId, "imported_pd_spec");
       setPdSpecActionMessage(response.summary);
       handleSelectStep("review-and-finalize");
     } catch (error) {
@@ -441,12 +443,13 @@ export function WorkflowPage(): JSX.Element {
     if (!trimmedStudyId || isPdSpecActionRunning) {
       return;
     }
-    setPdSpecActionMessage("Preparing enriched PD Specifications (preview)…");
+    setPdSpecActionMessage("Running protocol enrichment (parallel LLM analysis)…");
     setPdSpecActionError("");
     setIsPdSpecActionRunning(true);
     try {
       const response = await runStep(trimmedStudyId, "import-pd-spec-enrich");
       applyBackendStatuses(response.stepStatuses);
+      await setStep7ReviewDisplaySource(trimmedStudyId, "enriched_pd_spec");
       setPdSpecActionMessage(response.summary);
       handleSelectStep("review-and-finalize");
     } catch (error) {

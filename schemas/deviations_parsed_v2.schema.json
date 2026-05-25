@@ -10,6 +10,10 @@
     "generated_at": { "type": "string", "format": "date-time" },
     "import_version": { "type": "string" },
     "source_type": { "type": "string", "enum": ["import", "merged"] },
+    "pd_spec_import_mode": {
+      "type": "string",
+      "enum": ["map", "enrich_stub", "enrich", "ground"]
+    },
     "deviations": {
       "type": "array",
       "items": {
@@ -43,6 +47,8 @@
           "occurrence_date": { "type": "string" },
           "additional_information": { "type": "string" },
           "pseudo_logic_seed": { "type": "string" },
+          "enrichment_status": { "type": "string", "enum": ["ok", "partial", "failed"] },
+          "enrichment_summary": { "type": "string" },
           "merge_action": { "type": "string", "enum": ["keep", "update", "add"] },
           "merge_source_ids": {
             "type": "array",

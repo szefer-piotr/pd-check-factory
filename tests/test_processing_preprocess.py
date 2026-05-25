@@ -63,6 +63,7 @@ def test_import_pd_spec_map_writes_review_state(tmp_path: Path, monkeypatch: pyt
     review_obj = read_json(review_path)
     assert len(review_obj["deviations"]) == 1
     assert review_obj["deviations"][0]["entry_source"] == "imported_pd_spec"
+    assert review_obj["pd_spec_import_mode"] == "map"
 
 
 def test_run_step_import_pd_spec_map_sets_entry_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -81,20 +82,63 @@ def test_run_step_import_pd_spec_map_sets_entry_mode(tmp_path: Path, monkeypatch
     manifest = service._read_upload_manifest_obj(study_id)
     assert manifest["entryMode"] == ENTRY_MODE_IMPORTED_PD_SPEC
     assert manifest["pdSpecImportMode"] == "map"
+    assert manifest["reviewDisplaySource"] == "imported_pd_spec"
 
 
-def test_run_step_import_pd_spec_enrich_stub(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_step_import_pd_spec_enrich(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = UiStepService(output_dir=tmp_path)
     study_id = "ENRICH-STEP"
+    index_path = paths.local_protocol_paragraph_index_json(study_id, tmp_path)
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.write_text(
+        json.dumps({"paragraphs": [{"paragraph_id": "p1", "text": "Protocol rule"}]}),
+        encoding="utf-8",
+    )
+    acrf_path = paths.local_acrf_summary_text_merged(study_id, tmp_path)
+    acrf_path.parent.mkdir(parents=True, exist_ok=True)
+    acrf_path.write_text('{"datasets":[]}', encoding="utf-8")
+
     monkeypatch.setattr(service, "_read_pd_spec_workbook_bytes", lambda _sid: _minimal_pd_spec_xlsx())
     monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
     monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
     monkeypatch.setattr(blob_io, "upload_blob_bytes", lambda **_kwargs: None)
 
+    from pdcheck_factory.protocol_enrichment import (
+        CaveatsEnrichmentOutput,
+        CritiqueEnrichmentOutput,
+        LogicEnrichmentOutput,
+    )
+
+    def fake_chat_json(**kwargs):  # type: ignore[no-untyped-def]
+        model = kwargs["response_model"]
+        if model is LogicEnrichmentOutput:
+            return LogicEnrichmentOutput(
+                improved_deviation_text="Enriched deviation text",
+                paragraph_refs=["p1"],
+                confidence=0.9,
+            ).model_dump(mode="json")
+        if model is CaveatsEnrichmentOutput:
+            return CaveatsEnrichmentOutput(assumptions=["a1"]).model_dump(mode="json")
+        if model is CritiqueEnrichmentOutput:
+            return CritiqueEnrichmentOutput().model_dump(mode="json")
+        raise AssertionError("unexpected model")
+
+    monkeypatch.setattr("pdcheck_factory.protocol_enrichment.llm.chat_json", fake_chat_json)
+    monkeypatch.setattr(
+        pipeline_v2.study_artifact_sync,
+        "mirror_upload_path",
+        lambda *_a, **_k: None,
+    )
+
     result = service.run_step(study_id, "import-pd-spec-enrich")
-    assert "enrich preview" in result["summary"].lower()
+    assert "enriched" in result["summary"].lower()
     manifest = service._read_upload_manifest_obj(study_id)
-    assert manifest["pdSpecImportMode"] == "enrich_stub"
+    assert manifest["pdSpecImportMode"] == "enrich"
+    assert manifest["reviewDisplaySource"] == "enriched_pd_spec"
+    review_path = paths.local_deviations_review_enriched_pd_spec_json(study_id, tmp_path)
+    review_obj = read_json(review_path)
+    assert review_obj["pd_spec_import_mode"] == "enrich"
+    assert review_obj["deviations"][0]["text"] == "Enriched deviation text"
 
 
 def test_upload_status_includes_preprocess_flags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

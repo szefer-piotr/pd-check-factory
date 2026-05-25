@@ -1,5 +1,10 @@
 import { PROCESSING_BACKEND_STEP_IDS } from "../../data/pipelineSteps";
 import type { Step1PdfExtractor, StepStatus } from "../../services/stepApi";
+import {
+  getPipelineActionAccess,
+  getPipelinePrimaryLabel,
+  type PipelineActionAccess
+} from "../../utils/pipelineActionAccess";
 import { isProcessingCoreDone, isProcessingDone } from "../../utils/processingStatus";
 
 const EXTRACTOR_LABELS: Record<Step1PdfExtractor, string> = {
@@ -10,7 +15,8 @@ const EXTRACTOR_LABELS: Record<Step1PdfExtractor, string> = {
 
 export interface PipelineActionTilesProps {
   bothUploaded: boolean;
-  allThreeUploaded: boolean;
+  pdSpecUploaded: boolean;
+  uploadStatusReady: boolean;
   isBusy: boolean;
   isProcessing: boolean;
   backendStatuses: Record<string, StepStatus>;
@@ -26,9 +32,45 @@ export interface PipelineActionTilesProps {
   pipelineError?: string;
 }
 
+function tileClassName(access: PipelineActionAccess): string {
+  return `pipeline-action-tile ${access.accessible ? "pipeline-action-tile-active" : "pipeline-action-tile-disabled"}`;
+}
+
+function ActionRow({
+  access,
+  primaryLabel,
+  onPrimary,
+  onRerun,
+  rerunAriaLabel
+}: {
+  access: PipelineActionAccess;
+  primaryLabel: string;
+  onPrimary: () => void;
+  onRerun: () => void;
+  rerunAriaLabel: string;
+}): JSX.Element {
+  return (
+    <div className="pipeline-action-tile-actions">
+      <button className="button button-primary" type="button" onClick={onPrimary} disabled={!access.accessible}>
+        {primaryLabel}
+      </button>
+      <button
+        className="button button-secondary button-compact-rerun"
+        type="button"
+        onClick={onRerun}
+        disabled={!access.accessible || !access.canRerun}
+        title={rerunAriaLabel}
+      >
+        Re-run
+      </button>
+    </div>
+  );
+}
+
 export function PipelineActionTiles({
   bothUploaded,
-  allThreeUploaded,
+  pdSpecUploaded,
+  uploadStatusReady,
   isBusy,
   isProcessing,
   backendStatuses,
@@ -53,95 +95,54 @@ export function PipelineActionTiles({
       return status === "done" || status === "skipped";
     });
 
-  const runLabel = processingDone
-    ? isProcessing
-      ? "Re-running…"
-      : "Re-run"
+  const accessInput = {
+    bothUploaded,
+    pdSpecUploaded,
+    backendStatuses,
+    isBusy,
+    isProcessing
+  };
+  const access = getPipelineActionAccess(accessInput);
+  const pipelinePrimaryLabel = getPipelinePrimaryLabel(accessInput);
+
+  const introText = processingDone
+    ? "All processing steps are complete. Choose how to open Review — extract from protocol, map PD Specifications, or enrich with protocol and aCRF analysis."
     : hasPartialProgress
-      ? isProcessing
-        ? "Continuing…"
-        : "Continue pipeline to review"
-      : isProcessing
-        ? "Running pipeline…"
-        : "Run pipeline to review";
+      ? "Some steps are already complete from blob storage. Continue the pipeline, map PD Specifications, or enrich when prerequisites are met."
+      : "Choose how to proceed after uploading source documents. Protocol and aCRF are prepared in the background after upload.";
 
   return (
     <div className="pipeline-action-tiles" aria-label="Pipeline actions">
       <h3 className="study-pipeline-stage-title">Next steps</h3>
 
-      {processingDone ? (
+      {uploadStatusReady ? (
         <>
-          <p className="step7-muted">
-            All processing steps are complete. Documents were restored from blob storage or finished in a prior run.
-          </p>
-          <div className="pipeline-processing-complete">
-            <div className="pipeline-processing-complete-indicator" role="status">
-              <span className="pipeline-processing-complete-circle" aria-hidden="true">
-                ✓
-              </span>
-              <span className="pipeline-processing-complete-label">Processing complete — ready for review</span>
-            </div>
-            <button
-              className="button button-secondary button-compact-rerun"
-              type="button"
-              onClick={onReRunPipeline}
-              disabled={!bothUploaded || isBusy}
-              title="Re-run all processing steps and overwrite existing outputs"
-            >
-              {runLabel}
-            </button>
-          </div>
-          {allThreeUploaded ? (
-            <div className="pipeline-action-tiles-grid">
-              <article className="pipeline-action-tile pipeline-action-tile-active">
-                <h4 className="pipeline-action-tile-title">Use imported PD Specifications</h4>
-                <p className="step7-muted">
-                  Map the uploaded PD Specifications workbook to the Review page.
-                </p>
-                <button
-                  className="button button-primary"
-                  type="button"
-                  onClick={onMapPdSpecToReview}
-                  disabled={isBusy}
-                >
-                  Map to review
-                </button>
-              </article>
-              <article className="pipeline-action-tile pipeline-action-tile-active">
-                <h4 className="pipeline-action-tile-title">Enrich PD Specifications</h4>
-                <p className="step7-muted">Preview: same as mapping for now.</p>
-                <button
-                  className="button button-secondary"
-                  type="button"
-                  onClick={onEnrichPdSpecToReview}
-                  disabled={isBusy}
-                >
-                  Enrich and open review
-                </button>
-              </article>
+          <p className="step7-muted">{introText}</p>
+
+          {processingDone ? (
+            <div className="pipeline-processing-complete" role="status">
+              <div className="pipeline-processing-complete-indicator">
+                <span className="pipeline-processing-complete-circle" aria-hidden="true">
+                  ✓
+                </span>
+                <span className="pipeline-processing-complete-label">Processing complete — ready for review</span>
+              </div>
             </div>
           ) : null}
-        </>
-      ) : (
-        <>
-          <p className="step7-muted">
-            {hasPartialProgress
-              ? "Some steps are already complete from blob storage. Continue to run remaining steps, or use advanced options to re-run everything."
-              : "Choose how to proceed after uploading source documents. Protocol and aCRF are prepared in the background after upload."}
-          </p>
 
           <div className="pipeline-action-tiles-grid">
-            <article
-              className={`pipeline-action-tile ${bothUploaded ? "pipeline-action-tile-active" : "pipeline-action-tile-disabled"}`}
-            >
+            <article className={tileClassName(access.pipeline)}>
               <h4 className="pipeline-action-tile-title">Extract deviations from protocol</h4>
               <p className="step7-muted">
                 Run the full pipeline: PDF extraction, protocol index, aCRF summary, rule extraction, and deviation
                 candidates — then open Review.
               </p>
+              {!access.pipeline.accessible && access.pipeline.blockReason ? (
+                <p className="pipeline-action-tile-hint">{access.pipeline.blockReason}</p>
+              ) : null}
               <details className="pipeline-action-tile-advanced">
                 <summary>Advanced options</summary>
-                <fieldset className="step1-extractor-fieldset" disabled={!bothUploaded || isBusy}>
+                <fieldset className="step1-extractor-fieldset" disabled={!access.pipeline.accessible}>
                   <legend className="control-label">PDF extractor</legend>
                   <div className="step1-extractor-options">
                     {(["both", "document_intelligence", "opendataloader"] as const).map((value) => (
@@ -152,7 +153,7 @@ export function PipelineActionTiles({
                           value={value}
                           checked={extractorChoice === value}
                           onChange={() => onExtractorChange(value)}
-                          disabled={isBusy}
+                          disabled={!access.pipeline.accessible}
                         />
                         <span>{EXTRACTOR_LABELS[value]}</span>
                       </label>
@@ -167,7 +168,7 @@ export function PipelineActionTiles({
                     rows={2}
                     value={extractionLlmInstructions}
                     onChange={(event) => onLlmInstructionsChange(event.target.value)}
-                    disabled={isBusy}
+                    disabled={!access.pipeline.accessible}
                     placeholder="Additional guidance for rule and deviation extraction"
                   />
                 </label>
@@ -176,59 +177,60 @@ export function PipelineActionTiles({
                     className="button button-secondary"
                     type="button"
                     onClick={onReRunPipeline}
-                    disabled={!bothUploaded || isBusy}
+                    disabled={!access.pipeline.accessible}
                   >
                     Re-run all steps (overwrite)
                   </button>
                 ) : null}
               </details>
-              <button
-                className="button button-primary"
-                type="button"
-                onClick={onRunFullPipeline}
-                disabled={!bothUploaded || isBusy}
-              >
-                {runLabel}
-              </button>
+              <ActionRow
+                access={access.pipeline}
+                primaryLabel={pipelinePrimaryLabel}
+                onPrimary={onRunFullPipeline}
+                onRerun={onReRunPipeline}
+                rerunAriaLabel="Re-run full pipeline to review"
+              />
             </article>
 
-            {allThreeUploaded ? (
-              <>
-                <article className="pipeline-action-tile pipeline-action-tile-active">
-                  <h4 className="pipeline-action-tile-title">Use imported PD Specifications</h4>
-                  <p className="step7-muted">
-                    Map the uploaded PD Specifications workbook to the Review page. Rows can be accepted, discussed with
-                    the assistant, and used for coding.
-                  </p>
-                  <button
-                    className="button button-primary"
-                    type="button"
-                    onClick={onMapPdSpecToReview}
-                    disabled={isBusy}
-                  >
-                    Map to review
-                  </button>
-                </article>
+            <article className={tileClassName(access.map)}>
+              <h4 className="pipeline-action-tile-title">Use imported PD Specifications</h4>
+              <p className="step7-muted">
+                Map the uploaded PD Specifications workbook to the Review page (imported lane). Rows can be accepted,
+                discussed with the assistant, and used for coding.
+              </p>
+              {!access.map.accessible && access.map.blockReason ? (
+                <p className="pipeline-action-tile-hint">{access.map.blockReason}</p>
+              ) : null}
+              <ActionRow
+                access={access.map}
+                primaryLabel="Map to review"
+                onPrimary={onMapPdSpecToReview}
+                onRerun={onMapPdSpecToReview}
+                rerunAriaLabel="Re-run map to review"
+              />
+            </article>
 
-                <article className="pipeline-action-tile pipeline-action-tile-active">
-                  <h4 className="pipeline-action-tile-title">Enrich PD Specifications</h4>
-                  <p className="step7-muted">
-                    Preview: same as mapping for now. Future releases will revise imported deviations using protocol and
-                    aCRF context.
-                  </p>
-                  <button
-                    className="button button-secondary"
-                    type="button"
-                    onClick={onEnrichPdSpecToReview}
-                    disabled={isBusy}
-                  >
-                    Enrich and open review
-                  </button>
-                </article>
-              </>
-            ) : null}
+            <article className={tileClassName(access.enrich)}>
+              <h4 className="pipeline-action-tile-title">Enrich PD Specifications</h4>
+              <p className="step7-muted">
+                Run parallel protocol and aCRF analysis to refine deviation logic, surface caveats and assumptions, and
+                flag weak spots — then open Review on the enriched lane.
+              </p>
+              {!access.enrich.accessible && access.enrich.blockReason ? (
+                <p className="pipeline-action-tile-hint">{access.enrich.blockReason}</p>
+              ) : null}
+              <ActionRow
+                access={access.enrich}
+                primaryLabel="Enrich and open review"
+                onPrimary={onEnrichPdSpecToReview}
+                onRerun={onEnrichPdSpecToReview}
+                rerunAriaLabel="Re-run enrich and open review"
+              />
+            </article>
           </div>
         </>
+      ) : (
+        <p className="step7-muted">Enter a study ID and wait for upload status before choosing a next step.</p>
       )}
 
       {pipelineMessage ? <p className="step1-status">{pipelineMessage}</p> : null}

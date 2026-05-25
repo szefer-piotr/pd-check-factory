@@ -1663,6 +1663,19 @@ body {
   font-size: 0.85rem;
 }
 
+.pipeline-action-tile-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.pipeline-action-tile-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
 .extraction-status-panel-simplified .extraction-wait-banner {
   padding: var(--space-sm);
 }

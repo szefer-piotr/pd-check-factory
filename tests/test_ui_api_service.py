@@ -1081,3 +1081,93 @@ def test_upload_status_includes_processing_complete_flags(tmp_path: Path, monkey
     status = service.get_step1_upload_status(study_id)
     assert status["processingCoreComplete"] is True
     assert status["processingComplete"] is True
+
+
+def test_get_step7_review_sources_and_isolated_state(tmp_path: Path) -> None:
+    from pdcheck_factory import review_sources
+
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "REVIEW-SRC"
+
+    parsed = paths.local_deviations_parsed_json(study_id, tmp_path)
+    parsed.parent.mkdir(parents=True, exist_ok=True)
+    write_json(
+        parsed,
+        {
+            "schema_version": "1.0.0",
+            "study_id": study_id,
+            "deviations": [
+                {
+                    "deviation_id": "dev-0001",
+                    "rule_id": "rule-001",
+                    "text": "Generated deviation text",
+                    "paragraph_refs": ["p1"],
+                    "status": "pending",
+                    "entry_source": "extracted",
+                }
+            ],
+        },
+    )
+
+    workbook_path = paths.local_pd_spec_workbook(study_id, tmp_path)
+    workbook_path.parent.mkdir(parents=True, exist_ok=True)
+    from io import BytesIO as _BytesIO
+
+    from openpyxl import Workbook as _Workbook
+
+    from pdcheck_factory.pd_spec_export import PD_SPEC_HEADERS, PD_SPEC_SHEET_TITLE
+
+    wb = _Workbook()
+    ws = wb.active
+    ws.title = PD_SPEC_SHEET_TITLE
+    ws.append(PD_SPEC_HEADERS)
+    ws.append(
+        [
+            "Eligibility Criteria",
+            "Age",
+            "Imported PD row",
+            "",
+            "Major",
+            "Manual",
+            "",
+            "",
+            "RAVE",
+            "",
+            "",
+            "",
+            "",
+        ]
+    )
+    buffer = _BytesIO()
+    wb.save(buffer)
+    workbook_path.write_bytes(buffer.getvalue())
+
+    preview = service.get_step7_review_sources(study_id)
+    keys = {source["key"] for source in preview["sources"]}
+    assert review_sources.REVIEW_SOURCE_GENERATED in keys
+    assert review_sources.REVIEW_SOURCE_IMPORTED_PD_SPEC in keys
+
+    generated = service.get_step7_deviations(study_id, review_source=review_sources.REVIEW_SOURCE_GENERATED)
+    assert generated["rows"][0]["deviation_text"] == "Generated deviation text"
+
+    imported = service.get_step7_deviations(study_id, review_source=review_sources.REVIEW_SOURCE_IMPORTED_PD_SPEC)
+    assert imported["rows"][0]["entry_source"] == "imported_pd_spec"
+    assert "Imported PD row" in imported["rows"][0]["deviation_text"]
+
+    imported["rows"][0]["status"] = "accepted"
+    state_path = review_sources.review_state_path(
+        study_id, tmp_path, review_sources.REVIEW_SOURCE_IMPORTED_PD_SPEC
+    )
+    state_obj = read_json(state_path)
+    state_obj["deviations"][0]["status"] = "accepted"
+    service._persist_state(  # noqa: SLF001
+        study_id,
+        state_obj,
+        service._audit(study_id, action="test", target_id="x", updated_rows=1),  # noqa: SLF001
+        review_source=review_sources.REVIEW_SOURCE_IMPORTED_PD_SPEC,
+    )
+
+    generated_again = service.get_step7_deviations(study_id, review_source=review_sources.REVIEW_SOURCE_GENERATED)
+    assert generated_again["rows"][0]["status"] == "pending"
+    imported_again = service.get_step7_deviations(study_id, review_source=review_sources.REVIEW_SOURCE_IMPORTED_PD_SPEC)
+    assert imported_again["rows"][0]["status"] == "accepted"

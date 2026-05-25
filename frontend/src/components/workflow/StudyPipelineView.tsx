@@ -457,7 +457,8 @@ export function StudyPipelineView({
 
         <PipelineActionTiles
           bothUploaded={pipeline.bothUploaded}
-          allThreeUploaded={pipeline.allThreeUploaded}
+          pdSpecUploaded={pdSpecSlot.status === "uploaded"}
+          uploadStatusReady={!isLoadingUploadStatus && Boolean(studyId.trim())}
           isBusy={isBusy}
           isProcessing={isProcessing}
           backendStatuses={backendStatuses}
