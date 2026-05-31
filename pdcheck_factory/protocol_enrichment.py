@@ -1,60 +1,45 @@
-"""Protocol enrichment for imported PD spec deviations (parallel Azure OpenAI tasks)."""
+"""Protocol enrichment for imported PD spec deviations (sequential LLM per deviation)."""
 
 from __future__ import annotations
 
 import json
-import os
-import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, Optional, Set, Tuple, TypeVar
+from typing import Any, Dict, List, Literal, Optional, Set
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from pdcheck_factory import import_grounding, llm, paths, study_artifact_sync
-from pdcheck_factory.import_grounding import (
-    build_deviations_state,
-    retrieve_paragraph_candidates,
-)
+from pdcheck_factory import llm, paths, study_artifact_sync, text_parse
+from pdcheck_factory.import_grounding import build_deviations_state
 from pdcheck_factory.json_util import load_schema, read_json, validate, write_json
+from pdcheck_factory.deviation_contract import (
+    build_enriched_row,
+    filter_paragraph_refs,
+    pd_spec_field,
+    row_for_enrichment_llm,
+)
 from pdcheck_factory.pd_spec_import import parse_pd_spec_xlsx
 from pdcheck_factory.prompt_loader import load_prompt
 
-T = TypeVar("T")
-
-_PARAGRAPH_REF_RE = re.compile(r"^p[0-9]+$")
-_LOGIC_CONFIDENCE_THRESHOLD = 0.7
+_PROTOCOL_MAX_CHARS = 180000
 _ACRF_SUMMARY_MAX_CHARS = 50000
+_ARTIFACT_SCHEMA_VERSION = "1.1.0"
 
 
 class _StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class LogicEnrichmentOutput(_StrictModel):
-    improved_deviation_text: str = Field(min_length=1)
-    improved_pseudo_logic_plain_english: str = ""
+class EnrichmentProposalOutput(_StrictModel):
+    suggested_deviation_text: str = Field(min_length=1)
     paragraph_refs: List[str] = Field(default_factory=list)
-    data_support_note: str = ""
-    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
-    block_auto_text_update: bool = False
-
-
-class CaveatsEnrichmentOutput(_StrictModel):
     assumptions: List[str] = Field(default_factory=list)
     caveats: List[str] = Field(default_factory=list)
     data_gaps: List[str] = Field(default_factory=list)
-    required_datasets: List[str] = Field(default_factory=list)
-    required_fields: List[str] = Field(default_factory=list)
-
-
-class CritiqueEnrichmentOutput(_StrictModel):
     weak_spots: List[str] = Field(default_factory=list)
     suggested_changes: List[str] = Field(default_factory=list)
     protocol_conflicts: List[str] = Field(default_factory=list)
     programmability_risk: Literal["low", "medium", "high"] = "medium"
-    block_auto_text_update: bool = False
 
 
 def _iso_now() -> str:
@@ -72,199 +57,263 @@ def _next_import_version(study_id: str, output_dir: Path) -> str:
     return f"v{len(existing) + 1}"
 
 
-def _format_paragraph_candidates(candidates: List[Dict[str, Any]]) -> str:
+def _numbered_protocol_text(index_obj: Dict[str, Any]) -> str:
     lines: List[str] = []
-    for paragraph in candidates:
+    for paragraph in index_obj.get("paragraphs", []):
         pid = str(paragraph.get("paragraph_id", ""))
-        text = str(paragraph.get("text", ""))[:1200]
+        text = str(paragraph.get("text", ""))
         lines.append(f"{pid}: {text}")
     return "\n\n".join(lines)
 
 
-def _filter_refs(refs: List[str], valid: Set[str]) -> List[str]:
-    return [r for r in refs if r in valid and _PARAGRAPH_REF_RE.match(r)]
-
-
-def _enrichment_max_workers() -> int:
-    raw = os.getenv("PROTOCOL_ENRICH_MAX_WORKERS", "5").strip()
-    try:
-        value = int(raw)
-    except ValueError:
-        value = 5
-    return max(1, min(value, 10))
-
-
-def run_parallel_json_tasks(
-    tasks: List[Tuple[str, Callable[[], T]]],
-) -> Dict[str, T | Exception]:
-    """Run named callables in parallel; return values or captured exceptions."""
-    if not tasks:
-        return {}
-    results: Dict[str, T | Exception] = {}
-    with ThreadPoolExecutor(max_workers=len(tasks)) as executor:
-        future_by_name = {name: executor.submit(fn) for name, fn in tasks}
-        for name, future in future_by_name.items():
-            try:
-                results[name] = future.result()
-            except Exception as exc:  # noqa: BLE001
-                results[name] = exc
-    return results
+def _format_supporting_paragraphs(
+    paragraph_refs: List[str],
+    index_obj: Dict[str, Any],
+) -> str:
+    paragraph_by_ref = {
+        str(p.get("paragraph_id", "")): p for p in index_obj.get("paragraphs", [])
+    }
+    lines: List[str] = []
+    for ref in paragraph_refs:
+        paragraph = paragraph_by_ref.get(ref, {})
+        text = str(paragraph.get("text", ""))[:2000]
+        lines.append(f"{ref}: {text}")
+    return "\n\n".join(lines) if lines else "(no supporting paragraphs)"
 
 
 def _common_user_fields(
     *,
     study_id: str,
     deviation: Dict[str, Any],
-    candidate_text: str,
-    acrf_summary: str,
 ) -> Dict[str, str]:
+    flat = row_for_enrichment_llm(deviation)
     return {
         "study_id": study_id,
-        "deviation_id": str(deviation.get("deviation_id", "")),
-        "protocol_deviation_category": str(deviation.get("protocol_deviation_category", "")),
-        "protocol_deviation_sub_category": str(deviation.get("protocol_deviation_sub_category", "")),
-        "classification": str(deviation.get("classification", "")),
-        "deviation_text": str(deviation.get("text", "")),
-        "pseudo_logic_seed": str(deviation.get("pseudo_logic_seed", "") or ""),
-        "paragraph_candidates": candidate_text or "(no candidates)",
-        "acrf_summary": acrf_summary[:_ACRF_SUMMARY_MAX_CHARS],
+        "deviation_id": str(flat.get("deviation_id", "")),
+        "protocol_deviation_category": str(flat.get("protocol_deviation_category", "")),
+        "protocol_deviation_sub_category": str(flat.get("protocol_deviation_sub_category", "")),
+        "classification": str(flat.get("classification", "")),
+        "deviation_text": str(flat.get("text", "")),
     }
 
 
-def _run_logic_task(
+def _run_protocol_grounding(
     *,
     study_id: str,
     deviation: Dict[str, Any],
-    candidate_text: str,
+    protocol_paragraphs: str,
+    valid_ids: Set[str],
+) -> Dict[str, Any]:
+    fields = _common_user_fields(study_id=study_id, deviation=deviation)
+    fields["protocol_paragraphs"] = protocol_paragraphs[:_PROTOCOL_MAX_CHARS]
+
+    def _validate(reply: str) -> Optional[str]:
+        if text_parse.BEGIN_GROUNDING not in (reply or ""):
+            return "Must contain <<<BEGIN_GROUNDING>>> block."
+        parsed = text_parse.parse_import_grounding_block(reply)
+        if not parsed:
+            return "Grounding block missing required fields."
+        for ref in parsed.get("paragraph_refs", []):
+            if ref not in valid_ids:
+                return f"paragraph_refs contains id not in protocol index: {ref}"
+        return None
+
+    try:
+        reply = llm.chat_text_repairs(
+            system=load_prompt("protocol_enrich_ground_protocol_system"),
+            user=load_prompt("protocol_enrich_ground_protocol_user").format(**fields),
+            validate_reply=_validate,
+            max_repairs=2,
+            label=f"protocol-enrich-ground-protocol-{fields['deviation_id']}",
+        )
+        parsed = text_parse.parse_import_grounding_block(reply) or {}
+    except Exception as exc:  # noqa: BLE001
+        parsed = {
+            "paragraph_refs": [],
+            "data_support_note": "",
+            "grounding_error": str(exc),
+        }
+
+    refs = filter_paragraph_refs(list(parsed.get("paragraph_refs", [])), valid_ids)
+    error = str(parsed.get("grounding_error", "") or "").strip()
+    if error:
+        refs = []
+    elif not refs and not error:
+        error = "No valid protocol paragraph references after filtering"
+
+    return {
+        "paragraph_refs": refs,
+        "data_support_note": str(parsed.get("data_support_note", "") or "").strip(),
+        "grounding_error": error,
+    }
+
+
+def _run_acrf_grounding(
+    *,
+    study_id: str,
+    deviation: Dict[str, Any],
+    protocol_grounding: Dict[str, Any],
+    index_obj: Dict[str, Any],
     acrf_summary: str,
-) -> LogicEnrichmentOutput:
-    fields = _common_user_fields(
-        study_id=study_id,
-        deviation=deviation,
-        candidate_text=candidate_text,
-        acrf_summary=acrf_summary,
+) -> Dict[str, Any]:
+    fields = _common_user_fields(study_id=study_id, deviation=deviation)
+    refs = list(protocol_grounding.get("paragraph_refs", []))
+    fields["paragraph_refs"] = ", ".join(refs) or "(none)"
+    fields["protocol_data_support_note"] = str(
+        protocol_grounding.get("data_support_note", "") or ""
     )
-    raw = llm.chat_json(
-        system=load_prompt("protocol_enrich_logic_system"),
-        user=load_prompt("protocol_enrich_logic_user").format(**fields),
-        response_model=LogicEnrichmentOutput,
-        validator=lambda d: _validate_paragraph_refs_in_logic(d, fields["paragraph_candidates"]),
-        max_repairs=2,
-    )
-    return LogicEnrichmentOutput.model_validate(raw)
+    fields["protocol_supporting_paragraphs"] = _format_supporting_paragraphs(refs, index_obj)
+    fields["acrf_summary"] = acrf_summary[:_ACRF_SUMMARY_MAX_CHARS]
+
+    def _validate(reply: str) -> Optional[str]:
+        if text_parse.BEGIN_ACRF_GROUNDING not in (reply or ""):
+            return "Must contain <<<BEGIN_ACRF_GROUNDING>>> block."
+        if not text_parse.parse_acrf_grounding_block(reply):
+            return "aCRF grounding block missing required fields."
+        return None
+
+    try:
+        reply = llm.chat_text_repairs(
+            system=load_prompt("protocol_enrich_ground_acrf_system"),
+            user=load_prompt("protocol_enrich_ground_acrf_user").format(**fields),
+            validate_reply=_validate,
+            max_repairs=2,
+            label=f"protocol-enrich-ground-acrf-{fields['deviation_id']}",
+        )
+        parsed = text_parse.parse_acrf_grounding_block(reply) or {}
+    except Exception as exc:  # noqa: BLE001
+        parsed = {
+            "pseudo_logic_plain_english": "",
+            "programmable": "no",
+            "programmability_risk": "high",
+            "programmability_rationale": "",
+            "acrf_sections": [],
+            "data_support_note": "",
+            "grounding_error": str(exc),
+        }
+
+    risk = str(parsed.get("programmability_risk", "medium") or "medium").lower()
+    if risk not in {"low", "medium", "high"}:
+        risk = "medium"
+
+    return {
+        "pseudo_logic_plain_english": str(
+            parsed.get("pseudo_logic_plain_english", "") or ""
+        ).strip(),
+        "programmable": str(parsed.get("programmable", "") or "").strip().lower(),
+        "programmability_risk": risk,
+        "programmability_rationale": str(
+            parsed.get("programmability_rationale", "") or ""
+        ).strip(),
+        "acrf_sections": list(parsed.get("acrf_sections", []) or []),
+        "data_support_note": str(parsed.get("data_support_note", "") or "").strip(),
+        "grounding_error": str(parsed.get("grounding_error", "") or "").strip(),
+    }
 
 
-def _validate_paragraph_refs_in_logic(data: Dict[str, Any], candidates_block: str) -> List[str]:
+def _run_enrichment_proposal(
+    *,
+    study_id: str,
+    deviation: Dict[str, Any],
+    original_deviation_text: str,
+    protocol_grounding: Dict[str, Any],
+    acrf_grounding: Dict[str, Any],
+    index_obj: Dict[str, Any],
+    valid_ids: Set[str],
+) -> EnrichmentProposalOutput | None:
+    fields = _common_user_fields(study_id=study_id, deviation=deviation)
+    refs = list(protocol_grounding.get("paragraph_refs", []))
+    fields["original_deviation_text"] = original_deviation_text
+    fields["protocol_supporting_paragraphs"] = _format_supporting_paragraphs(refs, index_obj)
+    fields["pseudo_logic_plain_english"] = str(
+        acrf_grounding.get("pseudo_logic_plain_english", "") or ""
+    )
+    fields["programmable"] = str(acrf_grounding.get("programmable", "") or "")
+    fields["programmability_risk"] = str(acrf_grounding.get("programmability_risk", "") or "")
+    fields["programmability_rationale"] = str(
+        acrf_grounding.get("programmability_rationale", "") or ""
+    )
+    fields["acrf_sections"] = ", ".join(acrf_grounding.get("acrf_sections", []) or [])
+    fields["acrf_data_support_note"] = str(acrf_grounding.get("data_support_note", "") or "")
+
+    try:
+        raw = llm.chat_json(
+            system=load_prompt("protocol_enrich_propose_system"),
+            user=load_prompt("protocol_enrich_propose_user").format(**fields),
+            response_model=EnrichmentProposalOutput,
+            validator=lambda d: _validate_proposal_refs(d, valid_ids),
+            max_repairs=2,
+        )
+        return EnrichmentProposalOutput.model_validate(raw)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _validate_proposal_refs(data: Dict[str, Any], valid_ids: Set[str]) -> List[str]:
     errs: List[str] = []
-    valid_ids = set(re.findall(r"\b(p[0-9]+)\b", candidates_block))
     for ref in data.get("paragraph_refs", []):
         if ref not in valid_ids:
-            errs.append(f"paragraph_refs contains id not in candidates: {ref}")
+            errs.append(f"paragraph_refs contains id not in protocol index: {ref}")
     return errs[:10]
 
 
-def _run_caveats_task(
-    *,
-    study_id: str,
-    deviation: Dict[str, Any],
-    candidate_text: str,
-    acrf_summary: str,
-) -> CaveatsEnrichmentOutput:
-    fields = _common_user_fields(
-        study_id=study_id,
-        deviation=deviation,
-        candidate_text=candidate_text,
-        acrf_summary=acrf_summary,
-    )
-    raw = llm.chat_json(
-        system=load_prompt("protocol_enrich_caveats_system"),
-        user=load_prompt("protocol_enrich_caveats_user").format(**fields),
-        response_model=CaveatsEnrichmentOutput,
-        validator=lambda _d: [],
-        max_repairs=2,
-    )
-    return CaveatsEnrichmentOutput.model_validate(raw)
-
-
-def _run_critique_task(
-    *,
-    study_id: str,
-    deviation: Dict[str, Any],
-    candidate_text: str,
-    acrf_summary: str,
-) -> CritiqueEnrichmentOutput:
-    fields = _common_user_fields(
-        study_id=study_id,
-        deviation=deviation,
-        candidate_text=candidate_text,
-        acrf_summary=acrf_summary,
-    )
-    raw = llm.chat_json(
-        system=load_prompt("protocol_enrich_critique_system"),
-        user=load_prompt("protocol_enrich_critique_user").format(**fields),
-        response_model=CritiqueEnrichmentOutput,
-        validator=lambda _d: [],
-        max_repairs=2,
-    )
-    return CritiqueEnrichmentOutput.model_validate(raw)
-
-
-def _merge_enrichment_outputs(
+def _merge_enrichment_results(
     *,
     deviation: Dict[str, Any],
-    logic: Optional[LogicEnrichmentOutput],
-    caveats: Optional[CaveatsEnrichmentOutput],
-    critique: Optional[CritiqueEnrichmentOutput],
+    protocol_grounding: Dict[str, Any],
+    acrf_grounding: Dict[str, Any],
+    proposal: Optional[EnrichmentProposalOutput],
     valid_ids: Set[str],
     enrichment_errors: Dict[str, str],
-) -> Tuple[Dict[str, Any], Dict[str, Any]]:
-    """Return (merged_sidecar, updated_deviation_row_fields)."""
-    original_text = str(deviation.get("text", ""))
-    logic_out = logic
-    critique_out = critique
-    caveats_out = caveats
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Return (merged_sidecar, canonical row updates for build_enriched_row)."""
+    original_deviation_text = str(deviation.get("text", ""))
+    imported_text = original_deviation_text
 
-    paragraph_refs: List[str] = []
-    data_support_note = str(deviation.get("data_support_note", "") or "")
-    improved_text = original_text
-    pseudo_seed = str(deviation.get("pseudo_logic_seed", "") or "")
+    protocol_refs = filter_paragraph_refs(
+        list(protocol_grounding.get("paragraph_refs", [])),
+        valid_ids,
+    )
+    data_support_note = str(protocol_grounding.get("data_support_note", "") or "").strip()
+    if acrf_grounding.get("data_support_note"):
+        acrf_note = str(acrf_grounding.get("data_support_note", "")).strip()
+        if acrf_note:
+            data_support_note = acrf_note if not data_support_note else f"{data_support_note}; {acrf_note}"
 
-    block_update = False
-    if critique_out and critique_out.block_auto_text_update:
-        block_update = True
-    if logic_out and logic_out.block_auto_text_update:
-        block_update = True
+    pseudo_seed = str(acrf_grounding.get("pseudo_logic_plain_english", "") or "").strip()
+    if not pseudo_seed:
+        pseudo_seed = pd_spec_field(deviation, "pseudo_logic_seed")
 
-    if logic_out:
-        paragraph_refs = _filter_refs(list(logic_out.paragraph_refs), valid_ids)
-        if logic_out.data_support_note.strip():
-            data_support_note = logic_out.data_support_note.strip()
-        if logic_out.improved_pseudo_logic_plain_english.strip():
-            pseudo_seed = logic_out.improved_pseudo_logic_plain_english.strip()
-        if (
-            not block_update
-            and logic_out.confidence >= _LOGIC_CONFIDENCE_THRESHOLD
-            and logic_out.improved_deviation_text.strip()
-        ):
-            improved_text = logic_out.improved_deviation_text.strip()
+    suggested_text = ""
+    assumptions: List[str] = []
+    caveat_list: List[str] = []
+    data_gaps: List[str] = []
+    weak_spots: List[str] = []
+    suggested_changes: List[str] = []
+    protocol_conflicts: List[str] = []
+    programmability_risk = str(acrf_grounding.get("programmability_risk", "medium") or "medium")
 
-    programmability_risk = critique_out.programmability_risk if critique_out else "medium"
-    protocol_conflicts = list(critique_out.protocol_conflicts) if critique_out else []
-    weak_spots = list(critique_out.weak_spots) if critique_out else []
-    suggested_changes = list(critique_out.suggested_changes) if critique_out else []
+    if proposal:
+        suggested_text = proposal.suggested_deviation_text.strip()
+        if proposal.paragraph_refs:
+            protocol_refs = filter_paragraph_refs(list(proposal.paragraph_refs), valid_ids) or protocol_refs
+        assumptions = list(proposal.assumptions)
+        caveat_list = list(proposal.caveats)
+        data_gaps = list(proposal.data_gaps)
+        weak_spots = list(proposal.weak_spots)
+        suggested_changes = list(proposal.suggested_changes)
+        protocol_conflicts = list(proposal.protocol_conflicts)
+        programmability_risk = proposal.programmability_risk
 
-    assumptions = list(caveats_out.assumptions) if caveats_out else []
-    caveat_list = list(caveats_out.caveats) if caveats_out else []
-    data_gaps = list(caveats_out.data_gaps) if caveats_out else []
-    required_datasets = list(caveats_out.required_datasets) if caveats_out else []
-    required_fields = list(caveats_out.required_fields) if caveats_out else []
-
-    status = str(deviation.get("status") or "pending")
     if enrichment_errors:
         enrichment_status = (
-            "partial" if (logic_out or caveats_out or critique_out) else "failed"
+            "partial"
+            if (protocol_grounding.get("paragraph_refs") or acrf_grounding or proposal)
+            else "failed"
         )
-    elif not logic_out or not caveats_out or not critique_out:
+    elif protocol_grounding.get("grounding_error") and not protocol_refs:
+        enrichment_status = "partial"
+    elif not proposal:
         enrichment_status = "partial"
     else:
         enrichment_status = "ok"
@@ -273,9 +322,12 @@ def _merge_enrichment_outputs(
         programmability_risk == "high"
         or bool(protocol_conflicts)
         or bool(enrichment_errors)
-        or not paragraph_refs
-        or block_update
+        or bool(protocol_grounding.get("grounding_error"))
+        or bool(acrf_grounding.get("grounding_error"))
+        or not protocol_refs
+        or not suggested_text
     )
+    status = str(deviation.get("status") or "pending")
     if needs_review:
         status = "to_review"
 
@@ -287,36 +339,57 @@ def _merge_enrichment_outputs(
     if weak_spots:
         summary_parts.append(f"{len(weak_spots)} weak spot(s)")
     if enrichment_errors:
-        summary_parts.append(f"Task errors: {', '.join(enrichment_errors.keys())}")
+        summary_parts.append(f"Step errors: {', '.join(enrichment_errors.keys())}")
+    if protocol_grounding.get("grounding_error"):
+        summary_parts.append("Protocol grounding issue")
     enrichment_summary = "; ".join(summary_parts) if summary_parts else "Enrichment complete"
 
     merged = {
-        "improved_deviation_text": improved_text,
+        "original_deviation_text": original_deviation_text,
+        "suggested_deviation_text": suggested_text,
+        "improved_deviation_text": suggested_text,
         "improved_pseudo_logic_plain_english": pseudo_seed,
-        "paragraph_refs": paragraph_refs,
+        "paragraph_refs": protocol_refs,
         "data_support_note": data_support_note,
         "assumptions": assumptions,
         "caveats": caveat_list,
         "data_gaps": data_gaps,
-        "required_datasets": required_datasets,
-        "required_fields": required_fields,
+        "required_datasets": list(acrf_grounding.get("acrf_sections", []) or []),
+        "required_fields": [],
         "weak_spots": weak_spots,
         "suggested_changes": suggested_changes,
         "protocol_conflicts": protocol_conflicts,
         "programmability_risk": programmability_risk,
     }
 
-    row_updates = {
-        "text": improved_text,
-        "paragraph_refs": paragraph_refs,
+    row_updates: Dict[str, Any] = {
+        "text": imported_text,
+        "paragraph_refs": protocol_refs,
         "data_support_note": data_support_note,
-        "pseudo_logic_seed": pseudo_seed,
         "status": status,
-        "enrichment_status": enrichment_status,
-        "enrichment_summary": enrichment_summary,
-        "entry_source": "imported_pd_spec",
+        "original_deviation_text": original_deviation_text,
+        "suggested_deviation_text": suggested_text,
+        "pd_spec_import": {
+            "pseudo_logic_seed": pseudo_seed,
+            "enrichment_status": enrichment_status,
+            "enrichment_summary": enrichment_summary,
+            "entry_source": "imported_pd_spec",
+        },
     }
     return merged, row_updates
+
+
+def _write_enrichment_artifact(
+    *,
+    study_id: str,
+    output_dir: Path,
+    deviation_id: str,
+    artifact: Dict[str, Any],
+) -> None:
+    artifact_path = paths.local_protocol_enrichment_json(study_id, output_dir, deviation_id)
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(artifact_path, artifact)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, artifact_path)
 
 
 def enrich_imported_deviation(
@@ -326,96 +399,100 @@ def enrich_imported_deviation(
     deviation: Dict[str, Any],
     index_obj: Dict[str, Any],
     acrf_summary: str,
+    protocol_paragraphs: str,
 ) -> Dict[str, Any]:
-    """Run three parallel enrichment LLM tasks for one deviation."""
+    """Run three sequential enrichment LLM steps for one deviation."""
     valid_ids = {str(p.get("paragraph_id", "")) for p in index_obj.get("paragraphs", [])}
-    candidates = retrieve_paragraph_candidates(deviation=deviation, index_obj=index_obj)
-    candidate_text = _format_paragraph_candidates(candidates)
-
-    parallel = run_parallel_json_tasks(
-        [
-            (
-                "logic",
-                lambda: _run_logic_task(
-                    study_id=study_id,
-                    deviation=deviation,
-                    candidate_text=candidate_text,
-                    acrf_summary=acrf_summary,
-                ),
-            ),
-            (
-                "caveats",
-                lambda: _run_caveats_task(
-                    study_id=study_id,
-                    deviation=deviation,
-                    candidate_text=candidate_text,
-                    acrf_summary=acrf_summary,
-                ),
-            ),
-            (
-                "critique",
-                lambda: _run_critique_task(
-                    study_id=study_id,
-                    deviation=deviation,
-                    candidate_text=candidate_text,
-                    acrf_summary=acrf_summary,
-                ),
-            ),
-        ]
-    )
-
+    deviation_id = str(deviation.get("deviation_id", ""))
     enrichment_errors: Dict[str, str] = {}
-    logic: Optional[LogicEnrichmentOutput] = None
-    caveats: Optional[CaveatsEnrichmentOutput] = None
-    critique: Optional[CritiqueEnrichmentOutput] = None
 
-    for task_name, result in parallel.items():
-        if isinstance(result, Exception):
-            enrichment_errors[task_name] = str(result)
-            continue
-        if task_name == "logic":
-            logic = result
-        elif task_name == "caveats":
-            caveats = result
-        elif task_name == "critique":
-            critique = result
+    protocol_grounding: Dict[str, Any] = {
+        "paragraph_refs": [],
+        "data_support_note": "",
+        "grounding_error": "",
+    }
+    acrf_grounding: Dict[str, Any] = {
+        "pseudo_logic_plain_english": "",
+        "programmable": "",
+        "programmability_risk": "medium",
+        "programmability_rationale": "",
+        "acrf_sections": [],
+        "data_support_note": "",
+        "grounding_error": "",
+    }
+    proposal: Optional[EnrichmentProposalOutput] = None
 
-    merged, row_updates = _merge_enrichment_outputs(
+    try:
+        protocol_grounding = _run_protocol_grounding(
+            study_id=study_id,
+            deviation=deviation,
+            protocol_paragraphs=protocol_paragraphs,
+            valid_ids=valid_ids,
+        )
+        if protocol_grounding.get("grounding_error"):
+            enrichment_errors["protocol"] = str(protocol_grounding["grounding_error"])
+
+        acrf_grounding = _run_acrf_grounding(
+            study_id=study_id,
+            deviation=deviation,
+            protocol_grounding=protocol_grounding,
+            index_obj=index_obj,
+            acrf_summary=acrf_summary,
+        )
+        if acrf_grounding.get("grounding_error"):
+            enrichment_errors["acrf"] = str(acrf_grounding["grounding_error"])
+
+        original_text = str(deviation.get("text", ""))
+        proposal = _run_enrichment_proposal(
+            study_id=study_id,
+            deviation=deviation,
+            original_deviation_text=original_text,
+            protocol_grounding=protocol_grounding,
+            acrf_grounding=acrf_grounding,
+            index_obj=index_obj,
+            valid_ids=valid_ids,
+        )
+        if proposal is None:
+            enrichment_errors["proposal"] = "Enrichment proposal step failed"
+    except Exception as exc:  # noqa: BLE001
+        enrichment_errors["enrichment"] = str(exc)
+
+    merged, row_updates = _merge_enrichment_results(
         deviation=deviation,
-        logic=logic,
-        caveats=caveats,
-        critique=critique,
+        protocol_grounding=protocol_grounding,
+        acrf_grounding=acrf_grounding,
+        proposal=proposal,
         valid_ids=valid_ids,
         enrichment_errors=enrichment_errors,
     )
 
-    if enrichment_errors and not (logic or caveats or critique):
-        row_updates["enrichment_status"] = "failed"
+    if enrichment_errors and not proposal:
+        row_updates.setdefault("pd_spec_import", {})["enrichment_status"] = (
+            "partial" if protocol_grounding.get("paragraph_refs") or acrf_grounding else "failed"
+        )
 
     artifact: Dict[str, Any] = {
-        "schema_version": "1.0.0",
+        "schema_version": _ARTIFACT_SCHEMA_VERSION,
         "study_id": study_id,
-        "deviation_id": str(deviation.get("deviation_id", "")),
+        "deviation_id": deviation_id,
         "generated_at": _iso_now(),
-        "enrichment_status": row_updates.get("enrichment_status", "ok"),
-        "enrichment_summary": row_updates.get("enrichment_summary", ""),
+        "enrichment_status": (row_updates.get("pd_spec_import") or {}).get("enrichment_status", "ok"),
+        "enrichment_summary": (row_updates.get("pd_spec_import") or {}).get("enrichment_summary", ""),
         "enrichment_errors": enrichment_errors,
-        "logic": logic.model_dump(mode="json") if logic else None,
-        "caveats": caveats.model_dump(mode="json") if caveats else None,
-        "critique": critique.model_dump(mode="json") if critique else None,
+        "protocol_grounding": protocol_grounding,
+        "acrf_grounding": acrf_grounding,
+        "proposal": proposal.model_dump(mode="json") if proposal else None,
         "merged": merged,
     }
 
-    artifact_path = paths.local_protocol_enrichment_json(
-        study_id, output_dir, str(deviation.get("deviation_id", ""))
+    _write_enrichment_artifact(
+        study_id=study_id,
+        output_dir=output_dir,
+        deviation_id=deviation_id,
+        artifact=artifact,
     )
-    artifact_path.parent.mkdir(parents=True, exist_ok=True)
-    write_json(artifact_path, artifact)
-    study_artifact_sync.mirror_upload_path(study_id, output_dir, artifact_path)
 
-    updated = dict(deviation)
-    updated.update(row_updates)
-    return updated
+    return build_enriched_row(deviation, row_updates)
 
 
 def run_protocol_enrichment(
@@ -426,7 +503,7 @@ def run_protocol_enrichment(
     workbook_path: Path | None = None,
     version_label: str | None = None,
 ) -> Dict[str, Any]:
-    """Parse PD spec workbook and enrich all deviations with parallel LLM analysis."""
+    """Parse PD spec workbook and enrich all deviations with sequential LLM analysis."""
     index_path = paths.local_protocol_paragraph_index_json(study_id, output_dir)
     acrf_path = paths.local_acrf_summary_text_merged(study_id, output_dir)
     if not index_path.is_file():
@@ -445,23 +522,20 @@ def run_protocol_enrichment(
     raw_deviations = parse_pd_spec_xlsx(workbook_bytes)
     index_obj = read_json(index_path)
     acrf_summary = _acrf_summary_text(study_id, output_dir)
+    protocol_paragraphs = _numbered_protocol_text(index_obj)
 
     enriched_rows: List[Dict[str, Any]] = []
-    max_workers = _enrichment_max_workers()
-
-    def _process_one(dev: Dict[str, Any]) -> Dict[str, Any]:
-        return enrich_imported_deviation(
-            study_id=study_id,
-            output_dir=output_dir,
-            deviation=dev,
-            index_obj=index_obj,
-            acrf_summary=acrf_summary,
+    for dev in raw_deviations:
+        enriched_rows.append(
+            enrich_imported_deviation(
+                study_id=study_id,
+                output_dir=output_dir,
+                deviation=dev,
+                index_obj=index_obj,
+                acrf_summary=acrf_summary,
+                protocol_paragraphs=protocol_paragraphs,
+            )
         )
-
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
-        futures = {pool.submit(_process_one, dev): dev for dev in raw_deviations}
-        for future in as_completed(futures):
-            enriched_rows.append(future.result())
 
     enriched_rows.sort(key=lambda row: str(row.get("deviation_id", "")))
 

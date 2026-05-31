@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
 from pdcheck_factory import llm, paths, study_artifact_sync, text_parse
+from pdcheck_factory.deviation_contract import merge_canonical_updates, pd_spec_field
 from pdcheck_factory.json_util import read_json, write_json
 from pdcheck_factory.prompt_loader import load_prompt
 
@@ -30,9 +31,9 @@ def retrieve_paragraph_candidates(
     """Score paragraphs by keyword overlap with deviation text and PD categories."""
     query_parts = [
         str(deviation.get("text", "")),
-        str(deviation.get("protocol_deviation_category", "")),
-        str(deviation.get("protocol_deviation_sub_category", "")),
-        str(deviation.get("classification", "")),
+        pd_spec_field(deviation, "protocol_deviation_category"),
+        pd_spec_field(deviation, "protocol_deviation_sub_category"),
+        pd_spec_field(deviation, "classification"),
     ]
     query_tokens = _tokenize(" ".join(query_parts))
     if not query_tokens:
@@ -83,9 +84,9 @@ def ground_imported_deviation(
     user = load_prompt("import_grounding_v2_user").format(
         study_id=study_id,
         deviation_id=deviation.get("deviation_id", ""),
-        protocol_deviation_category=deviation.get("protocol_deviation_category", ""),
-        protocol_deviation_sub_category=deviation.get("protocol_deviation_sub_category", ""),
-        classification=deviation.get("classification", ""),
+        protocol_deviation_category=pd_spec_field(deviation, "protocol_deviation_category"),
+        protocol_deviation_sub_category=pd_spec_field(deviation, "protocol_deviation_sub_category"),
+        classification=pd_spec_field(deviation, "classification"),
         deviation_text=deviation.get("text", ""),
         paragraph_candidates=candidate_text or "(no candidates)",
         acrf_summary=acrf_summary[:50000],
@@ -137,14 +138,16 @@ def ground_imported_deviation(
             }
         )
 
-    updated = dict(deviation)
-    updated["paragraph_refs"] = refs
-    updated["data_support_note"] = data_note
-    updated["grounding_error"] = grounding_error
-    if grounding_error:
-        updated["status"] = "to_review"
-    else:
-        updated["status"] = str(deviation.get("status") or "pending")
+    status = "to_review" if grounding_error else str(deviation.get("status") or "pending")
+    updated = merge_canonical_updates(
+        deviation,
+        {
+            "paragraph_refs": refs,
+            "data_support_note": data_note,
+            "status": status,
+            "pd_spec_import": {"grounding_error": grounding_error},
+        },
+    )
 
     context_obj = {
         "schema_version": "1.0.0",
@@ -161,10 +164,10 @@ def ground_imported_deviation(
             "data_support_note": data_note,
         },
         "pd_spec_metadata": {
-            "protocol_deviation_category": deviation.get("protocol_deviation_category", ""),
-            "protocol_deviation_sub_category": deviation.get("protocol_deviation_sub_category", ""),
-            "classification": deviation.get("classification", ""),
-            "data_source": deviation.get("data_source", ""),
+            "protocol_deviation_category": pd_spec_field(deviation, "protocol_deviation_category"),
+            "protocol_deviation_sub_category": pd_spec_field(deviation, "protocol_deviation_sub_category"),
+            "classification": pd_spec_field(deviation, "classification"),
+            "data_source": pd_spec_field(deviation, "data_source"),
         },
         "grounding_error": grounding_error,
     }

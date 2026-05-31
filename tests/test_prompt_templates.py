@@ -86,8 +86,8 @@ class PromptTemplateTests(unittest.TestCase):
         self.assertIn("Additional instructions", rendered)
         self.assertIn("Emphasize dosing rules.", rendered)
 
-    def test_protocol_enrich_logic_user_formats(self) -> None:
-        template = load_prompt("protocol_enrich_logic_user")
+    def test_protocol_enrich_ground_protocol_user_formats(self) -> None:
+        template = load_prompt("protocol_enrich_ground_protocol_user")
         rendered = template.format(
             study_id="study-x",
             deviation_id="dev-import-1",
@@ -95,36 +95,45 @@ class PromptTemplateTests(unittest.TestCase):
             protocol_deviation_sub_category="Timing",
             classification="Major",
             deviation_text="Out of window",
-            pseudo_logic_seed="",
-            paragraph_candidates="p1: text",
-            acrf_summary="{}",
+            protocol_paragraphs="p1: Visit window Day 3-5",
         )
-        self.assertIn("Current deviation text", rendered)
-        self.assertIn("p1: text", rendered)
+        self.assertIn("Imported deviation text", rendered)
+        self.assertIn("p1: Visit window", rendered)
 
-    def test_protocol_enrich_caveats_user_formats(self) -> None:
-        template = load_prompt("protocol_enrich_caveats_user")
-        rendered = template.format(
-            study_id="study-x",
-            deviation_id="dev-import-1",
-            deviation_text="Out of window",
-            paragraph_candidates="p1: text",
-            acrf_summary="{}",
-        )
-        self.assertIn("Merged aCRF summary", rendered)
-
-    def test_protocol_enrich_critique_user_formats(self) -> None:
-        template = load_prompt("protocol_enrich_critique_user")
+    def test_protocol_enrich_ground_acrf_user_formats(self) -> None:
+        template = load_prompt("protocol_enrich_ground_acrf_user")
         rendered = template.format(
             study_id="study-x",
             deviation_id="dev-import-1",
             protocol_deviation_category="Visit",
             protocol_deviation_sub_category="Timing",
+            classification="Major",
             deviation_text="Out of window",
-            paragraph_candidates="p1: text",
+            paragraph_refs="p1",
+            protocol_data_support_note="SV dates",
+            protocol_supporting_paragraphs="p1: text",
             acrf_summary="{}",
         )
-        self.assertIn("protocol_deviation_category", rendered)
+        self.assertIn("Merged aCRF summary", rendered)
+
+    def test_protocol_enrich_propose_user_formats(self) -> None:
+        template = load_prompt("protocol_enrich_propose_user")
+        rendered = template.format(
+            study_id="study-x",
+            deviation_id="dev-import-1",
+            protocol_deviation_category="Visit",
+            protocol_deviation_sub_category="Timing",
+            classification="Major",
+            original_deviation_text="Out of window",
+            protocol_supporting_paragraphs="p1: text",
+            pseudo_logic_plain_english="IF visit outside window",
+            programmable="yes",
+            programmability_risk="low",
+            programmability_rationale="SV has dates",
+            acrf_sections="SV",
+            acrf_data_support_note="Use visit dates",
+        )
+        self.assertIn("Original imported deviation text", rendered)
 
 
 if __name__ == "__main__":

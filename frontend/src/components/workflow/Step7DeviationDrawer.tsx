@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   fetchStep7DeviationChat,
+  fetchStep7EnrichmentDetail,
   generateStep7PseudoLogic,
   refineStep7Deviation,
   updateStep7Deviation,
@@ -8,6 +9,7 @@ import {
   type Step7ChatMessage,
   type Step7DeviationPayload,
   type Step7DeviationRow,
+  type Step7EnrichmentDetailResponse,
   type Step7ReviewSource,
   type StepStatus
 } from "../../services/stepApi";
@@ -74,6 +76,9 @@ export function Step7DeviationDrawer({
   const [editForm, setEditForm] = useState<Step7DeviationPayload | null>(null);
   const [error, setError] = useState("");
   const [lastMissingCaveats, setLastMissingCaveats] = useState<string[]>([]);
+  const [enrichmentDetail, setEnrichmentDetail] = useState<Step7EnrichmentDetailResponse | null>(null);
+  const [enrichmentLoading, setEnrichmentLoading] = useState(false);
+  const [enrichmentError, setEnrichmentError] = useState("");
 
   const threadRef = useRef<HTMLDivElement>(null);
 
@@ -88,6 +93,8 @@ export function Step7DeviationDrawer({
     setEditForm(null);
     setChatInput("");
     setLastMissingCaveats([]);
+    setEnrichmentDetail(null);
+    setEnrichmentError("");
     async function loadChat(): Promise<void> {
       try {
         const chat = await fetchStep7DeviationChat(studyId.trim(), deviationId);
@@ -112,6 +119,35 @@ export function Step7DeviationDrawer({
   }
 
   const activeRow = row;
+
+  const originalText = (row.original_deviation_text ?? "").trim();
+  const showOriginalText =
+    reviewSource === "enriched_pd_spec" &&
+    Boolean(originalText) &&
+    originalText !== row.deviation_text.trim();
+
+  async function loadEnrichmentDetail(): Promise<void> {
+    if (reviewSource !== "enriched_pd_spec" || !deviationId) {
+      return;
+    }
+    setEnrichmentLoading(true);
+    setEnrichmentError("");
+    try {
+      const detail = await fetchStep7EnrichmentDetail(studyId.trim(), deviationId);
+      setEnrichmentDetail(detail);
+    } catch (err) {
+      setEnrichmentDetail(null);
+      setEnrichmentError(err instanceof Error ? err.message : "Failed to load enrichment details.");
+    } finally {
+      setEnrichmentLoading(false);
+    }
+  }
+
+  useEffect(() => {
+    if (reviewSource === "enriched_pd_spec" && deviationId) {
+      void loadEnrichmentDetail();
+    }
+  }, [deviationId, reviewSource, studyId]);
 
   async function handleStatusUpdate(status: Step7DeviationRow["status"]): Promise<void> {
     setError("");
@@ -382,45 +418,87 @@ export function Step7DeviationDrawer({
 
         <div className="step7-drawer-upper-scroll">
           {reviewSource === "enriched_pd_spec" ? (
-            <details className="step7-drawer-collapsible" open>
+            <details
+              className="step7-drawer-collapsible"
+              open
+              onToggle={(event) => {
+                if (event.currentTarget.open && !enrichmentDetail && !enrichmentLoading) {
+                  void loadEnrichmentDetail();
+                }
+              }}
+            >
               <summary>Protocol enrichment</summary>
               <div className="step7-drawer-collapsible-inner">
                 <div className="step7-evidence-panel">
-                  {row.enrichment_summary ? (
+                  {enrichmentLoading ? <p className="step7-muted">Loading enrichment details…</p> : null}
+                  {enrichmentError ? <p className="step7-evidence-body">{enrichmentError}</p> : null}
+                  {!enrichmentLoading && !enrichmentError && enrichmentDetail ? (
                     <>
-                      <h6>Summary</h6>
-                      <p className="step7-evidence-body">{row.enrichment_summary}</p>
+                      {enrichmentDetail.suggested_deviation_text ||
+                      enrichmentDetail.improved_deviation_text ? (
+                        <>
+                          <h6>Suggested deviation text</h6>
+                          <p className="step7-evidence-body">
+                            {enrichmentDetail.suggested_deviation_text ||
+                              enrichmentDetail.improved_deviation_text}
+                          </p>
+                        </>
+                      ) : null}
+                      {enrichmentDetail.original_deviation_text ? (
+                        <>
+                          <h6>Original imported text</h6>
+                          <p className="step7-evidence-body">{enrichmentDetail.original_deviation_text}</p>
+                        </>
+                      ) : null}
+                      {enrichmentDetail.paragraph_refs && enrichmentDetail.paragraph_refs.length > 0 ? (
+                        <p className="step7-muted">
+                          Protocol refs: {enrichmentDetail.paragraph_refs.join(", ")}
+                        </p>
+                      ) : null}
+                      {enrichmentDetail.enrichment_summary ? (
+                        <>
+                          <h6>Summary</h6>
+                          <p className="step7-evidence-body">{enrichmentDetail.enrichment_summary}</p>
+                        </>
+                      ) : null}
+                      {enrichmentDetail.enrichment_status ? (
+                        <p className="step7-muted">Status: {enrichmentDetail.enrichment_status}</p>
+                      ) : null}
+                      {enrichmentDetail.programmability_risk ? (
+                        <p className="step7-muted">Programmability risk: {enrichmentDetail.programmability_risk}</p>
+                      ) : null}
+                      <EnrichmentBulletList title="Assumptions" items={enrichmentDetail.assumptions} />
+                      <EnrichmentBulletList title="Caveats" items={enrichmentDetail.caveats} />
+                      <EnrichmentBulletList title="Data gaps" items={enrichmentDetail.data_gaps} />
+                      <EnrichmentBulletList title="Weak spots" items={enrichmentDetail.weak_spots} />
+                      <EnrichmentBulletList title="Suggested changes" items={enrichmentDetail.suggested_changes} />
+                      <EnrichmentBulletList title="Protocol conflicts" items={enrichmentDetail.protocol_conflicts} />
+                      {enrichmentDetail.improved_pseudo_logic_plain_english ? (
+                        <>
+                          <h6>Improved check logic (plain English)</h6>
+                          <p className="step7-evidence-body">{enrichmentDetail.improved_pseudo_logic_plain_english}</p>
+                        </>
+                      ) : null}
+                      {Object.keys(enrichmentDetail.enrichment_errors).length > 0 ? (
+                        <>
+                          <h6>Enrichment task errors</h6>
+                          <ul className="step7-enrichment-list">
+                            {Object.entries(enrichmentDetail.enrichment_errors).map(([task, message]) => (
+                              <li key={task} className="step7-evidence-body">
+                                <strong>{task}:</strong> {message}
+                              </li>
+                            ))}
+                          </ul>
+                        </>
+                      ) : null}
                     </>
                   ) : null}
-                  {row.enrichment_status ? (
-                    <p className="step7-muted">Status: {row.enrichment_status}</p>
-                  ) : null}
-                  {row.programmability_risk ? (
-                    <p className="step7-muted">Programmability risk: {row.programmability_risk}</p>
-                  ) : null}
-                  <EnrichmentBulletList title="Assumptions" items={row.assumptions ?? []} />
-                  <EnrichmentBulletList title="Caveats" items={row.caveats ?? []} />
-                  <EnrichmentBulletList title="Data gaps" items={row.data_gaps ?? []} />
-                  <EnrichmentBulletList title="Weak spots" items={row.weak_spots ?? []} />
-                  <EnrichmentBulletList title="Suggested changes" items={row.suggested_changes ?? []} />
-                  <EnrichmentBulletList title="Protocol conflicts" items={row.protocol_conflicts ?? []} />
-                  {row.improved_pseudo_logic_plain_english ? (
-                    <>
-                      <h6>Improved check logic (plain English)</h6>
-                      <p className="step7-evidence-body">{row.improved_pseudo_logic_plain_english}</p>
-                    </>
-                  ) : null}
-                  {row.enrichment_errors && Object.keys(row.enrichment_errors).length > 0 ? (
-                    <>
-                      <h6>Enrichment task errors</h6>
-                      <ul className="step7-enrichment-list">
-                        {Object.entries(row.enrichment_errors).map(([task, message]) => (
-                          <li key={task} className="step7-evidence-body">
-                            <strong>{task}:</strong> {message}
-                          </li>
-                        ))}
-                      </ul>
-                    </>
+                  {!enrichmentLoading && !enrichmentError && !enrichmentDetail ? (
+                    <p className="step7-muted">
+                      {(row.enrichment_summary || row.enrichment_status)
+                        ? `${row.enrichment_status ? `Status: ${row.enrichment_status}. ` : ""}${row.enrichment_summary ?? ""}`
+                        : "Open to load enrichment audit details."}
+                    </p>
                   ) : null}
                 </div>
               </div>
@@ -452,6 +530,12 @@ export function Step7DeviationDrawer({
           <details className="step7-drawer-collapsible" open>
             <summary>Deviation text</summary>
             <div className="step7-drawer-collapsible-inner">
+              {showOriginalText ? (
+                <div className="step7-drawer-original-text">
+                  <h6>Original (PD spec)</h6>
+                  <p className="step7-drawer-text step7-drawer-text-full">{originalText}</p>
+                </div>
+              ) : null}
               {isEditing && editForm ? (
                 <div className="step7-form-grid">
                   <textarea

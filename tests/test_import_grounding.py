@@ -108,8 +108,11 @@ class TestImportGrounding(unittest.TestCase):
                 **dev,
                 "paragraph_refs": ["p1"],
                 "data_support_note": "DM",
-                "grounding_error": "",
                 "status": "pending",
+                "pd_spec_import": {
+                    **dev.get("pd_spec_import", {}),
+                    "grounding_error": "",
+                },
             }
 
             with patch(

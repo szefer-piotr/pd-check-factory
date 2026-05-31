@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pdcheck_factory import document_chat_agent, extraction_resolve, import_grounding, llm, paths, study_artifact_sync, text_parse
 from pdcheck_factory.pd_spec_export import write_final_pd_spec_xlsx
+from pdcheck_factory.deviation_contract import pd_spec_field
 from pdcheck_factory.pd_spec_import import parse_pd_spec_xlsx
 from pdcheck_factory.json_util import load_schema, read_json, validate, write_json
 from pdcheck_factory.prompt_loader import load_prompt
@@ -490,8 +491,8 @@ def step10_finalize(study_id: str, output_dir: Path) -> Dict[str, Any]:
         rule = rule_by_id.get(dev.get("rule_id"), {})
         rule_title = rule.get("title", "")
         if not rule_title:
-            cat = str(dev.get("protocol_deviation_category", "")).strip()
-            sub = str(dev.get("protocol_deviation_sub_category", "")).strip()
+            cat = pd_spec_field(dev, "protocol_deviation_category").strip()
+            sub = pd_spec_field(dev, "protocol_deviation_sub_category").strip()
             rule_title = f"{cat} / {sub}".strip(" /")
         items.append(
             {
@@ -501,10 +502,10 @@ def step10_finalize(study_id: str, output_dir: Path) -> Dict[str, Any]:
                 "deviation_text": dev["text"],
                 "paragraph_refs": dev["paragraph_refs"],
                 "pseudo_logic": p["pseudo_logic"],
-                "protocol_deviation_category": dev.get("protocol_deviation_category", ""),
-                "protocol_deviation_sub_category": dev.get("protocol_deviation_sub_category", ""),
-                "classification": dev.get("classification", ""),
-                "data_source": dev.get("data_source", ""),
+                "protocol_deviation_category": pd_spec_field(dev, "protocol_deviation_category"),
+                "protocol_deviation_sub_category": pd_spec_field(dev, "protocol_deviation_sub_category"),
+                "classification": pd_spec_field(dev, "classification"),
+                "data_source": pd_spec_field(dev, "data_source"),
             }
         )
     out = {
@@ -721,9 +722,9 @@ def generate_pseudo_logic_for_imported_deviation(
         deviation_id=str(deviation.get("deviation_id", "")),
         deviation_text=str(deviation.get("text", "")),
         paragraph_refs=", ".join(deviation.get("paragraph_refs", [])),
-        protocol_deviation_category=str(deviation.get("protocol_deviation_category", "")),
-        protocol_deviation_sub_category=str(deviation.get("protocol_deviation_sub_category", "")),
-        classification=str(deviation.get("classification", "")),
+        protocol_deviation_category=pd_spec_field(deviation, "protocol_deviation_category"),
+        protocol_deviation_sub_category=pd_spec_field(deviation, "protocol_deviation_sub_category"),
+        classification=pd_spec_field(deviation, "classification"),
         data_support_note=str(deviation.get("data_support_note", "")),
         acrf_summary=acrf_summary,
     )
@@ -762,8 +763,8 @@ def generate_pseudo_logic_for_imported_deviation(
         label=f"v2-programmability-import-{deviation.get('deviation_id', '')}",
     )
     programmable, rationale = text_parse.parse_programmability(prog_reply)
-    category = str(deviation.get("protocol_deviation_category", ""))
-    sub = str(deviation.get("protocol_deviation_sub_category", ""))
+    category = pd_spec_field(deviation, "protocol_deviation_category")
+    sub = pd_spec_field(deviation, "protocol_deviation_sub_category")
     rule_title = f"{category} / {sub}".strip(" /")
     return {
         "deviation_id": deviation.get("deviation_id", ""),
@@ -834,7 +835,7 @@ def run_import_pd_spec_map(
 
     review_source_key = (
         review_sources.REVIEW_SOURCE_ENRICHED_PD_SPEC
-        if pd_spec_import_mode in {"enrich_stub", "enrich"}
+        if pd_spec_import_mode == "enrich"
         else review_sources.REVIEW_SOURCE_IMPORTED_PD_SPEC
     )
     per_source_path = review_sources.review_state_path(study_id, output_dir, review_source_key)
@@ -865,7 +866,7 @@ def run_import_pd_spec_enrich(
     workbook_path: Path | None = None,
     version_label: str | None = None,
 ) -> Dict[str, Any]:
-    """Parse PD spec workbook and run protocol enrichment (parallel LLM per deviation)."""
+    """Parse PD spec workbook and run protocol enrichment (sequential LLM per deviation)."""
     from pdcheck_factory import protocol_enrichment
 
     return protocol_enrichment.run_protocol_enrichment(

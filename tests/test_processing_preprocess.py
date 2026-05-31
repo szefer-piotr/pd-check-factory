@@ -62,7 +62,7 @@ def test_import_pd_spec_map_writes_review_state(tmp_path: Path, monkeypatch: pyt
     assert review_path.is_file()
     review_obj = read_json(review_path)
     assert len(review_obj["deviations"]) == 1
-    assert review_obj["deviations"][0]["entry_source"] == "imported_pd_spec"
+    assert review_obj["deviations"][0]["pd_spec_import"]["entry_source"] == "imported_pd_spec"
     assert review_obj["pd_spec_import_mode"] == "map"
 
 
@@ -103,26 +103,31 @@ def test_run_step_import_pd_spec_enrich(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
     monkeypatch.setattr(blob_io, "upload_blob_bytes", lambda **_kwargs: None)
 
-    from pdcheck_factory.protocol_enrichment import (
-        CaveatsEnrichmentOutput,
-        CritiqueEnrichmentOutput,
-        LogicEnrichmentOutput,
+    from pdcheck_factory.protocol_enrichment import EnrichmentProposalOutput
+
+    def fake_chat_text_repairs(**_kwargs):  # type: ignore[no-untyped-def]
+        label = str(_kwargs.get("label", ""))
+        if "ground-protocol" in label:
+            return (
+                "<<<BEGIN_GROUNDING>>>\nPARAGRAPH_REFS: p1\n"
+                "DATA_SUPPORT_NOTE: note\n<<<END_GROUNDING>>>"
+            )
+        return (
+            "<<<BEGIN_ACRF_GROUNDING>>>\n"
+            "PSEUDO_LOGIC_PLAIN_ENGLISH: logic\nPROGRAMMABLE: yes\n"
+            "PROGRAMMABILITY_RISK: low\nPROGRAMMABILITY_RATIONALE: ok\n"
+            "ACRF_SECTIONS: SV\nDATA_SUPPORT_NOTE: note\n<<<END_ACRF_GROUNDING>>>"
+        )
+
+    def fake_chat_json(**_kwargs):  # type: ignore[no-untyped-def]
+        return EnrichmentProposalOutput(
+            suggested_deviation_text="Suggested enriched deviation text",
+            paragraph_refs=["p1"],
+        ).model_dump(mode="json")
+
+    monkeypatch.setattr(
+        "pdcheck_factory.protocol_enrichment.llm.chat_text_repairs", fake_chat_text_repairs
     )
-
-    def fake_chat_json(**kwargs):  # type: ignore[no-untyped-def]
-        model = kwargs["response_model"]
-        if model is LogicEnrichmentOutput:
-            return LogicEnrichmentOutput(
-                improved_deviation_text="Enriched deviation text",
-                paragraph_refs=["p1"],
-                confidence=0.9,
-            ).model_dump(mode="json")
-        if model is CaveatsEnrichmentOutput:
-            return CaveatsEnrichmentOutput(assumptions=["a1"]).model_dump(mode="json")
-        if model is CritiqueEnrichmentOutput:
-            return CritiqueEnrichmentOutput().model_dump(mode="json")
-        raise AssertionError("unexpected model")
-
     monkeypatch.setattr("pdcheck_factory.protocol_enrichment.llm.chat_json", fake_chat_json)
     monkeypatch.setattr(
         pipeline_v2.study_artifact_sync,
@@ -138,7 +143,10 @@ def test_run_step_import_pd_spec_enrich(tmp_path: Path, monkeypatch: pytest.Monk
     review_path = paths.local_deviations_review_enriched_pd_spec_json(study_id, tmp_path)
     review_obj = read_json(review_path)
     assert review_obj["pd_spec_import_mode"] == "enrich"
-    assert review_obj["deviations"][0]["text"] == "Enriched deviation text"
+    assert review_obj["deviations"][0].get("suggested_deviation_text") == "Suggested enriched deviation text"
+    assert review_obj["deviations"][0].get("original_deviation_text")
+    assert "text" in review_obj["deviations"][0]
+    assert isinstance(review_obj["deviations"][0].get("pd_spec_import"), dict)
 
 
 def test_upload_status_includes_preprocess_flags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

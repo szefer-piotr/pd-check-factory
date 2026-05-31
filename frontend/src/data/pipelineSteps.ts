@@ -308,7 +308,7 @@ export const IMPORT_PIPELINE_STEPS: PipelineStepDefinition[] = [
       {
         label: "Protocol enrichment",
         path: "output/<study_id>/pipeline/coding/protocol_enrichment/<deviation_id>.json",
-        description: "Per-deviation parallel LLM enrichment (logic, caveats, critique)."
+        description: "Per-deviation sequential LLM enrichment (protocol ground, aCRF ground, propose)."
       },
       {
         label: "Enriched review lane",

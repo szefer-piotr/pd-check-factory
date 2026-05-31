@@ -443,7 +443,7 @@ export function WorkflowPage(): JSX.Element {
     if (!trimmedStudyId || isPdSpecActionRunning) {
       return;
     }
-    setPdSpecActionMessage("Running protocol enrichment (parallel LLM analysis)…");
+    setPdSpecActionMessage("Running protocol enrichment (sequential LLM per deviation)…");
     setPdSpecActionError("");
     setIsPdSpecActionRunning(true);
     try {

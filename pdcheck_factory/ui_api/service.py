@@ -22,6 +22,12 @@ from pdcheck_factory import (
     study_artifact_sync,
 )
 from pdcheck_factory.json_util import read_json, write_json
+from pdcheck_factory.deviation_contract import (
+    has_flat_pd_spec_fields,
+    lift_pd_spec_row,
+    pd_spec_field,
+    split_pd_spec_row,
+)
 from pdcheck_factory.pd_spec_import import parse_pd_spec_xlsx, programmable_from_manual_or_programmable
 
 
@@ -239,8 +245,6 @@ class UiStepService:
         manifest = self._read_upload_manifest_obj(study_id)
         mode = str(manifest.get("pdSpecImportMode") or "")
         if mode == "enrich":
-            return True
-        if mode == "enrich_stub":
             return True
         enriched_path = paths.local_deviations_review_enriched_pd_spec_json(study_id, self.output_dir)
         if enriched_path.is_file():
@@ -714,11 +718,69 @@ class UiStepService:
         write_json(path, snapshot)
         self._mirror_upload(study_id, path)
 
+    def _imported_pd_spec_text_by_deviation_id(self, study_id: str) -> Dict[str, str]:
+        path = review_sources.review_state_path(
+            study_id, self.output_dir, review_sources.REVIEW_SOURCE_IMPORTED_PD_SPEC
+        )
+        if not path.is_file():
+            return {}
+        try:
+            imported_obj = read_json(path)
+        except (OSError, ValueError):
+            return {}
+        by_id: Dict[str, str] = {}
+        for row in imported_obj.get("deviations", []):
+            dev_id = str(row.get("deviation_id", "")).strip()
+            if dev_id:
+                by_id[dev_id] = str(row.get("text", "") or "")
+        return by_id
+
+    def _normalize_review_deviation_row(
+        self,
+        row: Dict[str, Any],
+        *,
+        study_id: str,
+        review_source: str,
+        imported_text_by_id: Dict[str, str] | None = None,
+    ) -> Dict[str, Any]:
+        normalized = dict(row)
+        if has_flat_pd_spec_fields(normalized) or not isinstance(normalized.get("pd_spec_import"), dict):
+            lift_pd_spec_row(normalized)
+        if review_source == review_sources.REVIEW_SOURCE_ENRICHED_PD_SPEC:
+            dev_id = str(normalized.get("deviation_id", "")).strip()
+            if not str(normalized.get("original_deviation_text", "") or "").strip():
+                backfill = (imported_text_by_id or {}).get(dev_id, "")
+                normalized["original_deviation_text"] = backfill or str(normalized.get("text", "") or "")
+        return normalized
+
+    def _normalize_review_state_rows(
+        self, study_id: str, state_obj: Dict[str, Any], review_source: str
+    ) -> Dict[str, Any]:
+        if review_source not in {
+            review_sources.REVIEW_SOURCE_IMPORTED_PD_SPEC,
+            review_sources.REVIEW_SOURCE_ENRICHED_PD_SPEC,
+        }:
+            return state_obj
+        imported_by_id: Dict[str, str] | None = None
+        if review_source == review_sources.REVIEW_SOURCE_ENRICHED_PD_SPEC:
+            imported_by_id = self._imported_pd_spec_text_by_deviation_id(study_id)
+        rows = [
+            self._normalize_review_deviation_row(
+                dict(row),
+                study_id=study_id,
+                review_source=review_source,
+                imported_text_by_id=imported_by_id,
+            )
+            for row in state_obj.get("deviations", [])
+        ]
+        return {**state_obj, "deviations": rows}
+
     def _load_state(self, study_id: str, review_source: str | None = None) -> Dict[str, Any]:
         source = self._resolve_review_source(study_id, review_source)
         self._ensure_review_source_state(study_id, source)
         path = review_sources.review_state_path(study_id, self.output_dir, source)
-        return read_json(path)
+        state_obj = read_json(path)
+        return self._normalize_review_state_rows(study_id, state_obj, source)
 
     def _load_pseudo_state(self, study_id: str) -> Dict[str, Any]:
         path = paths.local_pseudo_logic_review_state(study_id, self.output_dir)
@@ -949,23 +1011,43 @@ class UiStepService:
         except (OSError, ValueError):
             return None
 
-    def _enrichment_api_fields(
-        self, study_id: str, row: Dict[str, Any], *, review_source: str
-    ) -> Dict[str, Any]:
-        from pdcheck_factory import review_sources
+    def _enrichment_row_by_deviation_id(
+        self, study_id: str, deviation_id: str
+    ) -> Dict[str, Any] | None:
+        enriched_path = paths.local_deviations_review_enriched_pd_spec_json(
+            study_id, self.output_dir
+        )
+        if not enriched_path.is_file():
+            return None
+        try:
+            state_obj = read_json(enriched_path)
+        except (OSError, ValueError):
+            return None
+        for row in state_obj.get("deviations", []):
+            if str(row.get("deviation_id", "")) == deviation_id:
+                return dict(row)
+        return None
 
-        if review_source != review_sources.REVIEW_SOURCE_ENRICHED_PD_SPEC:
-            return {}
-        deviation_id = str(row.get("deviation_id", ""))
-        artifact = self._load_protocol_enrichment_artifact(study_id, deviation_id)
+    def _enrichment_detail_from_artifact(self, artifact: Dict[str, Any]) -> Dict[str, Any]:
         merged = (artifact or {}).get("merged") or {}
+        suggested = str(
+            merged.get("suggested_deviation_text")
+            or merged.get("improved_deviation_text")
+            or ""
+        )
+        protocol_grounding = dict(artifact.get("protocol_grounding") or {})
+        acrf_grounding = dict(artifact.get("acrf_grounding") or {})
         return {
-            "enrichment_status": str(
-                row.get("enrichment_status") or (artifact or {}).get("enrichment_status") or ""
+            "enrichment_status": str(artifact.get("enrichment_status") or ""),
+            "enrichment_summary": str(artifact.get("enrichment_summary") or ""),
+            "enrichment_errors": dict(artifact.get("enrichment_errors") or {}),
+            "original_deviation_text": str(merged.get("original_deviation_text") or ""),
+            "suggested_deviation_text": suggested,
+            "improved_deviation_text": suggested,
+            "improved_pseudo_logic_plain_english": str(
+                merged.get("improved_pseudo_logic_plain_english") or ""
             ),
-            "enrichment_summary": str(
-                row.get("enrichment_summary") or (artifact or {}).get("enrichment_summary") or ""
-            ),
+            "paragraph_refs": list(merged.get("paragraph_refs") or []),
             "assumptions": list(merged.get("assumptions") or []),
             "caveats": list(merged.get("caveats") or []),
             "data_gaps": list(merged.get("data_gaps") or []),
@@ -975,10 +1057,92 @@ class UiStepService:
             "programmability_risk": str(merged.get("programmability_risk") or ""),
             "required_datasets": list(merged.get("required_datasets") or []),
             "required_fields": list(merged.get("required_fields") or []),
-            "enrichment_errors": dict((artifact or {}).get("enrichment_errors") or {}),
-            "improved_pseudo_logic_plain_english": str(
-                merged.get("improved_pseudo_logic_plain_english") or row.get("pseudo_logic_seed") or ""
+            "protocol_grounding": protocol_grounding,
+            "acrf_grounding": acrf_grounding,
+        }
+
+    def _enrichment_detail_from_row(self, row: Dict[str, Any]) -> Dict[str, Any]:
+        suggested = str(row.get("suggested_deviation_text", "") or "").strip()
+        return {
+            "enrichment_status": pd_spec_field(row, "enrichment_status"),
+            "enrichment_summary": pd_spec_field(row, "enrichment_summary"),
+            "enrichment_errors": {},
+            "original_deviation_text": str(row.get("original_deviation_text", "") or ""),
+            "suggested_deviation_text": suggested,
+            "improved_deviation_text": suggested,
+            "improved_pseudo_logic_plain_english": pd_spec_field(row, "pseudo_logic_seed"),
+            "paragraph_refs": list(row.get("paragraph_refs") or []),
+            "assumptions": [],
+            "caveats": [],
+            "data_gaps": [],
+            "weak_spots": [],
+            "suggested_changes": [],
+            "protocol_conflicts": [],
+            "programmability_risk": "",
+            "required_datasets": [],
+            "required_fields": [],
+            "protocol_grounding": {},
+            "acrf_grounding": {},
+        }
+
+    def _enrichment_api_fields(
+        self, study_id: str, row: Dict[str, Any], *, review_source: str
+    ) -> Dict[str, Any]:
+        if review_source != review_sources.REVIEW_SOURCE_ENRICHED_PD_SPEC:
+            return {}
+        deviation_id = str(row.get("deviation_id", ""))
+        artifact = self._load_protocol_enrichment_artifact(study_id, deviation_id)
+        suggested = str(row.get("suggested_deviation_text", "") or "").strip()
+        if not suggested and artifact:
+            merged = (artifact or {}).get("merged") or {}
+            suggested = str(
+                merged.get("suggested_deviation_text")
+                or merged.get("improved_deviation_text")
+                or ""
+            )
+        return {
+            "enrichment_status": pd_spec_field(
+                row, "enrichment_status", default=str((artifact or {}).get("enrichment_status") or "")
             ),
+            "enrichment_summary": pd_spec_field(
+                row, "enrichment_summary", default=str((artifact or {}).get("enrichment_summary") or "")
+            ),
+            "original_deviation_text": str(row.get("original_deviation_text", "") or ""),
+            "suggested_deviation_text": suggested,
+        }
+
+    def get_step7_enrichment_detail(self, study_id: str, deviation_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        dev_id = str(deviation_id).strip()
+        if not dev_id:
+            raise UiApiError("VALIDATION_ERROR", "deviationId is required", 400)
+        artifact = self._load_protocol_enrichment_artifact(study_id, dev_id)
+        if artifact is not None:
+            fields = self._enrichment_detail_from_artifact(artifact)
+        else:
+            row = self._enrichment_row_by_deviation_id(study_id, dev_id)
+            if row is None:
+                raise UiApiError(
+                    "NOT_FOUND",
+                    f"No enrichment artifact for deviation '{dev_id}'",
+                    404,
+                )
+            has_summary = bool(
+                str(row.get("suggested_deviation_text", "") or "").strip()
+                or pd_spec_field(row, "enrichment_summary")
+                or pd_spec_field(row, "enrichment_status")
+            )
+            if not has_summary:
+                raise UiApiError(
+                    "NOT_FOUND",
+                    f"No enrichment artifact for deviation '{dev_id}'",
+                    404,
+                )
+            fields = self._enrichment_detail_from_row(row)
+        return {
+            "studyId": study_id,
+            "deviationId": dev_id,
+            **fields,
         }
 
     def _normalized_step7_row(
@@ -1002,10 +1166,10 @@ class UiStepService:
             paragraph = paragraph_lookup.get(str(ref), {})
             text = str(paragraph.get("text") or paragraph.get("content") or paragraph.get("paragraph_text") or "")
             supporting_sentences.append({"ref": str(ref), "text": text})
-        category = str(row.get("protocol_deviation_category", "")).strip()
-        sub_category = str(row.get("protocol_deviation_sub_category", "")).strip()
+        category = pd_spec_field(row, "protocol_deviation_category").strip()
+        sub_category = pd_spec_field(row, "protocol_deviation_sub_category").strip()
         rule_title = str(rule.get("title", "")).strip()
-        entry_source = str(row.get("entry_source", "extracted"))
+        entry_source = pd_spec_field(row, "entry_source", default=str(row.get("entry_source", "extracted")))
         if not rule_title:
             if sub_category:
                 rule_title = sub_category
@@ -1014,7 +1178,7 @@ class UiStepService:
         programmable = pseudo.get("programmable")
         if programmable is None:
             programmable = programmable_from_manual_or_programmable(
-                str(row.get("manual_or_programmable", "")).strip()
+                pd_spec_field(row, "manual_or_programmable").strip()
             )
         rule_text = str(rule.get("text") or rule.get("rule_text") or rule.get("description") or "")
         if not rule_text and category and entry_source == "imported_pd_spec":
@@ -2328,8 +2492,33 @@ class UiStepService:
                 merged[target_key] = payload[source_key]
         if "paragraph_refs" in payload or "paragraphRefs" in payload:
             merged["paragraph_refs"] = payload.get("paragraph_refs") or payload.get("paragraphRefs")
-        normalized = self._normalize_deviation_payload(merged, default_source=str(row.get("entry_source", "extracted")))
+        default_source = pd_spec_field(row, "entry_source", default=str(row.get("entry_source", "extracted")))
+        normalized = self._normalize_deviation_payload(merged, default_source=default_source)
         normalized["deviation_id"] = dev_id
+        if "original_deviation_text" in row:
+            normalized["original_deviation_text"] = row["original_deviation_text"]
+        if "suggested_deviation_text" in row:
+            normalized["suggested_deviation_text"] = row["suggested_deviation_text"]
+        if isinstance(row.get("pd_spec_import"), dict):
+            normalized["pd_spec_import"] = dict(row["pd_spec_import"])
+            for field in (
+                "protocol_deviation_category",
+                "protocol_deviation_sub_category",
+                "classification",
+                "data_source",
+                "manual_or_programmable",
+                "programming_status",
+                "programmer_comments",
+                "reviewer_comments",
+                "aa_comment",
+                "grounding_error",
+                "pseudo_logic_seed",
+                "enrichment_status",
+                "enrichment_summary",
+                "entry_source",
+            ):
+                if field in row and field not in normalized.get("pd_spec_import", {}):
+                    normalized.setdefault("pd_spec_import", {})[field] = row[field]
         state_obj = self._replace_row(state_obj, normalized)
         self._persist_state(
             study_id,
@@ -2573,7 +2762,14 @@ class UiStepService:
             "studyId": study_id,
             "reviewSource": source,
             "deviationId": dev_id,
-            "row": self._normalized_step7_row(row, pseudo_by_dev, rule_by_id, paragraph_by_ref),
+            "row": self._normalized_step7_row(
+                row,
+                pseudo_by_dev,
+                rule_by_id,
+                paragraph_by_ref,
+                study_id=study_id,
+                review_source=source,
+            ),
             "stepStatuses": self._step_statuses(study_id),
         }
 
@@ -2728,7 +2924,13 @@ class UiStepService:
             "studyId": study_id,
             "reviewSource": source,
             "deviationId": dev_id,
-            "row": self._normalized_step7_row(revised_row, pseudo_by_dev, rule_by_id),
+            "row": self._normalized_step7_row(
+                revised_row,
+                pseudo_by_dev,
+                rule_by_id,
+                study_id=study_id,
+                review_source=source,
+            ),
             "messages": list(chat_obj.get("deviations", {}).get(dev_id, {}).get("messages", []))[-25:],
             "audit": audit,
             "responseType": str(audit.get("response_type", "")),
@@ -2780,7 +2982,13 @@ class UiStepService:
             "studyId": study_id,
             "reviewSource": source,
             "deviationId": dev_id,
-            "row": self._normalized_step7_row(updated, pseudo_by_dev, rule_by_id),
+            "row": self._normalized_step7_row(
+                updated,
+                pseudo_by_dev,
+                rule_by_id,
+                study_id=study_id,
+                review_source=source,
+            ),
             "stepStatuses": self._step_statuses(study_id),
         }
 
@@ -2845,7 +3053,13 @@ class UiStepService:
             "studyId": study_id,
             "reviewSource": source,
             "deviationId": dev_id,
-            "row": self._normalized_step7_row(row, pseudo_by_dev, rule_by_id),
+            "row": self._normalized_step7_row(
+                row,
+                pseudo_by_dev,
+                rule_by_id,
+                study_id=study_id,
+                review_source=source,
+            ),
             "stepStatuses": self._step_statuses(study_id),
         }
 
@@ -2867,7 +3081,14 @@ class UiStepService:
             pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in pseudo_obj.get("items", [])}
             rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
             normalized = [
-                self._normalized_step7_row(row, pseudo_by_dev, rule_by_id) for row in state_obj.get("deviations", [])
+                self._normalized_step7_row(
+                    row,
+                    pseudo_by_dev,
+                    rule_by_id,
+                    study_id=study_id,
+                    review_source=source,
+                )
+                for row in state_obj.get("deviations", [])
             ]
             return {
                 "studyId": study_id,
@@ -2890,7 +3111,14 @@ class UiStepService:
         pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in pseudo_obj.get("items", [])}
         rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
         normalized = [
-            self._normalized_step7_row(row, pseudo_by_dev, rule_by_id) for row in state_obj.get("deviations", [])
+            self._normalized_step7_row(
+                row,
+                pseudo_by_dev,
+                rule_by_id,
+                study_id=study_id,
+                review_source=source,
+            )
+            for row in state_obj.get("deviations", [])
         ]
         return {
             "studyId": study_id,
@@ -2935,7 +3163,16 @@ class UiStepService:
         rules_obj = read_json(paths.local_rules_parsed_json(study_id, self.output_dir))
         pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in items}
         rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
-        rows = [self._normalized_step7_row(row, pseudo_by_dev, rule_by_id) for row in state_obj.get("deviations", [])]
+        rows = [
+            self._normalized_step7_row(
+                row,
+                pseudo_by_dev,
+                rule_by_id,
+                study_id=study_id,
+                review_source=source,
+            )
+            for row in state_obj.get("deviations", [])
+        ]
         return {
             "studyId": study_id,
             "reviewSource": source,

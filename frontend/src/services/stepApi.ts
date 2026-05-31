@@ -238,6 +238,8 @@ export interface Step7DeviationRow {
   entry_source: string;
   programmable: boolean | null;
   programmability_note: string;
+  original_deviation_text?: string;
+  suggested_deviation_text?: string;
   enrichment_status?: string;
   enrichment_summary?: string;
   assumptions?: string[];
@@ -568,6 +570,40 @@ export async function fetchStep7DeviationChat(studyId: string, deviationId: stri
     `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/${encodeURIComponent(deviationId)}/chat`
   );
   return parseApiResponse<Step7DeviationChatResponse>(response);
+}
+
+export interface Step7EnrichmentDetailResponse {
+  studyId: string;
+  deviationId: string;
+  enrichment_status: string;
+  enrichment_summary: string;
+  enrichment_errors: Record<string, string>;
+  original_deviation_text: string;
+  suggested_deviation_text: string;
+  improved_deviation_text: string;
+  improved_pseudo_logic_plain_english: string;
+  paragraph_refs?: string[];
+  protocol_grounding?: Record<string, unknown>;
+  acrf_grounding?: Record<string, unknown>;
+  assumptions: string[];
+  caveats: string[];
+  data_gaps: string[];
+  weak_spots: string[];
+  suggested_changes: string[];
+  protocol_conflicts: string[];
+  programmability_risk: string;
+  required_datasets: string[];
+  required_fields: string[];
+}
+
+export async function fetchStep7EnrichmentDetail(
+  studyId: string,
+  deviationId: string
+): Promise<Step7EnrichmentDetailResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/${encodeURIComponent(deviationId)}/enrichment`
+  );
+  return parseApiResponse<Step7EnrichmentDetailResponse>(response);
 }
 
 export async function refineStep7Deviation(

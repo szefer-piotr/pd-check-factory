@@ -17,6 +17,8 @@ BEGIN_REVISION = "<<<BEGIN_REVISION>>>"
 END_REVISION = "<<<END_REVISION>>>"
 BEGIN_GROUNDING = "<<<BEGIN_GROUNDING>>>"
 END_GROUNDING = "<<<END_GROUNDING>>>"
+BEGIN_ACRF_GROUNDING = "<<<BEGIN_ACRF_GROUNDING>>>"
+END_ACRF_GROUNDING = "<<<END_ACRF_GROUNDING>>>"
 BEGIN_IMPORT_MERGE = "<<<BEGIN_IMPORT_MERGE>>>"
 END_IMPORT_MERGE = "<<<END_IMPORT_MERGE>>>"
 
@@ -368,6 +370,58 @@ def parse_import_grounding_block(text: str) -> Optional[Dict[str, Any]]:
         "paragraph_refs": refs,
         "data_support_note": data_note,
         "acrf_dataset_names": acrf_datasets,
+        "grounding_error": "",
+    }
+
+
+def parse_acrf_grounding_block(text: str) -> Optional[Dict[str, Any]]:
+    """Parse protocol enrichment aCRF grounding LLM output."""
+    blocks = _extract_blocks(text or "", BEGIN_ACRF_GROUNDING, END_ACRF_GROUNDING)
+    if not blocks:
+        return None
+    pseudo = ""
+    programmable = ""
+    risk = "medium"
+    rationale = ""
+    sections: List[str] = []
+    data_note = ""
+    error = ""
+    for line in blocks[0].splitlines():
+        stripped = line.strip()
+        if stripped.startswith("PSEUDO_LOGIC_PLAIN_ENGLISH:"):
+            pseudo = stripped[len("PSEUDO_LOGIC_PLAIN_ENGLISH:") :].strip()
+        elif stripped.startswith("PROGRAMMABLE:"):
+            programmable = stripped[len("PROGRAMMABLE:") :].strip().lower()
+        elif stripped.startswith("PROGRAMMABILITY_RISK:"):
+            risk = stripped[len("PROGRAMMABILITY_RISK:") :].strip().lower() or "medium"
+        elif stripped.startswith("PROGRAMMABILITY_RATIONALE:"):
+            rationale = stripped[len("PROGRAMMABILITY_RATIONALE:") :].strip()
+        elif stripped.startswith("ACRF_SECTIONS:"):
+            rest = stripped[len("ACRF_SECTIONS:") :].strip()
+            sections = [x.strip() for x in rest.split(",") if x.strip()]
+        elif stripped.startswith("DATA_SUPPORT_NOTE:"):
+            data_note = stripped[len("DATA_SUPPORT_NOTE:") :].strip()
+        elif stripped.startswith("GROUNDING_ERROR:"):
+            error = stripped[len("GROUNDING_ERROR:") :].strip()
+    if risk not in {"low", "medium", "high"}:
+        risk = "medium"
+    if error:
+        return {
+            "pseudo_logic_plain_english": pseudo,
+            "programmable": programmable,
+            "programmability_risk": risk,
+            "programmability_rationale": rationale,
+            "acrf_sections": sections,
+            "data_support_note": data_note,
+            "grounding_error": error,
+        }
+    return {
+        "pseudo_logic_plain_english": pseudo,
+        "programmable": programmable,
+        "programmability_risk": risk,
+        "programmability_rationale": rationale,
+        "acrf_sections": sections,
+        "data_support_note": data_note,
         "grounding_error": "",
     }
 

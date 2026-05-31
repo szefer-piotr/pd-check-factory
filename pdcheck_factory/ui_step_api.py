@@ -146,6 +146,9 @@ class StepApiHandler(BaseHTTPRequestHandler):
                     content_disposition=f'attachment; filename="{export_payload["fileName"]}"',
                 )
                 return
+            elif tail.startswith("step7/deviations/") and tail.endswith("/enrichment"):
+                deviation_id = tail[len("step7/deviations/") : -len("/enrichment")]
+                data = self.service.get_step7_enrichment_detail(study_id, deviation_id)
             elif tail.startswith("step7/deviations/") and tail.endswith("/chat"):
                 deviation_id = tail[len("step7/deviations/") : -len("/chat")]
                 data = self.service.get_step7_deviation_chat(study_id, deviation_id)

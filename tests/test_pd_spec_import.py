@@ -80,7 +80,7 @@ class TestPdSpecImport(unittest.TestCase):
         self.assertEqual(row["rule_id"], stable_pd_spec_rule_id("Eligibility Criteria", "Age"))
         self.assertIn("Subject below minimum age", row["text"])
         self.assertIn("Data source: RAVE", row["text"])
-        self.assertEqual(row["entry_source"], "imported_pd_spec")
+        self.assertEqual(row["pd_spec_import"]["entry_source"], "imported_pd_spec")
 
     def test_parse_pd_spec_xlsx_table_returns_all_columns(self) -> None:
         wb = Workbook()
@@ -170,11 +170,11 @@ class TestPdSpecImport(unittest.TestCase):
         deviations = parse_pd_spec_xlsx(buffer.getvalue())
         self.assertEqual(len(deviations), 1)
         row = deviations[0]
-        self.assertEqual(row["protocol_deviation_category"], "Eligibility Criteria")
-        self.assertEqual(row["protocol_deviation_sub_category"], "Age")
+        self.assertEqual(row["pd_spec_import"]["protocol_deviation_category"], "Eligibility Criteria")
+        self.assertEqual(row["pd_spec_import"]["protocol_deviation_sub_category"], "Age")
         self.assertIn("Subject enrolled below minimum age", row["text"])
-        self.assertEqual(row["entry_source"], "imported_pd_spec")
-        self.assertEqual(row["data_source"], "RAVE")
+        self.assertEqual(row["pd_spec_import"]["entry_source"], "imported_pd_spec")
+        self.assertEqual(row["pd_spec_import"]["data_source"], "RAVE")
         self.assertTrue(row["deviation_id"].startswith("dev-import-"))
         self.assertEqual(row["rule_id"], stable_pd_spec_rule_id("Eligibility Criteria", "Age"))
 

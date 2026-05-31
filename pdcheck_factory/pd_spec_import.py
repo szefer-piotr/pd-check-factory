@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Mapping, Tuple
 
 from openpyxl import load_workbook
 
+from pdcheck_factory.deviation_contract import split_pd_spec_row
 from pdcheck_factory.pd_spec_export import PD_SPEC_HEADERS, PD_SPEC_SHEET_TITLE
 
 _PD_FIELDS = [
@@ -151,7 +152,7 @@ def map_pd_spec_row_to_deviation(
         "pseudo_logic_seed": str(row_values.get("pseudo_logic_seed", "") or "").strip(),
         "grounding_error": "",
     }
-    return row
+    return split_pd_spec_row(row)
 
 
 def _unique_column_headers(raw_headers: Tuple[Any, ...]) -> List[str]:

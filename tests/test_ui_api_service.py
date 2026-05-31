@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from io import BytesIO
 
@@ -1171,3 +1172,121 @@ def test_get_step7_review_sources_and_isolated_state(tmp_path: Path) -> None:
     assert generated_again["rows"][0]["status"] == "pending"
     imported_again = service.get_step7_deviations(study_id, review_source=review_sources.REVIEW_SOURCE_IMPORTED_PD_SPEC)
     assert imported_again["rows"][0]["status"] == "accepted"
+
+
+def test_step7_enrichment_detail_endpoint(tmp_path: Path) -> None:
+    from pdcheck_factory import review_sources
+
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "ENRICH-API"
+    deviation_id = "dev-import-enrich-1"
+    artifact_path = paths.local_protocol_enrichment_json(study_id, tmp_path, deviation_id)
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    artifact_path.write_text(
+        json.dumps(
+            {
+                "schema_version": "1.0.0",
+                "study_id": study_id,
+                "deviation_id": deviation_id,
+                "generated_at": "2026-05-21T00:00:00Z",
+                "enrichment_status": "ok",
+                "enrichment_summary": "Done",
+                "enrichment_errors": {},
+                "merged": {
+                    "original_deviation_text": "Original import",
+                    "improved_deviation_text": "Improved",
+                    "assumptions": ["a1"],
+                    "caveats": ["c1"],
+                    "programmability_risk": "low",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    detail = service.get_step7_enrichment_detail(study_id, deviation_id)
+    assert detail["original_deviation_text"] == "Original import"
+    assert detail["suggested_deviation_text"] == "Improved"
+    assert detail["improved_deviation_text"] == "Improved"
+    assert detail["assumptions"] == ["a1"]
+    assert detail["caveats"] == ["c1"]
+
+    enriched_path = review_sources.review_state_path(
+        study_id, tmp_path, review_sources.REVIEW_SOURCE_ENRICHED_PD_SPEC
+    )
+    enriched_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(
+        enriched_path,
+        {
+            "schema_version": "1.1.0",
+            "study_id": study_id,
+            "generated_at": "2026-05-21T00:00:00Z",
+            "pd_spec_import_mode": "enrich",
+            "deviations": [
+                {
+                    "deviation_id": deviation_id,
+                    "rule_id": "pd-spec-rule-1",
+                    "text": "Improved",
+                    "original_deviation_text": "Original import",
+                    "paragraph_refs": ["p1"],
+                    "status": "pending",
+                    "dm_comment": "",
+                    "pd_spec_import": {
+                        "entry_source": "imported_pd_spec",
+                        "enrichment_status": "ok",
+                        "enrichment_summary": "Done",
+                    },
+                }
+            ],
+        },
+    )
+    service._write_upload_manifest(  # noqa: SLF001
+        study_id, review_display_source=review_sources.REVIEW_SOURCE_ENRICHED_PD_SPEC
+    )
+    rows = service.get_step7_deviations(
+        study_id, review_source=review_sources.REVIEW_SOURCE_ENRICHED_PD_SPEC
+    )["rows"]
+    assert rows[0]["original_deviation_text"] == "Original import"
+    assert "assumptions" not in rows[0] or rows[0].get("assumptions") in (None, [])
+
+
+def test_step7_enrichment_detail_fallback_from_row(tmp_path: Path) -> None:
+    from pdcheck_factory import review_sources
+
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "ENRICH-FALLBACK"
+    deviation_id = "dev-import-fallback-1"
+    enriched_path = review_sources.review_state_path(
+        study_id, tmp_path, review_sources.REVIEW_SOURCE_ENRICHED_PD_SPEC
+    )
+    enriched_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(
+        enriched_path,
+        {
+            "schema_version": "1.1.0",
+            "study_id": study_id,
+            "generated_at": "2026-05-21T00:00:00Z",
+            "pd_spec_import_mode": "enrich",
+            "deviations": [
+                {
+                    "deviation_id": deviation_id,
+                    "rule_id": "pd-spec-rule-1",
+                    "text": "Imported text",
+                    "original_deviation_text": "Imported text",
+                    "suggested_deviation_text": "Suggested from row",
+                    "paragraph_refs": ["p1"],
+                    "status": "pending",
+                    "dm_comment": "",
+                    "pd_spec_import": {
+                        "entry_source": "imported_pd_spec",
+                        "enrichment_status": "ok",
+                        "enrichment_summary": "Done",
+                    },
+                }
+            ],
+        },
+    )
+
+    detail = service.get_step7_enrichment_detail(study_id, deviation_id)
+    assert detail["suggested_deviation_text"] == "Suggested from row"
+    assert detail["original_deviation_text"] == "Imported text"

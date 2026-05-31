@@ -30,25 +30,33 @@
           "data_support_note": { "type": "string" },
           "status": { "type": "string", "enum": ["pending", "accepted", "to_review", "rejected"] },
           "dm_comment": { "type": "string" },
-          "entry_source": {
-            "type": "string",
-            "enum": ["extracted", "imported", "imported_pd_spec"]
+          "original_deviation_text": { "type": "string" },
+          "suggested_deviation_text": { "type": "string" },
+          "pd_spec_import": {
+            "type": "object",
+            "properties": {
+              "entry_source": {
+                "type": "string",
+                "enum": ["extracted", "imported", "imported_pd_spec"]
+              },
+              "protocol_deviation_category": { "type": "string" },
+              "protocol_deviation_sub_category": { "type": "string" },
+              "classification": { "type": "string" },
+              "data_source": { "type": "string" },
+              "manual_or_programmable": { "type": "string" },
+              "programming_status": { "type": "string" },
+              "programmer_comments": { "type": "string" },
+              "reviewer_comments": { "type": "string" },
+              "aa_comment": { "type": "string" },
+              "grounding_error": { "type": "string" },
+              "occurrence_date": { "type": "string" },
+              "additional_information": { "type": "string" },
+              "pseudo_logic_seed": { "type": "string" },
+              "enrichment_status": { "type": "string", "enum": ["ok", "partial", "failed"] },
+              "enrichment_summary": { "type": "string" }
+            },
+            "additionalProperties": true
           },
-          "protocol_deviation_category": { "type": "string" },
-          "protocol_deviation_sub_category": { "type": "string" },
-          "classification": { "type": "string" },
-          "data_source": { "type": "string" },
-          "manual_or_programmable": { "type": "string" },
-          "programming_status": { "type": "string" },
-          "programmer_comments": { "type": "string" },
-          "reviewer_comments": { "type": "string" },
-          "aa_comment": { "type": "string" },
-          "grounding_error": { "type": "string" },
-          "occurrence_date": { "type": "string" },
-          "additional_information": { "type": "string" },
-          "pseudo_logic_seed": { "type": "string" },
-          "enrichment_status": { "type": "string", "enum": ["ok", "partial", "failed"] },
-          "enrichment_summary": { "type": "string" },
           "merge_action": { "type": "string", "enum": ["keep", "update", "add"] },
           "merge_source_ids": {
             "type": "array",
