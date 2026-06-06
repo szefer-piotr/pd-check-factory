@@ -405,8 +405,17 @@ export function Step7ReviewPanel({
           type="button"
           onClick={() => void handleAcceptAll()}
           disabled={isBulkAccepting || isLoading || acceptAllCount === 0 || !studyId.trim()}
+          title={
+            reviewSource === "enriched_pd_spec"
+              ? "Accept all pending deviations with their current text (does not apply enriched suggestions)"
+              : undefined
+          }
         >
-          {isBulkAccepting ? "Accepting..." : `Accept all (${acceptAllCount})`}
+          {isBulkAccepting
+            ? "Accepting..."
+            : reviewSource === "enriched_pd_spec"
+              ? `Keep all original (${acceptAllCount})`
+              : `Accept all (${acceptAllCount})`}
         </button>
         <button
           className="button button-optional"

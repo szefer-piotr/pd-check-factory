@@ -643,6 +643,20 @@ export async function updateStep7DeviationStatus(
   return parseApiResponse<Step7UpdateResponse>(response);
 }
 
+export async function acceptStep7DeviationEnriched(
+  studyId: string,
+  deviationId: string,
+  suggestedText: string,
+  reviewSource?: Step7ReviewSource
+): Promise<Step7UpdateResponse> {
+  return updateStep7Deviation(
+    studyId,
+    deviationId,
+    { status: "accepted", text: suggestedText },
+    reviewSource
+  );
+}
+
 export async function createStep7Deviation(
   studyId: string,
   payload: Step7DeviationPayload,

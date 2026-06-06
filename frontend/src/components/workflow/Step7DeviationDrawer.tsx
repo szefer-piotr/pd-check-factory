@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  acceptStep7DeviationEnriched,
   fetchStep7DeviationChat,
   fetchStep7EnrichmentDetail,
   generateStep7PseudoLogic,
@@ -126,6 +127,19 @@ export function Step7DeviationDrawer({
     Boolean(originalText) &&
     originalText !== row.deviation_text.trim();
 
+  const isEnrichedReview = reviewSource === "enriched_pd_spec";
+  const suggestedText = (
+    row.suggested_deviation_text ??
+    enrichmentDetail?.suggested_deviation_text ??
+    enrichmentDetail?.improved_deviation_text ??
+    ""
+  ).trim();
+  const currentDeviationText = row.deviation_text.trim();
+  const isReviewFinalized = row.status === "accepted" || row.status === "rejected";
+  const canAcceptEnriched =
+    isEnrichedReview && Boolean(suggestedText) && suggestedText !== currentDeviationText;
+  const reviewFinalizedTitle = isReviewFinalized ? `Deviation is already ${row.status}` : undefined;
+
   async function loadEnrichmentDetail(): Promise<void> {
     if (reviewSource !== "enriched_pd_spec" || !deviationId) {
       return;
@@ -164,6 +178,30 @@ export function Step7DeviationDrawer({
     } catch (updateError) {
       setError(updateError instanceof Error ? updateError.message : "Unable to update status.");
     }
+  }
+
+  async function handleAcceptEnriched(): Promise<void> {
+    if (!suggestedText) {
+      setError("No enriched deviation text is available to accept.");
+      return;
+    }
+    setError("");
+    try {
+      const updated = await acceptStep7DeviationEnriched(
+        studyId.trim(),
+        activeRow.deviation_id,
+        suggestedText,
+        reviewSource
+      );
+      onRowUpdated(updated.row);
+      onStepStatusesChange(updated.stepStatuses);
+    } catch (updateError) {
+      setError(updateError instanceof Error ? updateError.message : "Unable to accept enriched text.");
+    }
+  }
+
+  async function handleKeepOriginal(): Promise<void> {
+    await handleStatusUpdate("accepted");
   }
 
   async function handleSend(): Promise<void> {
@@ -264,20 +302,64 @@ export function Step7DeviationDrawer({
           <p className="step7-muted">{row.rule_title || row.rule_id}</p>
         </div>
         <div className="step7-drawer-header-actions">
-          <button
-            className="button button-step7-subtle button-step7-subtle-accent"
-            type="button"
-            onClick={() => void handleStatusUpdate("accepted")}
-          >
-            Accept
-          </button>
-          <button
-            className="button button-step7-subtle button-step7-subtle-danger"
-            type="button"
-            onClick={() => void handleStatusUpdate("rejected")}
-          >
-            Decline
-          </button>
+          {isEnrichedReview ? (
+            <>
+              <button
+                className="button button-step7-subtle button-step7-subtle-accent"
+                type="button"
+                disabled={!canAcceptEnriched || isReviewFinalized}
+                title={
+                  reviewFinalizedTitle ??
+                  (!suggestedText
+                    ? "No enriched text available"
+                    : !canAcceptEnriched
+                      ? "Enriched text is already applied"
+                      : "Replace working text with enriched suggestion and accept")
+                }
+                onClick={() => void handleAcceptEnriched()}
+              >
+                Accept enriched
+              </button>
+              <button
+                className="button button-step7-subtle button-step7-subtle-accent"
+                type="button"
+                disabled={isReviewFinalized}
+                title={
+                  reviewFinalizedTitle ??
+                  "Accept deviation with current text (original import or chat-refined)"
+                }
+                onClick={() => void handleKeepOriginal()}
+              >
+                Keep original
+              </button>
+              <button
+                className="button button-step7-subtle button-step7-subtle-danger"
+                type="button"
+                disabled={isReviewFinalized}
+                title={reviewFinalizedTitle ?? "Reject this deviation"}
+                onClick={() => void handleStatusUpdate("rejected")}
+              >
+                Reject
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className="button button-step7-subtle button-step7-subtle-accent"
+                type="button"
+                onClick={() => void handleStatusUpdate("accepted")}
+              >
+                Accept
+              </button>
+              <button
+                className="button button-step7-subtle button-step7-subtle-danger"
+                type="button"
+                onClick={() => void handleStatusUpdate("rejected")}
+              >
+                Decline
+              </button>
+            </>
+          )}
           <button className="button button-ghost" type="button" onClick={onClose} aria-label="Close">
             Close
           </button>

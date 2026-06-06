@@ -378,7 +378,7 @@ vi.mock("../services/stepApi", () => ({
     ],
     stepStatuses: DONE_STATUSES
   })),
-  updateStep7Deviation: vi.fn(async () => ({
+  updateStep7Deviation: vi.fn(async (_studyId, _deviationId, payload) => ({
     studyId: "MY-STUDY",
     deviationId: "dev-0001",
     row: {
@@ -386,19 +386,67 @@ vi.mock("../services/stepApi", () => ({
       deviation_id: "dev-0001",
       rule_title: "Visit window timing",
       rule_text: "Visit must happen inside window",
-      deviation_text: "Edited deviation",
+      deviation_text: typeof payload?.text === "string" ? payload.text : "Edited deviation",
       paragraph_refs: ["p2"],
       paragraph_refs_text: "p2",
       supporting_sentences: [],
       data_support_note: "",
       pseudo_logic: "",
-      status: "pending",
+      status: payload?.status ?? "pending",
       dm_comment: "",
       entry_source: "extracted",
       programmable: null,
-      programmability_note: ""
+      programmability_note: "",
+      original_deviation_text: "Original import text",
+      suggested_deviation_text: "Suggested enriched text"
     },
     stepStatuses: DONE_STATUSES
+  })),
+  acceptStep7DeviationEnriched: vi.fn(async (_studyId, deviationId, suggestedText, reviewSource) => ({
+    studyId: "MY-STUDY",
+    deviationId,
+    reviewSource,
+    row: {
+      rule_id: "pd-spec-rule-1",
+      deviation_id: deviationId,
+      rule_title: "Visit window",
+      rule_text: "Visit must happen inside window",
+      deviation_text: suggestedText,
+      paragraph_refs: ["p1"],
+      paragraph_refs_text: "p1",
+      supporting_sentences: [],
+      data_support_note: "",
+      pseudo_logic: "",
+      status: "accepted",
+      dm_comment: "",
+      entry_source: "imported_pd_spec",
+      programmable: null,
+      programmability_note: "",
+      original_deviation_text: "Original import text",
+      suggested_deviation_text: suggestedText
+    },
+    stepStatuses: DONE_STATUSES
+  })),
+  fetchStep7EnrichmentDetail: vi.fn(async () => ({
+    enrichment_status: "ok",
+    enrichment_summary: "Done",
+    enrichment_errors: {},
+    original_deviation_text: "Original import text",
+    suggested_deviation_text: "Suggested enriched text",
+    improved_deviation_text: "Suggested enriched text",
+    improved_pseudo_logic_plain_english: "",
+    paragraph_refs: ["p1"],
+    assumptions: [],
+    caveats: [],
+    data_gaps: [],
+    weak_spots: [],
+    suggested_changes: [],
+    protocol_conflicts: [],
+    programmability_risk: "low",
+    required_datasets: [],
+    required_fields: [],
+    protocol_grounding: {},
+    acrf_grounding: {}
   })),
   createStep7Rule: vi.fn(async () => ({ studyId: "MY-STUDY", rule: { rule_id: "rule-new", title: "New rule", text: "" }, stepStatuses: DONE_STATUSES })),
   updateStep7Rule: vi.fn(async () => ({ studyId: "MY-STUDY", rule: { rule_id: "rule-001", title: "Edited rule", text: "Edited body" }, stepStatuses: DONE_STATUSES })),
@@ -555,9 +603,9 @@ describe("Workflow pipeline pages", () => {
     expect((await screen.findAllByText(/1 project in blob/)).length).toBeGreaterThan(0);
     expect(screen.getAllByText("Processing").length).toBeGreaterThan(0);
     expect(await screen.findByRole("button", { name: "Run pipeline to review" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Map to review", exact: true })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Enrich and open review", exact: true })).toBeDisabled();
-    expect(screen.getAllByRole("button", { name: "Re-run", exact: true }).length).toBe(3);
+    expect(screen.getByRole("button", { name: "Map to review" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Enrich and open review" })).toBeDisabled();
+    expect(screen.getAllByRole("button", { name: "Re-run" }).length).toBe(3);
     expect(screen.getByText("Pipeline progress")).toBeInTheDocument();
     expect(screen.getByText("PD Specification")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: "Use ID" }).length).toBeGreaterThan(0);
@@ -674,6 +722,163 @@ describe("Workflow pipeline pages", () => {
     await user.click(screen.getByRole("button", { name: "Send" }));
     const transcript = screen.getByRole("log", { name: "Chat transcript" });
     expect(await within(transcript).findByText("Updated deviation from your message.")).toBeInTheDocument();
+  });
+
+  it("shows enriched accept, keep original, and reject buttons in drawer", async () => {
+    const stepApi = await import("../services/stepApi");
+    const enrichedRow = {
+      rule_id: "pd-spec-rule-1",
+      deviation_id: "dev-enriched-1",
+      rule_title: "Visit window",
+      rule_text: "Visit must happen inside window",
+      deviation_text: "Original import text",
+      paragraph_refs: ["p1"],
+      paragraph_refs_text: "p1",
+      supporting_sentences: [],
+      data_support_note: "",
+      pseudo_logic: "",
+      status: "to_review" as const,
+      dm_comment: "",
+      entry_source: "imported_pd_spec",
+      programmable: null,
+      programmability_note: "",
+      original_deviation_text: "Original import text",
+      suggested_deviation_text: "Suggested enriched text"
+    };
+    vi.mocked(stepApi.fetchStep7ReviewSources).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      selectedSource: "enriched_pd_spec",
+      sources: [
+        { key: "enriched_pd_spec", label: "Enriched PD Specifications", available: true, rowCount: 1 }
+      ],
+      stepStatuses: DONE_STATUSES
+    });
+    vi.mocked(stepApi.fetchStep7Deviations).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      reviewSource: "enriched_pd_spec",
+      columns: ["rule_id", "deviation_id", "deviation_text"],
+      rows: [enrichedRow],
+      stepStatuses: DONE_STATUSES
+    });
+
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: /Review and Finalize/i }));
+    await user.click(await screen.findByRole("button", { name: /dev-enriched-1/i }));
+
+    expect(await screen.findByRole("button", { name: "Accept enriched" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Keep original" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Reject" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Decline" })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Keep original" }));
+    await waitFor(() => {
+      expect(stepApi.updateStep7DeviationStatus).toHaveBeenCalledWith(
+        "MY-STUDY",
+        "dev-enriched-1",
+        "accepted",
+        undefined,
+        "enriched_pd_spec"
+      );
+    });
+  });
+
+  it("calls accept enriched with suggested text", async () => {
+    const stepApi = await import("../services/stepApi");
+    vi.mocked(stepApi.fetchStep7ReviewSources).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      selectedSource: "enriched_pd_spec",
+      sources: [
+        { key: "enriched_pd_spec", label: "Enriched PD Specifications", available: true, rowCount: 1 }
+      ],
+      stepStatuses: DONE_STATUSES
+    });
+    vi.mocked(stepApi.fetchStep7Deviations).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      reviewSource: "enriched_pd_spec",
+      columns: ["rule_id", "deviation_id", "deviation_text"],
+      rows: [
+        {
+          rule_id: "pd-spec-rule-1",
+          deviation_id: "dev-enriched-1",
+          rule_title: "Visit window",
+          rule_text: "Visit must happen inside window",
+          deviation_text: "Original import text",
+          paragraph_refs: ["p1"],
+          paragraph_refs_text: "p1",
+          supporting_sentences: [],
+          data_support_note: "",
+          pseudo_logic: "",
+          status: "to_review",
+          dm_comment: "",
+          entry_source: "imported_pd_spec",
+          programmable: null,
+          programmability_note: "",
+          original_deviation_text: "Original import text",
+          suggested_deviation_text: "Suggested enriched text"
+        }
+      ],
+      stepStatuses: DONE_STATUSES
+    });
+
+    const user = userEvent.setup();
+    render(<App />);
+    await user.click(screen.getByRole("button", { name: /Review and Finalize/i }));
+    await user.click(await screen.findByRole("button", { name: /dev-enriched-1/i }));
+    await user.click(await screen.findByRole("button", { name: "Accept enriched" }));
+
+    await waitFor(() => {
+      expect(stepApi.acceptStep7DeviationEnriched).toHaveBeenCalledWith(
+        "MY-STUDY",
+        "dev-enriched-1",
+        "Suggested enriched text",
+        "enriched_pd_spec"
+      );
+    });
+  });
+
+  it("labels bulk accept as keep all original for enriched review source", async () => {
+    const stepApi = await import("../services/stepApi");
+    vi.mocked(stepApi.fetchStep7ReviewSources).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      selectedSource: "enriched_pd_spec",
+      sources: [
+        { key: "enriched_pd_spec", label: "Enriched PD Specifications", available: true, rowCount: 1 }
+      ],
+      stepStatuses: DONE_STATUSES
+    });
+    vi.mocked(stepApi.fetchStep7Deviations).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      reviewSource: "enriched_pd_spec",
+      columns: ["rule_id", "deviation_id", "deviation_text"],
+      rows: [
+        {
+          rule_id: "pd-spec-rule-1",
+          deviation_id: "dev-enriched-1",
+          rule_title: "Visit window",
+          rule_text: "Visit must happen inside window",
+          deviation_text: "Original import text",
+          paragraph_refs: ["p1"],
+          paragraph_refs_text: "p1",
+          supporting_sentences: [],
+          data_support_note: "",
+          pseudo_logic: "",
+          status: "to_review",
+          dm_comment: "",
+          entry_source: "imported_pd_spec",
+          programmable: null,
+          programmability_note: "",
+          original_deviation_text: "Original import text",
+          suggested_deviation_text: "Suggested enriched text"
+        }
+      ],
+      stepStatuses: DONE_STATUSES
+    });
+
+    render(<App />);
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: /Review and Finalize/i }));
+    expect(await screen.findByRole("button", { name: /Keep all original \(1\)/i })).toBeInTheDocument();
   });
 
   it("shows Continue pipeline when some processing steps are already complete", async () => {
@@ -954,7 +1159,8 @@ describe("Workflow pipeline pages", () => {
     vi.mocked(stepApi.fetchStepStatuses).mockResolvedValueOnce({
       studyId: "MY-STUDY",
       codingPhaseAccepted: false,
-      steps: pendingSteps
+      steps: pendingSteps,
+      nextStepId: "extract-inputs"
     });
     vi.mocked(stepApi.fetchStep1UploadStatus).mockResolvedValueOnce({
       studyId: "MY-STUDY",
@@ -1028,9 +1234,9 @@ describe("Workflow pipeline pages", () => {
     });
     render(<App />);
     expect(await screen.findByRole("button", { name: "Run pipeline to review" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Map to review", exact: true })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Enrich and open review", exact: true })).toBeEnabled();
-    const rerunButtons = screen.getAllByRole("button", { name: "Re-run", exact: true });
+    expect(screen.getByRole("button", { name: "Map to review" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Enrich and open review" })).toBeEnabled();
+    const rerunButtons = screen.getAllByRole("button", { name: "Re-run" });
     expect(rerunButtons.length).toBeGreaterThanOrEqual(3);
     expect(rerunButtons.filter((button) => !button.hasAttribute("disabled")).length).toBeGreaterThanOrEqual(3);
   });
@@ -1059,7 +1265,7 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    const mapButton = await screen.findByRole("button", { name: "Map to review", exact: true });
+    const mapButton = await screen.findByRole("button", { name: "Map to review" });
     await waitFor(() => expect(mapButton).toBeEnabled());
     await user.click(mapButton);
 
@@ -1076,7 +1282,7 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    const enrichButton = await screen.findByRole("button", { name: "Enrich and open review", exact: true });
+    const enrichButton = await screen.findByRole("button", { name: "Enrich and open review" });
     await waitFor(() => expect(enrichButton).toBeEnabled());
     await user.click(enrichButton);
 
@@ -1102,9 +1308,9 @@ describe("Workflow pipeline pages", () => {
       stepStatuses: DONE_STATUSES
     });
     render(<App />);
-    await screen.findByRole("button", { name: "Map to review", exact: true });
-    expect(screen.getByRole("button", { name: "Map to review", exact: true })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Enrich and open review", exact: true })).toBeDisabled();
+    await screen.findByRole("button", { name: "Map to review" });
+    expect(screen.getByRole("button", { name: "Map to review" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Enrich and open review" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Run pipeline to review" })).toBeEnabled();
   });
 
@@ -1147,9 +1353,9 @@ describe("Workflow pipeline pages", () => {
       stepStatuses: pendingIndex
     });
     render(<App />);
-    await screen.findByRole("button", { name: "Map to review", exact: true });
-    expect(screen.getByRole("button", { name: "Map to review", exact: true })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Enrich and open review", exact: true })).toBeDisabled();
+    await screen.findByRole("button", { name: "Map to review" });
+    expect(screen.getByRole("button", { name: "Map to review" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Enrich and open review" })).toBeDisabled();
   });
 
   it("opens markdown preview in a modal when Preview is clicked", async () => {

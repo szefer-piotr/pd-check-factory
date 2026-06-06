@@ -1290,3 +1290,61 @@ def test_step7_enrichment_detail_fallback_from_row(tmp_path: Path) -> None:
     detail = service.get_step7_enrichment_detail(study_id, deviation_id)
     assert detail["suggested_deviation_text"] == "Suggested from row"
     assert detail["original_deviation_text"] == "Imported text"
+
+
+def test_enriched_patch_accept_with_text_promotes_suggestion(tmp_path: Path) -> None:
+    from pdcheck_factory import review_sources
+
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "ENRICH-ACCEPT"
+    deviation_id = "dev-enriched-accept-1"
+    enriched_path = review_sources.review_state_path(
+        study_id, tmp_path, review_sources.REVIEW_SOURCE_ENRICHED_PD_SPEC
+    )
+    enriched_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(
+        enriched_path,
+        {
+            "schema_version": "1.1.0",
+            "study_id": study_id,
+            "generated_at": "2026-05-21T00:00:00Z",
+            "pd_spec_import_mode": "enrich",
+            "deviations": [
+                {
+                    "deviation_id": deviation_id,
+                    "rule_id": "pd-spec-rule-1",
+                    "text": "Imported text",
+                    "original_deviation_text": "Imported text",
+                    "suggested_deviation_text": "Suggested enriched text",
+                    "paragraph_refs": ["p1"],
+                    "status": "to_review",
+                    "dm_comment": "",
+                    "pd_spec_import": {
+                        "entry_source": "imported_pd_spec",
+                        "enrichment_status": "ok",
+                        "enrichment_summary": "Done",
+                    },
+                }
+            ],
+        },
+    )
+    service._write_upload_manifest(  # noqa: SLF001
+        study_id, review_display_source=review_sources.REVIEW_SOURCE_ENRICHED_PD_SPEC
+    )
+
+    updated = service.patch_step7_deviation_fields(
+        study_id,
+        deviation_id,
+        {"status": "accepted", "text": "Suggested enriched text"},
+        review_source=review_sources.REVIEW_SOURCE_ENRICHED_PD_SPEC,
+    )
+    assert updated["row"]["deviation_text"] == "Suggested enriched text"
+    assert updated["row"]["status"] == "accepted"
+    assert updated["row"]["original_deviation_text"] == "Imported text"
+    assert updated["row"]["suggested_deviation_text"] == "Suggested enriched text"
+
+    persisted = read_json(enriched_path)
+    row = persisted["deviations"][0]
+    assert row["text"] == "Suggested enriched text"
+    assert row["original_deviation_text"] == "Imported text"
+    assert row["suggested_deviation_text"] == "Suggested enriched text"
