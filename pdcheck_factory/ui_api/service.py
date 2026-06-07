@@ -2372,11 +2372,30 @@ class UiStepService:
                 }
             )
 
+        run_state = self._read_pipeline_run_state(study_id)
+        is_running = run_state.get("status") == "running"
+        partial = is_running and run_state.get("currentSubStepId") == step_id
+        item_count = 0
+        if step_id == "extract-rules" and p.rules_parsed.is_file():
+            try:
+                rules_obj = read_json(p.rules_parsed)
+                item_count = len(rules_obj.get("rules", []))
+            except (json.JSONDecodeError, OSError, ValueError):
+                item_count = 0
+        elif step_id == "extract-deviations" and p.deviations_parsed.is_file():
+            try:
+                dev_obj = read_json(p.deviations_parsed)
+                item_count = len(dev_obj.get("deviations", []))
+            except (json.JSONDecodeError, OSError, ValueError):
+                item_count = 0
+
         return {
             "studyId": study_id,
             "stepId": step_id,
             "previews": previews,
             "stepStatuses": self._step_statuses(study_id),
+            "partial": partial,
+            "itemCount": item_count,
         }
 
     def _pd_spec_workbook_available(self, study_id: str) -> bool:
