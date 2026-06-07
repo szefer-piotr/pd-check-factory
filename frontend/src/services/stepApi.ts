@@ -114,6 +114,8 @@ export interface StepPreviewResponse {
   stepId: string;
   previews: StepPreviewItem[];
   stepStatuses: Record<string, StepStatus>;
+  partial?: boolean;
+  itemCount?: number;
 }
 
 export interface Step1UploadResponse {
