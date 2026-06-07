@@ -469,7 +469,8 @@ export function StudyPipelineView({
             logs: runState.logs,
             message: runState.message,
             currentSubStepId: runState.currentSubStepId,
-            currentStage: runState.currentStage
+            currentStage: runState.currentStage,
+            llmProgress: runState.llmProgress ?? null
           });
         }}
       />

@@ -1,5 +1,6 @@
 import type { ExtractionRunState } from "../../hooks/useStudyPipelineState";
 import { ExtractionStatusPanel } from "./ExtractionStatusPanel";
+import { LlmProgressBar } from "./LlmProgressBar";
 import type { ProcessingSubProgressItem } from "./ProcessingPanel";
 
 interface ProgressDockProps {
@@ -16,6 +17,7 @@ interface ProgressDockProps {
     message: string;
     currentSubStepId: string;
     currentStage: string;
+    llmProgress?: ExtractionRunState["llmProgress"];
   }) => void;
 }
 
@@ -40,6 +42,9 @@ export function ProgressDock({
         <span className="progress-dock-title">Pipeline progress</span>
         {isProcessing ? <span className="progress-dock-live">Live</span> : null}
       </div>
+      {extraction.llmProgress && extraction.llmProgress.total > 0 ? (
+        <LlmProgressBar progress={extraction.llmProgress} />
+      ) : null}
       <ExtractionStatusPanel
         extraction={extraction}
         processingProgress={processingProgress}

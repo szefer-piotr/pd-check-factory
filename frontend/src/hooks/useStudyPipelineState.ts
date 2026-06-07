@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import type { LlmProgress } from "../services/stepApi";
 import {
   fetchStep1RunState,
   fetchStep1UploadStatus,
@@ -25,6 +26,7 @@ export interface ExtractionRunState {
   message: string;
   error: string;
   logs: PipelineLogLine[];
+  llmProgress?: LlmProgress | null;
 }
 
 export interface StudyPipelineState {
@@ -48,7 +50,8 @@ function defaultExtractionState(): ExtractionRunState {
     currentSubStepId: "",
     message: "",
     error: "",
-    logs: []
+    logs: [],
+    llmProgress: null
   };
 }
 
@@ -209,7 +212,8 @@ export function useStudyPipelineState(
             currentSubStepId: runState.currentSubStepId,
             message: runState.message,
             error: runState.error,
-            logs: runState.logs
+            logs: runState.logs,
+            llmProgress: runState.llmProgress ?? null
           }
         };
         if (sub === "preprocess-protocol" && runState.status === "running") {

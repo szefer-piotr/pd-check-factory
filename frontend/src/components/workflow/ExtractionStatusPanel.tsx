@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from "react";
 import type { ExtractionRunState } from "../../hooks/useStudyPipelineState";
-import { fetchStep1RunState } from "../../services/stepApi";
+import { fetchStep1RunState, type LlmProgress } from "../../services/stepApi";
 import type { ProcessingSubProgressItem } from "./ProcessingPanel";
 
 interface ExtractionStatusPanelProps {
@@ -17,6 +17,7 @@ interface ExtractionStatusPanelProps {
     message: string;
     currentSubStepId: string;
     currentStage: string;
+    llmProgress?: LlmProgress | null;
   }) => void;
 }
 
@@ -93,7 +94,7 @@ export function ExtractionStatusPanel({
     (extraction.currentSubStepId === "extract-inputs" || processingProgress.find((p) => p.stepId === "extract-inputs")?.status === "running");
 
   useEffect(() => {
-    if (!pollRunStateDuringExtract || !onExtractInputs || !studyId.trim()) {
+    if (!pollRunStateDuringExtract || !studyId.trim()) {
       return;
     }
     let cancelled = false;
@@ -105,7 +106,8 @@ export function ExtractionStatusPanel({
             logs: runState.logs,
             message: runState.message,
             currentSubStepId: runState.currentSubStepId,
-            currentStage: runState.currentStage
+            currentStage: runState.currentStage,
+            llmProgress: runState.llmProgress ?? null
           });
         }
       } catch {
@@ -118,7 +120,7 @@ export function ExtractionStatusPanel({
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [pollRunStateDuringExtract, onExtractInputs, studyId, onRunStatePolled]);
+  }, [pollRunStateDuringExtract, studyId, onRunStatePolled]);
 
   const diMilestones = useMemo(() => {
     if (!onExtractInputs && extraction.logs.length === 0) {

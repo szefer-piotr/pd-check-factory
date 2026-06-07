@@ -21,6 +21,55 @@ def test_parse_json_body_rejects_non_object() -> None:
     assert exc.value.code == "BAD_JSON"
 
 
+def test_run_step_reports_llm_progress_for_extract_deviations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pdcheck_factory import pipeline_v2
+
+    def fake_deviations(
+        sid: str,
+        output_dir: Path,
+        *,
+        additional_instructions: str = "",
+        progress_callback=None,
+    ) -> dict:
+        assert progress_callback is not None
+        progress_callback(
+            phase="extract-deviations",
+            current=2,
+            total=5,
+            unit="rules",
+            label="rule-002",
+        )
+        out_path = paths.local_deviations_parsed_json(sid, output_dir)
+        _touch(out_path, '{"deviations": []}')
+        return {"deviations": []}
+
+    monkeypatch.setattr(pipeline_v2, "step4_5_extract_deviations", fake_deviations)
+    monkeypatch.setattr(pipeline_v2, "initialize_review_states", lambda *args, **kwargs: None)
+
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "MY-STUDY"
+
+    proto = extraction_resolve.resolve_protocol_rendered_source_md(study_id, tmp_path)
+    acrf = extraction_resolve.resolve_acrf_rendered_source_md(study_id, tmp_path)
+    _touch(proto)
+    _touch(acrf)
+    pindex = paths.local_protocol_paragraph_index_json(study_id, tmp_path)
+    rules = paths.local_rules_parsed_json(study_id, tmp_path)
+    acrf_summary = paths.local_acrf_summary_text_merged(study_id, tmp_path)
+    _touch(pindex, '{"paragraphs": []}')
+    _touch(rules, '{"rules": [{"rule_id": "rule-001"}]}')
+    _touch(acrf_summary, "summary")
+
+    service.run_step(study_id, "extract-deviations")
+
+    run_state = service.get_step1_run_state(study_id)
+    log_texts = [line["text"] for line in run_state["logs"]]
+    assert "llm:extract-deviations:2/5:rule-002" in log_texts
+    assert run_state["llmProgress"] is None
+
+
 def test_run_step_forwards_llm_instructions_to_extract_rules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from pdcheck_factory import pipeline_v2
 
