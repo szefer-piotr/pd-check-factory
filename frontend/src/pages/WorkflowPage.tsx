@@ -17,6 +17,7 @@ import {
   PROCESSING_BACKEND_STEP_IDS
 } from "../data/pipelineSteps";
 import { useStudyDashboard } from "../hooks/useStudyDashboard";
+import { useStudySettings } from "../hooks/useStudySettings";
 import {
   acceptCodingPhase,
   deleteStudy,
@@ -32,6 +33,7 @@ import {
   type StepStatus,
   type StudyOption
 } from "../services/stepApi";
+import { SettingsDrawer } from "../components/ui/SettingsDrawer";
 import { StudySelector } from "../components/ui/StudySelector";
 import { deriveNavStatuses } from "../utils/processingStatus";
 
@@ -103,11 +105,10 @@ export function WorkflowPage(): JSX.Element {
   const [isDeletingStudy, setIsDeletingStudy] = useState(false);
   const [deleteStudyMessage, setDeleteStudyMessage] = useState("");
   const [deleteStudyError, setDeleteStudyError] = useState("");
-  const [extractionLlmInstructions, setExtractionLlmInstructions] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [llmDeployments, setLlmDeployments] = useState<OpenAiDeploymentOption[]>([]);
-  const [extractionDeployment, setExtractionDeployment] = useState("");
-  const [acrfSummaryDeployment, setAcrfSummaryDeployment] = useState("");
   const [isLoadingDeployments, setIsLoadingDeployments] = useState(false);
+  const { settings, updateSettings } = useStudySettings(studyId);
   const [isAcceptingCoding, setIsAcceptingCoding] = useState(false);
   const [codingAcceptError, setCodingAcceptError] = useState("");
   const [isPdSpecActionRunning, setIsPdSpecActionRunning] = useState(false);
@@ -220,10 +221,6 @@ export function WorkflowPage(): JSX.Element {
   );
 
   useEffect(() => {
-    setExtractionLlmInstructions("");
-  }, [activeStepId]);
-
-  useEffect(() => {
     void loadStudies();
   }, [loadStudies]);
 
@@ -237,8 +234,10 @@ export function WorkflowPage(): JSX.Element {
           previous && response.deployments.some((deployment) => deployment.id === previous)
             ? previous
             : response.defaultDeployment;
-        setExtractionDeployment((previous) => resolveDeployment(previous));
-        setAcrfSummaryDeployment((previous) => resolveDeployment(previous));
+        updateSettings({
+          extractionDeployment: resolveDeployment(settings.extractionDeployment),
+          acrfSummaryDeployment: resolveDeployment(settings.acrfSummaryDeployment)
+        });
       } catch {
         setLlmDeployments([]);
       } finally {
@@ -399,13 +398,13 @@ export function WorkflowPage(): JSX.Element {
           const runOpts =
             stepId === "extract-rules" || stepId === "extract-deviations"
               ? {
-                  llmInstructions: extractionLlmInstructions,
-                  llmDeployment: extractionDeployment || undefined,
+                  llmInstructions: settings.extractionLlmInstructions,
+                  llmDeployment: settings.extractionDeployment || undefined,
                   force: forceReRun
                 }
               : stepId === "acrf-summary-text"
                 ? {
-                    llmDeployment: acrfSummaryDeployment || undefined,
+                    llmDeployment: settings.acrfSummaryDeployment || undefined,
                     force: forceReRun
                   }
                 : { force: forceReRun };
@@ -485,7 +484,7 @@ export function WorkflowPage(): JSX.Element {
     setIsPdSpecActionRunning(true);
     try {
       const response = await runStep(trimmedStudyId, "import-pd-spec-enrich", {
-        llmDeployment: extractionDeployment || undefined
+        llmDeployment: settings.extractionDeployment || undefined
       });
       applyBackendStatuses(response.stepStatuses);
       await setStep7ReviewDisplaySource(trimmedStudyId, "enriched_pd_spec");
@@ -534,12 +533,6 @@ export function WorkflowPage(): JSX.Element {
               error={studyListError || deleteStudyError}
               onReload={() => void loadStudies({ syncFirst: true })}
               blobPickerId="workflow-blob-project-picker"
-              llmDeployments={llmDeployments}
-              deploymentsLoading={isLoadingDeployments}
-              extractionDeployment={extractionDeployment}
-              onExtractionDeploymentChange={setExtractionDeployment}
-              acrfSummaryDeployment={acrfSummaryDeployment}
-              onAcrfSummaryDeploymentChange={setAcrfSummaryDeployment}
             />
             {deleteStudyMessage ? <p className="step7-muted study-delete-message">{deleteStudyMessage}</p> : null}
             <div className="study-chips">
@@ -555,9 +548,34 @@ export function WorkflowPage(): JSX.Element {
               <button className="button button-ghost" type="button" onClick={() => void refresh()} disabled={isLoading}>
                 {isLoading ? "Syncing…" : "Sync"}
               </button>
+              <button
+                className="button button-ghost settings-gear-button"
+                type="button"
+                aria-label="Pipeline settings"
+                title="Pipeline settings"
+                onClick={() => setSettingsOpen(true)}
+              >
+                ⚙
+              </button>
             </div>
           </header>
         </Section>
+
+        <SettingsDrawer
+          open={settingsOpen}
+          onClose={() => setSettingsOpen(false)}
+          studyId={studyId}
+          llmDeployments={llmDeployments}
+          deploymentsLoading={isLoadingDeployments}
+          extractorChoice={settings.extractorChoice}
+          onExtractorChange={(value) => updateSettings({ extractorChoice: value })}
+          extractionLlmInstructions={settings.extractionLlmInstructions}
+          onExtractionLlmInstructionsChange={(value) => updateSettings({ extractionLlmInstructions: value })}
+          extractionDeployment={settings.extractionDeployment}
+          onExtractionDeploymentChange={(value) => updateSettings({ extractionDeployment: value })}
+          acrfSummaryDeployment={settings.acrfSummaryDeployment}
+          onAcrfSummaryDeploymentChange={(value) => updateSettings({ acrfSummaryDeployment: value })}
+        />
 
         <Section className="section-flat workflow-tabs-section">
           <StepNavigation
@@ -598,8 +616,7 @@ export function WorkflowPage(): JSX.Element {
                 processingError={processingError}
                 pdSpecActionMessage={pdSpecActionMessage}
                 pdSpecActionError={pdSpecActionError}
-                extractionLlmInstructions={extractionLlmInstructions}
-                onExtractionLlmInstructionsChange={setExtractionLlmInstructions}
+                extractorChoice={settings.extractorChoice}
               />
             ) : activeStep.id === "review-and-finalize" ? (
               <Step7ReviewPanel

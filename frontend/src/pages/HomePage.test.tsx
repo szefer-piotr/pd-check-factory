@@ -615,7 +615,7 @@ describe("Workflow pipeline pages", () => {
     expect(screen.getByRole("button", { name: "Enrich and open review" })).toBeDisabled();
     expect(screen.getAllByRole("button", { name: "Re-run" }).length).toBe(3);
     expect(screen.queryByText("Pipeline progress")).not.toBeInTheDocument();
-    expect(screen.getByText("PD Specification")).toBeInTheDocument();
+    expect(screen.getByText("PD Spec")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New study" })).toBeInTheDocument();
     const step1Picker = document.getElementById("workflow-blob-project-picker");
     expect(step1Picker).toBeInTheDocument();
@@ -1011,7 +1011,7 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(await screen.findByText("Advanced options"));
+    await user.click(await screen.findByRole("button", { name: "Pipeline settings" }));
     const textarea = await screen.findByPlaceholderText(/Additional guidance for rule and deviation extraction/i);
     await user.type(textarea, "Emphasize dosing");
     const runBtn = await screen.findByRole("button", { name: "Run pipeline to review" });
@@ -1075,6 +1075,7 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
+    await user.click(await screen.findByRole("button", { name: "Pipeline settings" }));
     await user.selectOptions(await screen.findByLabelText("aCRF summary model"), "gpt-4.1");
     const runBtn = await screen.findByRole("button", { name: /Continue pipeline to review|Run pipeline to review/i });
     await user.click(runBtn);
@@ -1506,8 +1507,9 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    const previewButtons = await screen.findAllByRole("button", { name: /Preview markdown/i });
-    await user.click(previewButtons[0]);
+    await user.click(await screen.findByRole("button", { name: /Protocol/i }));
+    const previewButton = await screen.findByRole("button", { name: /Preview markdown/i });
+    await user.click(previewButton);
     const dialog = await screen.findByRole("dialog", { name: /Protocol — extracted markdown/i });
     expect(within(dialog).getByRole("heading", { level: 2, name: "Inclusion" })).toBeInTheDocument();
     expect(stepApi.fetchStep1Preview).toHaveBeenCalledWith("MY-STUDY", { full: true });

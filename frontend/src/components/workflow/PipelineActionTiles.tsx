@@ -1,17 +1,11 @@
 import { PROCESSING_BACKEND_STEP_IDS } from "../../data/pipelineSteps";
-import type { Step1PdfExtractor, StepStatus } from "../../services/stepApi";
+import type { StepStatus } from "../../services/stepApi";
 import {
   getPipelineActionAccess,
   getPipelinePrimaryLabel,
   type PipelineActionAccess
 } from "../../utils/pipelineActionAccess";
 import { isProcessingCoreDone, isProcessingDone } from "../../utils/processingStatus";
-
-const EXTRACTOR_LABELS: Record<Step1PdfExtractor, string> = {
-  both: "Auto (recommended)",
-  opendataloader: "OpenDataLoader",
-  document_intelligence: "Document Intelligence (Azure)"
-};
 
 export interface PipelineActionTilesProps {
   bothUploaded: boolean;
@@ -20,10 +14,6 @@ export interface PipelineActionTilesProps {
   isBusy: boolean;
   isProcessing: boolean;
   backendStatuses: Record<string, StepStatus>;
-  extractorChoice: Step1PdfExtractor;
-  extractionLlmInstructions: string;
-  onExtractorChange: (value: Step1PdfExtractor) => void;
-  onLlmInstructionsChange: (value: string) => void;
   onRunFullPipeline: () => void;
   onReRunPipeline: () => void;
   onMapPdSpecToReview: () => void;
@@ -75,10 +65,6 @@ export function PipelineActionTiles({
   isBusy,
   isProcessing,
   backendStatuses,
-  extractorChoice,
-  extractionLlmInstructions,
-  onExtractorChange,
-  onLlmInstructionsChange,
   onRunFullPipeline,
   onReRunPipeline,
   onMapPdSpecToReview,
@@ -142,49 +128,16 @@ export function PipelineActionTiles({
               {!access.pipeline.accessible && access.pipeline.blockReason ? (
                 <p className="pipeline-action-tile-hint">{access.pipeline.blockReason}</p>
               ) : null}
-              <details className="pipeline-action-tile-advanced">
-                <summary>Advanced options</summary>
-                <fieldset className="step1-extractor-fieldset" disabled={!access.pipeline.accessible}>
-                  <legend className="control-label">PDF extractor</legend>
-                  <div className="step1-extractor-options">
-                    {(["both", "document_intelligence", "opendataloader"] as const).map((value) => (
-                      <label className="step1-radio-label" key={value}>
-                        <input
-                          type="radio"
-                          name="pdf-extractor-tile"
-                          value={value}
-                          checked={extractorChoice === value}
-                          onChange={() => onExtractorChange(value)}
-                          disabled={!access.pipeline.accessible}
-                        />
-                        <span>{EXTRACTOR_LABELS[value]}</span>
-                      </label>
-                    ))}
-                  </div>
-                </fieldset>
-                <label className="control-group" htmlFor="extraction-llm-instructions-tile">
-                  <span className="control-label">Optional LLM instructions</span>
-                  <textarea
-                    id="extraction-llm-instructions-tile"
-                    className="input"
-                    rows={2}
-                    value={extractionLlmInstructions}
-                    onChange={(event) => onLlmInstructionsChange(event.target.value)}
-                    disabled={!access.pipeline.accessible}
-                    placeholder="Additional guidance for rule and deviation extraction"
-                  />
-                </label>
-                {processingCoreDone || hasPartialProgress ? (
-                  <button
-                    className="button button-secondary"
-                    type="button"
-                    onClick={onReRunPipeline}
-                    disabled={!access.pipeline.accessible}
-                  >
-                    Re-run all steps (overwrite)
-                  </button>
-                ) : null}
-              </details>
+              {processingCoreDone || hasPartialProgress ? (
+                <button
+                  className="button button-secondary"
+                  type="button"
+                  onClick={onReRunPipeline}
+                  disabled={!access.pipeline.accessible}
+                >
+                  Re-run all steps (overwrite)
+                </button>
+              ) : null}
               <ActionRow
                 access={access.pipeline}
                 primaryLabel={pipelinePrimaryLabel}
