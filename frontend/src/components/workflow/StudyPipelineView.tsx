@@ -14,6 +14,7 @@ import {
 import { DocumentPreviewModal } from "./DocumentPreviewModal";
 import type { ProcessingSubProgressItem } from "./ProcessingPanel";
 import { PipelineActionTiles } from "./PipelineActionTiles";
+import { LiveExtractionPanel } from "./LiveExtractionPanel";
 import { ProgressDock } from "./ProgressDock";
 import { UploadRail } from "./UploadRail";
 import type { ExtendedDeviationPreviewRow } from "./preview/DeviationsPreview";
@@ -436,6 +437,8 @@ export function StudyPipelineView({
         isLoadingUploadStatus={isLoadingUploadStatus}
         uploadStatusError={uploadStatusError}
       />
+
+      <LiveExtractionPanel studyId={studyId} active={showPipelineProgress} />
 
       <div className="study-pipeline-stage study-pipeline-actions">
         <PipelineActionTiles

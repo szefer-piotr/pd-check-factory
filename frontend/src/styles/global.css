@@ -2383,6 +2383,54 @@ body {
   position: relative;
 }
 
+.live-extraction-panel {
+  margin: var(--space-md) 0;
+  padding: var(--space-md);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--surface-muted);
+  display: grid;
+  gap: var(--space-md);
+}
+
+.live-extraction-panel-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.live-extraction-panel-title {
+  margin: 0;
+  font-size: 0.92rem;
+  font-weight: 650;
+}
+
+.live-extraction-panel-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+}
+
+.live-extraction-count {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.live-extraction-count strong {
+  color: var(--text);
+}
+
+.live-extraction-partial {
+  margin-left: var(--space-xs);
+  font-size: 0.72rem;
+  color: var(--optional);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
 @media (max-width: 960px) {
   .workflow-layout {
     grid-template-columns: 1fr;

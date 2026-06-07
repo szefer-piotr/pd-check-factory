@@ -358,6 +358,16 @@ def step4_5_extract_deviations(
                 unit="rules",
                 label=str(rule["rule_id"]),
             )
+        partial = {
+            "schema_version": "1.0.0",
+            "study_id": study_id,
+            "generated_at": _iso_now(),
+            "deviations": deviations,
+            "partial": True,
+        }
+        partial_path = paths.local_deviations_parsed_json(study_id, output_dir)
+        write_json(partial_path, partial)
+        study_artifact_sync.mirror_upload_path(study_id, output_dir, partial_path)
     parsed = {
         "schema_version": "1.0.0",
         "study_id": study_id,
