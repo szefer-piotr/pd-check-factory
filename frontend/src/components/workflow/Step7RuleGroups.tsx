@@ -12,6 +12,52 @@ interface Step7RuleGroupsProps {
   groups: RuleGroup[];
   selectedId: string | null;
   onSelect: (deviationId: string) => void;
+  isBulkGeneratingPseudo?: boolean;
+}
+
+function PseudoIndicator({
+  row,
+  isBulkGeneratingPseudo
+}: {
+  row: Step7DeviationRow;
+  isBulkGeneratingPseudo: boolean;
+}): JSX.Element | null {
+  if (row.pseudo_logic) {
+    const programmable = row.programmable;
+    const ariaLabel =
+      programmable === false
+        ? "Pseudo logic generated (non-programmable)"
+        : programmable === true
+          ? "Pseudo logic generated (programmable)"
+          : "Pseudo logic generated";
+    return (
+      <span
+        className={`step7-pseudo-icon step7-pseudo-icon-ready ${programmable === false ? "step7-pseudo-icon-warn" : ""}`}
+        title={row.pseudo_logic.slice(0, 160)}
+        aria-label={ariaLabel}
+      >
+        {"{ }"}
+      </span>
+    );
+  }
+
+  if (row.status !== "accepted") {
+    return null;
+  }
+
+  if (isBulkGeneratingPseudo) {
+    return (
+      <span className="step7-pseudo-icon step7-pseudo-icon-generating" aria-label="Generating pseudo logic">
+        <span className="upload-spinner" aria-hidden="true" />
+      </span>
+    );
+  }
+
+  return (
+    <span className="step7-pseudo-icon step7-pseudo-icon-empty" aria-label="No pseudo logic yet">
+      ∅
+    </span>
+  );
 }
 
 export function groupDeviationsByRule(rows: Step7DeviationRow[]): RuleGroup[] {
@@ -35,7 +81,12 @@ export function groupDeviationsByRule(rows: Step7DeviationRow[]): RuleGroup[] {
   );
 }
 
-export function Step7RuleGroups({ groups, selectedId, onSelect }: Step7RuleGroupsProps): JSX.Element {
+export function Step7RuleGroups({
+  groups,
+  selectedId,
+  onSelect,
+  isBulkGeneratingPseudo = false
+}: Step7RuleGroupsProps): JSX.Element {
   const selectedRowRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -80,7 +131,10 @@ export function Step7RuleGroups({ groups, selectedId, onSelect }: Step7RuleGroup
                 >
                   <span className="step7-deviation-id">{row.deviation_id}</span>
                   <p className="step7-deviation-snippet">{row.deviation_text}</p>
-                  <span className={`step7-status step7-status-${row.status}`}>{row.status}</span>
+                  <div className="step7-deviation-row-trailing">
+                    <PseudoIndicator row={row} isBulkGeneratingPseudo={isBulkGeneratingPseudo} />
+                    <span className={`step7-status step7-status-${row.status}`}>{row.status}</span>
+                  </div>
                 </div>
               </li>
             ))}
