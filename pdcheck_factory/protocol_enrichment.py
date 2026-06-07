@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional, Set
+from typing import Any, Callable, Dict, List, Literal, Optional, Set
+
+LlmProgressCallback = Callable[..., None]
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -502,6 +504,7 @@ def run_protocol_enrichment(
     workbook_bytes: bytes | None = None,
     workbook_path: Path | None = None,
     version_label: str | None = None,
+    progress_callback: Optional[LlmProgressCallback] = None,
 ) -> Dict[str, Any]:
     """Parse PD spec workbook and enrich all deviations with sequential LLM analysis."""
     index_path = paths.local_protocol_paragraph_index_json(study_id, output_dir)
@@ -525,7 +528,8 @@ def run_protocol_enrichment(
     protocol_paragraphs = _numbered_protocol_text(index_obj)
 
     enriched_rows: List[Dict[str, Any]] = []
-    for dev in raw_deviations:
+    total_deviations = len(raw_deviations)
+    for index, dev in enumerate(raw_deviations):
         enriched_rows.append(
             enrich_imported_deviation(
                 study_id=study_id,
@@ -536,6 +540,14 @@ def run_protocol_enrichment(
                 protocol_paragraphs=protocol_paragraphs,
             )
         )
+        if progress_callback and total_deviations > 0:
+            progress_callback(
+                phase="pd-enrich",
+                current=index + 1,
+                total=total_deviations,
+                unit="deviations",
+                label=str(dev.get("deviation_id", "")),
+            )
 
     enriched_rows.sort(key=lambda row: str(row.get("deviation_id", "")))
 

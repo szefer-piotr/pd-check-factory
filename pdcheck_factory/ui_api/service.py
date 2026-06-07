@@ -601,6 +601,44 @@ class UiStepService:
         self._mirror_upload(study_id, path)
         return state
 
+    def _report_llm_progress(
+        self,
+        study_id: str,
+        *,
+        phase: str,
+        current: int,
+        total: int,
+        unit: str,
+        label: str = "",
+    ) -> None:
+        self._write_pipeline_run_state(
+            study_id,
+            llmProgress={
+                "phase": phase,
+                "current": current,
+                "total": total,
+                "unit": unit,
+                "label": label,
+            },
+        )
+        self._append_pipeline_log(
+            study_id,
+            f"llm:{phase}:{current}/{total}:{label or unit}",
+        )
+
+    def _make_llm_progress_callback(self, study_id: str):
+        def callback(*, phase: str, current: int, total: int, unit: str, label: str = "") -> None:
+            self._report_llm_progress(
+                study_id,
+                phase=phase,
+                current=current,
+                total=total,
+                unit=unit,
+                label=label,
+            )
+
+        return callback
+
     def get_step1_run_state(self, study_id: str) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         state = self._read_pipeline_run_state(study_id)
@@ -618,6 +656,7 @@ class UiStepService:
                     )
             except ValueError:
                 pass
+        llm_progress = state.get("llmProgress")
         return {
             "studyId": study_id,
             "status": state.get("status", "idle"),
@@ -628,6 +667,7 @@ class UiStepService:
             "startedAt": state.get("startedAt", ""),
             "finishedAt": state.get("finishedAt", ""),
             "logs": list(state.get("logs", [])),
+            "llmProgress": llm_progress if isinstance(llm_progress, dict) else None,
         }
 
     def _resolve_review_source(self, study_id: str, review_source: str | None) -> str:
@@ -2029,6 +2069,7 @@ class UiStepService:
             error="",
             startedAt=datetime.now(timezone.utc).isoformat(),
             finishedAt="",
+            llmProgress=None,
         )
         self._append_pipeline_log(study_id, f"Starting step {step_id}")
 
@@ -2045,6 +2086,7 @@ class UiStepService:
                 message=f"Step {step_id} failed",
                 error=str(exc),
                 finishedAt=datetime.now(timezone.utc).isoformat(),
+                llmProgress=None,
             )
             raise
 
@@ -2056,6 +2098,7 @@ class UiStepService:
             currentSubStepId=step_id,
             message=summary,
             finishedAt=datetime.now(timezone.utc).isoformat(),
+            llmProgress=None,
         )
 
         return {
@@ -2068,6 +2111,8 @@ class UiStepService:
     def _execute_run_step(self, study_id: str, step_id: str, *, extra: str, force: bool = False) -> str:
         if not force and self._step_artifact_complete(study_id, step_id):
             return "Already complete (skipped)"
+
+        progress_callback = self._make_llm_progress_callback(study_id)
 
         if step_id == "index-protocol":
             result = pipeline_v2.step2_protocol_paragraph_index(study_id, self.output_dir)
@@ -2086,7 +2131,11 @@ class UiStepService:
             summary = f"Split aCRF markdown into {count} TOC section files."
             study_artifact_sync.mirror_upload_directory(study_id, self.output_dir, p.acrf_sections_toc_dir)
         elif step_id == "acrf-summary-text":
-            result = pipeline_v2.step1_acrf_summary_text(study_id, self.output_dir)
+            result = pipeline_v2.step1_acrf_summary_text(
+                study_id,
+                self.output_dir,
+                progress_callback=progress_callback,
+            )
             summary = f"Merged aCRF summary text with {len(result.get('datasets', []))} datasets."
         elif step_id == "extract-rules":
             result = pipeline_v2.step3_extract_rules(
@@ -2095,7 +2144,10 @@ class UiStepService:
             summary = f"Extracted {len(result.get('rules', []))} rules."
         elif step_id == "extract-deviations":
             result = pipeline_v2.step4_5_extract_deviations(
-                study_id, self.output_dir, additional_instructions=extra
+                study_id,
+                self.output_dir,
+                additional_instructions=extra,
+                progress_callback=progress_callback,
             )
             pipeline_v2.initialize_review_states(study_id, self.output_dir)
             summary = f"Extracted {len(result.get('deviations', []))} deviations and initialized review state."
@@ -2159,6 +2211,7 @@ class UiStepService:
                 study_id,
                 self.output_dir,
                 workbook_bytes=workbook_bytes,
+                progress_callback=progress_callback,
             )
             version = result.get("import_version", "")
             self._write_upload_manifest(
@@ -3162,10 +3215,39 @@ class UiStepService:
                 validated_path.write_text(seed_path.read_text(encoding="utf-8"), encoding="utf-8")
                 self._mirror_upload(study_id, validated_path)
 
+        self._write_pipeline_run_state(
+            study_id,
+            status="running",
+            currentStage="pseudo_logic",
+            currentSubStepId="pseudo-logic-bulk",
+            message="Generating pseudo logic for accepted deviations…",
+            error="",
+            llmProgress=None,
+        )
+        progress_callback = self._make_llm_progress_callback(study_id)
         try:
-            pseudo_out = pipeline_v2.step8_generate_pseudo_logic(study_id, self.output_dir)
+            pseudo_out = pipeline_v2.step8_generate_pseudo_logic(
+                study_id,
+                self.output_dir,
+                progress_callback=progress_callback,
+            )
         except Exception as exc:  # noqa: BLE001
+            self._write_pipeline_run_state(
+                study_id,
+                status="failed",
+                message="Pseudo logic generation failed",
+                error=str(exc),
+                llmProgress=None,
+            )
             raise UiApiError("PSEUDO_LOGIC_FAILED", str(exc), 500) from exc
+        self._write_pipeline_run_state(
+            study_id,
+            status="done",
+            currentStage="complete",
+            currentSubStepId="pseudo-logic-bulk",
+            message=f"Generated pseudo logic for {len(pseudo_out.get('items', []))} deviations.",
+            llmProgress=None,
+        )
 
         items = list(pseudo_out.get("items", []))
         state_obj = self._load_state(study_id, source)

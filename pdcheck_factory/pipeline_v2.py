@@ -5,7 +5,9 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
+
+LlmProgressCallback = Callable[..., None]
 
 from pdcheck_factory import document_chat_agent, extraction_resolve, import_grounding, llm, paths, study_artifact_sync, text_parse
 from pdcheck_factory.pd_spec_export import write_final_pd_spec_xlsx
@@ -185,12 +187,19 @@ def _filter_refs(refs: List[str], valid: set[str]) -> List[str]:
     return [r for r in refs if r in valid]
 
 
-def step1_acrf_summary_text(study_id: str, output_dir: Path) -> Dict[str, Any]:
+def step1_acrf_summary_text(
+    study_id: str,
+    output_dir: Path,
+    *,
+    progress_callback: Optional[LlmProgressCallback] = None,
+) -> Dict[str, Any]:
     system = load_prompt("acrf_text_summary_v2_system")
     user_t = load_prompt("acrf_text_summary_v2_user")
     datasets: List[Dict[str, Any]] = []
     toc_dir = _acrf_sections_dir(study_id, output_dir)
-    for section_md in sorted(toc_dir.glob("*.md")):
+    section_files = sorted(toc_dir.glob("*.md"))
+    total_sections = len(section_files)
+    for index, section_md in enumerate(section_files):
         section_id = section_md.stem
         user = user_t.format(
             study_id=study_id,
@@ -206,6 +215,14 @@ def step1_acrf_summary_text(study_id: str, output_dir: Path) -> Dict[str, Any]:
             label=f"v2-acrf-{section_id}",
         )
         datasets.extend(text_parse.parse_acrf_dataset_blocks(reply))
+        if progress_callback and total_sections > 0:
+            progress_callback(
+                phase="acrf-summary",
+                current=index + 1,
+                total=total_sections,
+                unit="sections",
+                label=section_id,
+            )
     merged = {
         "schema_version": "1.0.0",
         "study_id": study_id,
@@ -278,7 +295,13 @@ def _protocol_paragraph_text(study_id: str, output_dir: Path) -> str:
     return _numbered_protocol_text(index_obj)
 
 
-def step4_5_extract_deviations(study_id: str, output_dir: Path, *, additional_instructions: str = "") -> Dict[str, Any]:
+def step4_5_extract_deviations(
+    study_id: str,
+    output_dir: Path,
+    *,
+    additional_instructions: str = "",
+    progress_callback: Optional[LlmProgressCallback] = None,
+) -> Dict[str, Any]:
     rules_obj = read_json(paths.local_rules_parsed_json(study_id, output_dir))
     index_obj = read_json(paths.local_protocol_paragraph_index_json(study_id, output_dir))
     valid_ids = {p["paragraph_id"] for p in index_obj.get("paragraphs", [])}
@@ -290,7 +313,9 @@ def step4_5_extract_deviations(study_id: str, output_dir: Path, *, additional_in
     all_raw: List[str] = []
     deviations: List[Dict[str, Any]] = []
     di = 1
-    for rule in rules_obj.get("rules", []):
+    rules = list(rules_obj.get("rules", []))
+    total_rules = len(rules)
+    for index, rule in enumerate(rules):
         user = user_t.format(
             study_id=study_id,
             rule_id=rule["rule_id"],
@@ -325,6 +350,14 @@ def step4_5_extract_deviations(study_id: str, output_dir: Path, *, additional_in
                 }
             )
             di += 1
+        if progress_callback and total_rules > 0:
+            progress_callback(
+                phase="extract-deviations",
+                current=index + 1,
+                total=total_rules,
+                unit="rules",
+                label=str(rule["rule_id"]),
+            )
     parsed = {
         "schema_version": "1.0.0",
         "study_id": study_id,
@@ -343,16 +376,23 @@ def step4_5_extract_deviations(study_id: str, output_dir: Path, *, additional_in
     return parsed
 
 
-def step8_generate_pseudo_logic(study_id: str, output_dir: Path) -> Dict[str, Any]:
+def step8_generate_pseudo_logic(
+    study_id: str,
+    output_dir: Path,
+    *,
+    progress_callback: Optional[LlmProgressCallback] = None,
+) -> Dict[str, Any]:
     deviations_obj = read_json(paths.local_deviations_validated_json(study_id, output_dir))
     rules_obj = read_json(paths.local_rules_parsed_json(study_id, output_dir))
     rule_by_id = {r["rule_id"]: r for r in rules_obj.get("rules", [])}
     acrf_summary = _acrf_summary_text(study_id, output_dir)[:50000]
     items: List[Dict[str, Any]] = []
     raw_chunks: List[str] = []
-    for dev in deviations_obj.get("deviations", []):
-        if dev.get("status") != "accepted":
-            continue
+    accepted_deviations = [
+        dev for dev in deviations_obj.get("deviations", []) if dev.get("status") == "accepted"
+    ]
+    total_accepted = len(accepted_deviations)
+    for index, dev in enumerate(accepted_deviations):
         rule = rule_by_id.get(dev.get("rule_id"), {})
         pseudo = _generate_single_pseudo_logic(
             study_id=study_id,
@@ -395,6 +435,14 @@ def step8_generate_pseudo_logic(study_id: str, output_dir: Path) -> Dict[str, An
                 "dm_comment": "",
             }
         )
+        if progress_callback and total_accepted > 0:
+            progress_callback(
+                phase="pseudo-logic",
+                current=index + 1,
+                total=total_accepted,
+                unit="deviations",
+                label=str(dev.get("deviation_id", "")),
+            )
     out = {
         "schema_version": "1.0.0",
         "study_id": study_id,
@@ -865,6 +913,7 @@ def run_import_pd_spec_enrich(
     workbook_bytes: bytes | None = None,
     workbook_path: Path | None = None,
     version_label: str | None = None,
+    progress_callback: Optional[LlmProgressCallback] = None,
 ) -> Dict[str, Any]:
     """Parse PD spec workbook and run protocol enrichment (sequential LLM per deviation)."""
     from pdcheck_factory import protocol_enrichment
@@ -875,6 +924,7 @@ def run_import_pd_spec_enrich(
         workbook_bytes=workbook_bytes,
         workbook_path=workbook_path,
         version_label=version_label,
+        progress_callback=progress_callback,
     )
 
 
