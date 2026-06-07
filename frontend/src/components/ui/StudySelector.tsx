@@ -1,6 +1,5 @@
-import type { OpenAiDeploymentOption, StudyOption } from "../../services/stepApi";
+import type { StudyOption } from "../../services/stepApi";
 import { BlobProjectPicker } from "./BlobProjectPicker";
-import { LlmDeploymentSelect } from "./LlmDeploymentSelect";
 
 interface StudySelectorProps {
   value: string;
@@ -13,12 +12,6 @@ interface StudySelectorProps {
   error?: string;
   onReload?: () => void;
   blobPickerId?: string;
-  llmDeployments?: OpenAiDeploymentOption[];
-  deploymentsLoading?: boolean;
-  extractionDeployment?: string;
-  onExtractionDeploymentChange?: (value: string) => void;
-  acrfSummaryDeployment?: string;
-  onAcrfSummaryDeploymentChange?: (value: string) => void;
 }
 
 export function StudySelector({
@@ -31,19 +24,9 @@ export function StudySelector({
   isDeleting = false,
   error = "",
   onReload,
-  blobPickerId,
-  llmDeployments,
-  deploymentsLoading = false,
-  extractionDeployment = "",
-  onExtractionDeploymentChange,
-  acrfSummaryDeployment = "",
-  onAcrfSummaryDeploymentChange
+  blobPickerId
 }: StudySelectorProps): JSX.Element {
   const normalizedValue = value.trim();
-  const showModelSelectors =
-    llmDeployments !== undefined &&
-    onExtractionDeploymentChange !== undefined &&
-    onAcrfSummaryDeploymentChange !== undefined;
 
   return (
     <div className="study-selector">
@@ -74,26 +57,6 @@ export function StudySelector({
           </button>
         ) : null}
       </div>
-      {showModelSelectors ? (
-        <div className="study-selector-models-row">
-          <LlmDeploymentSelect
-            id="study-extraction-llm-deployment"
-            label="Extraction model"
-            value={extractionDeployment}
-            deployments={llmDeployments}
-            onChange={onExtractionDeploymentChange}
-            isLoading={deploymentsLoading}
-          />
-          <LlmDeploymentSelect
-            id="study-acrf-summary-llm-deployment"
-            label="aCRF summary model"
-            value={acrfSummaryDeployment}
-            deployments={llmDeployments}
-            onChange={onAcrfSummaryDeploymentChange}
-            isLoading={deploymentsLoading}
-          />
-        </div>
-      ) : null}
     </div>
   );
 }

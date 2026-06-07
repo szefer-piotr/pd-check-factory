@@ -11,11 +11,11 @@ import {
   type Step1PdfExtractor,
   type StepStatus
 } from "../../services/stepApi";
-import { DocumentUploadCard } from "./DocumentUploadCard";
 import { DocumentPreviewModal } from "./DocumentPreviewModal";
-import { ExtractionStatusPanel } from "./ExtractionStatusPanel";
 import type { ProcessingSubProgressItem } from "./ProcessingPanel";
 import { PipelineActionTiles } from "./PipelineActionTiles";
+import { ProgressDock } from "./ProgressDock";
+import { UploadRail } from "./UploadRail";
 import type { ExtendedDeviationPreviewRow } from "./preview/DeviationsPreview";
 
 interface StudyPipelineViewProps {
@@ -35,8 +35,7 @@ interface StudyPipelineViewProps {
   processingError: string;
   pdSpecActionMessage: string;
   pdSpecActionError: string;
-  extractionLlmInstructions: string;
-  onExtractionLlmInstructionsChange: (value: string) => void;
+  extractorChoice: Step1PdfExtractor;
 }
 
 type PreviewTarget = "protocol" | "acrf" | "pd-spec" | null;
@@ -88,8 +87,7 @@ export function StudyPipelineView({
   processingError,
   pdSpecActionMessage,
   pdSpecActionError,
-  extractionLlmInstructions,
-  onExtractionLlmInstructionsChange
+  extractorChoice
 }: StudyPipelineViewProps): JSX.Element {
   const {
     pipeline,
@@ -102,7 +100,6 @@ export function StudyPipelineView({
     uploadStatusError
   } = pipelineState;
 
-  const [extractorChoice, setExtractorChoice] = useState<Step1PdfExtractor>("both");
   const [pendingProtocolFile, setPendingProtocolFile] = useState<File | null>(null);
   const [pendingAcrfFile, setPendingAcrfFile] = useState<File | null>(null);
   const [pendingPdSpecFile, setPendingPdSpecFile] = useState<File | null>(null);
@@ -118,12 +115,11 @@ export function StudyPipelineView({
   const [acrfPreviewReady, setAcrfPreviewReady] = useState(false);
   const preprocessPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const isBusy =
-    isProcessing ||
-    isPdSpecActionRunning ||
+  const isUploadSlotBusy =
     pipeline.uploads.protocol.status === "uploading" ||
     pipeline.uploads.acrf.status === "uploading" ||
     pipeline.uploads.pdSpec.status === "uploading";
+  const isPipelineActionBusy = isUploadSlotBusy || isProcessing || isPdSpecActionRunning;
 
   useEffect(() => {
     if (isProcessing) {
@@ -376,98 +372,80 @@ export function StudyPipelineView({
 
   return (
     <section className="workflow-panel study-pipeline-view" aria-label="Study pipeline setup">
-      <div className="study-pipeline-stage">
-        <h3 className="study-pipeline-stage-title">Upload source documents</h3>
-        <p className="step7-muted">
-          Upload protocol, annotated aCRF, and optionally PD Specifications. PDFs upload automatically; each document
-          is prepared in the background after upload.
-        </p>
-
-        {isLoadingUploadStatus ? (
-          <div className="upload-blob-status-banner" role="status" aria-live="polite">
-            <span className="upload-spinner" aria-hidden="true" />
-            <span>Checking blob storage…</span>
-          </div>
-        ) : null}
-        {uploadStatusError ? <p className="step1-error">{uploadStatusError}</p> : null}
-
-        <div className="upload-cards-grid upload-cards-grid-three">
-          <DocumentUploadCard
-            label="Protocol"
-            inputId="pipeline-protocol-file"
-            slot={protocolSlot}
-            disabled={isBusy || isLoadingUploadStatus || !studyId.trim()}
-            onFileSelected={(file) => void handleUploadSlot("protocol", file)}
-            onRetry={() => {
+      <UploadRail
+        slots={[
+          {
+            id: "protocol",
+            label: "Protocol",
+            shortLabel: "Protocol",
+            inputId: "pipeline-protocol-file",
+            slot: protocolSlot,
+            preprocessLine: preprocessLine(pipeline.preprocess.protocol, protocolSlot.status === "uploaded"),
+            previewLabel: protocolPreviewReady ? "Preview markdown" : "Preview after preparation",
+            previewDisabled: !protocolPreviewReady,
+            onFileSelected: (file) => void handleUploadSlot("protocol", file),
+            onRetry: () => {
               const file = pendingProtocolFile;
               if (file) {
                 void handleUploadSlot("protocol", file);
               }
-            }}
-            onPreview={
+            },
+            onPreview:
               protocolSlot.status === "uploaded" ? () => void openMarkdownPreview("protocol") : undefined
-            }
-            previewDisabled={!protocolPreviewReady}
-            previewLabel={protocolPreviewReady ? "Preview markdown" : "Preview after preparation"}
-            preprocessLine={preprocessLine(pipeline.preprocess.protocol, protocolSlot.status === "uploaded")}
-          />
-          <DocumentUploadCard
-            label="Annotated CRF (aCRF)"
-            inputId="pipeline-acrf-file"
-            slot={acrfSlot}
-            disabled={isBusy || isLoadingUploadStatus || !studyId.trim()}
-            onFileSelected={(file) => void handleUploadSlot("acrf", file)}
-            onRetry={() => {
+          },
+          {
+            id: "acrf",
+            label: "Annotated CRF (aCRF)",
+            shortLabel: "aCRF",
+            inputId: "pipeline-acrf-file",
+            slot: acrfSlot,
+            preprocessLine: preprocessLine(pipeline.preprocess.acrf, acrfSlot.status === "uploaded"),
+            previewLabel: acrfPreviewReady ? "Preview markdown" : "Preview after preparation",
+            previewDisabled: !acrfPreviewReady,
+            onFileSelected: (file) => void handleUploadSlot("acrf", file),
+            onRetry: () => {
               const file = pendingAcrfFile;
               if (file) {
                 void handleUploadSlot("acrf", file);
               }
-            }}
-            onPreview={acrfSlot.status === "uploaded" ? () => void openMarkdownPreview("acrf") : undefined}
-            previewDisabled={!acrfPreviewReady}
-            previewLabel={acrfPreviewReady ? "Preview markdown" : "Preview after preparation"}
-            preprocessLine={preprocessLine(pipeline.preprocess.acrf, acrfSlot.status === "uploaded")}
-          />
-          <DocumentUploadCard
-            label="PD Specification"
-            inputId="pipeline-pd-spec-file"
-            slot={pdSpecSlot}
-            disabled={isBusy || isLoadingUploadStatus || !studyId.trim()}
-            accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            chooseLabel={pdSpecSlot.status === "uploaded" ? "Replace workbook" : "Choose workbook (.xlsx)"}
-            onFileSelected={(file) => void handleUploadPdSpec(file)}
-            onRetry={() => {
+            },
+            onPreview: acrfSlot.status === "uploaded" ? () => void openMarkdownPreview("acrf") : undefined
+          },
+          {
+            id: "pdSpec",
+            label: "PD Specification",
+            shortLabel: "PD Spec",
+            inputId: "pipeline-pd-spec-file",
+            slot: pdSpecSlot,
+            accept: ".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            chooseLabel: pdSpecSlot.status === "uploaded" ? "Replace workbook" : "Choose workbook (.xlsx)",
+            preprocessLine: pdSpecSlot.status === "uploaded" ? "Uploaded" : undefined,
+            previewLabel: "Preview workbook",
+            onFileSelected: (file) => void handleUploadPdSpec(file),
+            onRetry: () => {
               const file = pendingPdSpecFile;
               if (file) {
                 void handleUploadPdSpec(file);
               }
-            }}
-            onPreview={pdSpecSlot.status === "uploaded" ? () => void openPdSpecPreview() : undefined}
-            previewLabel="Preview workbook"
-            preprocessLine={
-              pdSpecSlot.status === "uploaded" ? "Uploaded" : undefined
-            }
-          />
-        </div>
+            },
+            onPreview: pdSpecSlot.status === "uploaded" ? () => void openPdSpecPreview() : undefined
+          }
+        ]}
+        disabled={isUploadSlotBusy}
+        studySelected={Boolean(studyId.trim())}
+        isLoadingUploadStatus={isLoadingUploadStatus}
+        uploadStatusError={uploadStatusError}
+      />
 
-        {!studyId.trim() ? (
-          <p className="step7-muted upload-gate-hint">Select or create a study before uploading documents.</p>
-        ) : null}
-      </div>
-
-      <div className="study-pipeline-stage">
+      <div className="study-pipeline-stage study-pipeline-actions">
         <PipelineActionTiles
           bothUploaded={pipeline.bothUploaded}
           pdSpecUploaded={pdSpecSlot.status === "uploaded"}
           uploadStatusReady={!isLoadingUploadStatus && Boolean(studyId.trim())}
-          isBusy={isBusy}
+          isBusy={isPipelineActionBusy}
           isProcessing={isProcessing}
           hideStatusMessages={showPipelineProgress}
           backendStatuses={backendStatuses}
-          extractorChoice={extractorChoice}
-          extractionLlmInstructions={extractionLlmInstructions}
-          onExtractorChange={setExtractorChoice}
-          onLlmInstructionsChange={onExtractionLlmInstructionsChange}
           onRunFullPipeline={() => void handleRunFullPipelineClick(false)}
           onReRunPipeline={() => void handleRunFullPipelineClick(true)}
           onMapPdSpecToReview={() => void onMapPdSpecToReview()}
@@ -475,28 +453,26 @@ export function StudyPipelineView({
           pipelineMessage={pdSpecActionMessage || processingMessage || pipeline.extraction.message}
           pipelineError={pdSpecActionError || processingError || pipeline.extraction.error}
         />
-
-        {showPipelineProgress ? (
-          <ExtractionStatusPanel
-            extraction={pipeline.extraction}
-            processingProgress={processingProgress}
-            isProcessing={isProcessing}
-            processingMessage={processingMessage}
-            processingError={processingError}
-            studyId={studyId}
-            pollRunStateDuringExtract={isProcessing}
-            simplified
-            onRunStatePolled={(runState) => {
-              setExtraction({
-                logs: runState.logs,
-                message: runState.message,
-                currentSubStepId: runState.currentSubStepId,
-                currentStage: runState.currentStage
-              });
-            }}
-          />
-        ) : null}
       </div>
+
+      <ProgressDock
+        visible={showPipelineProgress}
+        extraction={pipeline.extraction}
+        processingProgress={processingProgress}
+        isProcessing={isProcessing}
+        processingMessage={processingMessage}
+        processingError={processingError}
+        studyId={studyId}
+        pollRunStateDuringExtract={isProcessing}
+        onRunStatePolled={(runState) => {
+          setExtraction({
+            logs: runState.logs,
+            message: runState.message,
+            currentSubStepId: runState.currentSubStepId,
+            currentStage: runState.currentStage
+          });
+        }}
+      />
 
       <DocumentPreviewModal
         open={previewTarget !== null}
