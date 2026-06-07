@@ -88,6 +88,10 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 data = self.service.list_studies()
                 _json_response(self, HTTPStatus.OK, _response_payload(request_id=request_id, data=data))
                 return
+            if path == "/api/v1/config/openai-deployments":
+                data = self.service.list_openai_deployments()
+                _json_response(self, HTTPStatus.OK, _response_payload(request_id=request_id, data=data))
+                return
 
             v1 = self._match_v1(path)
             if v1 is None:
@@ -243,15 +247,18 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 step_id = tail[len("steps/") : -len("/run")]
                 length = int(self.headers.get("Content-Length", "0"))
                 llm_instructions: str | None = None
+                llm_deployment: str | None = None
                 force = False
                 if length > 0:
                     payload = parse_json_body(self.rfile.read(length))
                     llm_instructions = str(payload.get("llmInstructions", "") or "")
+                    llm_deployment = str(payload.get("llmDeployment", "") or "") or None
                     force = bool(payload.get("force", False))
                 data = self.service.run_step(
                     study_id,
                     step_id,
                     llm_instructions=llm_instructions,
+                    llm_deployment=llm_deployment,
                     force=force,
                 )
             else:

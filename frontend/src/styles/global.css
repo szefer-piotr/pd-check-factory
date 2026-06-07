@@ -103,27 +103,38 @@ body {
 }
 
 .study-selector {
-  min-width: min(100%, 22rem);
+  flex: 1;
+  min-width: min(100%, 36rem);
 }
 
 .study-selector-row {
   display: flex;
+  flex-wrap: wrap;
   gap: var(--space-sm);
-  align-items: stretch;
+  align-items: flex-end;
 }
 
-.study-selector-input {
+.study-selector .blob-project-picker {
   flex: 1;
-  min-width: 10rem;
+  min-width: min(100%, 22rem);
 }
 
-.study-selector-quick-pick {
+.study-selector-action {
+  flex-shrink: 0;
+  align-self: flex-end;
+}
+
+.study-selector-models-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  align-items: flex-end;
   margin-top: var(--space-sm);
 }
 
-.study-selector-step1 {
-  display: grid;
-  gap: var(--space-md);
+.study-selector-models-row .control-group {
+  flex: 1;
+  min-width: min(100%, 14rem);
 }
 
 .study-pipeline-project-panel {

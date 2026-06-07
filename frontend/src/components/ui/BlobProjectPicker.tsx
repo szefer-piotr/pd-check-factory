@@ -36,21 +36,23 @@ export function BlobProjectPicker({
   onChange,
   onReload
 }: BlobProjectPickerProps): JSX.Element {
+  const trimmedValue = value.trim();
   const knownIds = new Set(studies.map((study) => study.studyId));
-  const selectedValue = knownIds.has(value.trim()) ? value.trim() : "";
+  const isNewProject = Boolean(trimmedValue) && !knownIds.has(trimmedValue);
+  const selectedValue = trimmedValue && (knownIds.has(trimmedValue) || isNewProject) ? trimmedValue : "";
 
   const placeholder = isLoading
-    ? "Loading projects from blob…"
+    ? "Loading studies…"
     : error
-      ? "Unable to load projects"
-      : studies.length === 0
-        ? "No projects found in blob storage"
-        : "Select existing project…";
+      ? "Unable to load studies"
+      : studies.length === 0 && !isNewProject
+        ? "No studies found — create one"
+        : "Select a study…";
 
   return (
     <div className="blob-project-picker">
       <label className="control-group" htmlFor={id}>
-        <span className="control-label">Blob projects</span>
+        <span className="control-label">Study</span>
         <div className="blob-project-picker-row">
           <select
             id={id}
@@ -61,9 +63,12 @@ export function BlobProjectPicker({
                 onChange(event.target.value);
               }
             }}
-            disabled={isLoading || studies.length === 0}
+            disabled={isLoading || (studies.length === 0 && !isNewProject)}
           >
             <option value="">{placeholder}</option>
+            {isNewProject ? (
+              <option value={trimmedValue}>{`${trimmedValue} (new project)`}</option>
+            ) : null}
             {studies.map((study) => (
               <option key={study.studyId} value={study.studyId}>
                 {formatStudyLabel(study)}
@@ -79,10 +84,12 @@ export function BlobProjectPicker({
         <span className="step7-muted">
           {error ||
             (isLoading
-              ? "Scanning blob storage for projects…"
+              ? "Scanning blob storage for studies…"
               : studies.length > 0
-                ? `${studies.length} project${studies.length === 1 ? "" : "s"} in blob — pick one or type a new ID below`
-                : "No projects in blob yet — type a new study ID below to start")}
+                ? `${studies.length} stud${studies.length === 1 ? "y" : "ies"} available`
+                : isNewProject
+                  ? "New project — upload documents to register in blob storage"
+                  : "No studies in blob yet — create one to start")}
         </span>
       </label>
     </div>

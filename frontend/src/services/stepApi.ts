@@ -82,6 +82,18 @@ export interface StudiesResponse {
   studies: StudyOption[];
 }
 
+export interface OpenAiDeploymentOption {
+  id: string;
+  modelName: string;
+  version: string;
+}
+
+export interface OpenAiDeploymentsResponse {
+  deployments: OpenAiDeploymentOption[];
+  defaultDeployment: string;
+  source?: string;
+}
+
 export interface DeleteStudyResponse {
   studyId: string;
   deletedBlobCount: number;
@@ -415,6 +427,11 @@ export async function fetchStudies(): Promise<StudiesResponse> {
   return parseApiResponse<StudiesResponse>(response);
 }
 
+export async function fetchOpenAiDeployments(): Promise<OpenAiDeploymentsResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/config/openai-deployments`);
+  return parseApiResponse<OpenAiDeploymentsResponse>(response);
+}
+
 export async function deleteStudy(studyId: string): Promise<DeleteStudyResponse> {
   const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}`, {
     method: "DELETE"
@@ -508,12 +525,16 @@ export async function fetchSpecificationsPreview(studyId: string): Promise<Speci
 export async function runStep(
   studyId: string,
   stepId: string,
-  options?: { llmInstructions?: string; force?: boolean }
+  options?: { llmInstructions?: string; llmDeployment?: string; force?: boolean }
 ): Promise<StepRunResponse> {
   const body: Record<string, string | boolean> = {};
   const note = options?.llmInstructions?.trim();
   if (note) {
     body.llmInstructions = note;
+  }
+  const deployment = options?.llmDeployment?.trim();
+  if (deployment) {
+    body.llmDeployment = deployment;
   }
   if (options?.force === true) {
     body.force = true;

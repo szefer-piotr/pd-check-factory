@@ -20,12 +20,14 @@ import { useStudyDashboard } from "../hooks/useStudyDashboard";
 import {
   acceptCodingPhase,
   deleteStudy,
+  fetchOpenAiDeployments,
   fetchStepStatuses,
   fetchStudies,
   runStep,
   runStep1Extraction,
   setStep7ReviewDisplaySource,
   syncStudy,
+  type OpenAiDeploymentOption,
   type Step1PdfExtractor,
   type StepStatus,
   type StudyOption
@@ -102,6 +104,10 @@ export function WorkflowPage(): JSX.Element {
   const [deleteStudyMessage, setDeleteStudyMessage] = useState("");
   const [deleteStudyError, setDeleteStudyError] = useState("");
   const [extractionLlmInstructions, setExtractionLlmInstructions] = useState("");
+  const [llmDeployments, setLlmDeployments] = useState<OpenAiDeploymentOption[]>([]);
+  const [extractionDeployment, setExtractionDeployment] = useState("");
+  const [acrfSummaryDeployment, setAcrfSummaryDeployment] = useState("");
+  const [isLoadingDeployments, setIsLoadingDeployments] = useState(false);
   const [isAcceptingCoding, setIsAcceptingCoding] = useState(false);
   const [codingAcceptError, setCodingAcceptError] = useState("");
   const [isPdSpecActionRunning, setIsPdSpecActionRunning] = useState(false);
@@ -220,6 +226,28 @@ export function WorkflowPage(): JSX.Element {
   useEffect(() => {
     void loadStudies();
   }, [loadStudies]);
+
+  useEffect(() => {
+    async function loadDeployments(): Promise<void> {
+      setIsLoadingDeployments(true);
+      try {
+        const response = await fetchOpenAiDeployments();
+        setLlmDeployments(response.deployments);
+        const resolveDeployment = (previous: string): string =>
+          previous && response.deployments.some((deployment) => deployment.id === previous)
+            ? previous
+            : response.defaultDeployment;
+        setExtractionDeployment((previous) => resolveDeployment(previous));
+        setAcrfSummaryDeployment((previous) => resolveDeployment(previous));
+      } catch {
+        setLlmDeployments([]);
+      } finally {
+        setIsLoadingDeployments(false);
+      }
+    }
+
+    void loadDeployments();
+  }, []);
 
   function handleSelectStep(stepId: string): void {
     setActiveStepId(stepId);
@@ -370,8 +398,17 @@ export function WorkflowPage(): JSX.Element {
         } else {
           const runOpts =
             stepId === "extract-rules" || stepId === "extract-deviations"
-              ? { llmInstructions: extractionLlmInstructions, force: forceReRun }
-              : { force: forceReRun };
+              ? {
+                  llmInstructions: extractionLlmInstructions,
+                  llmDeployment: extractionDeployment || undefined,
+                  force: forceReRun
+                }
+              : stepId === "acrf-summary-text"
+                ? {
+                    llmDeployment: acrfSummaryDeployment || undefined,
+                    force: forceReRun
+                  }
+                : { force: forceReRun };
           const response = await runStep(trimmedStudyId, stepId, runOpts);
           stepStatuses = response.stepStatuses;
           applyBackendStatuses(stepStatuses);
@@ -447,7 +484,9 @@ export function WorkflowPage(): JSX.Element {
     setPdSpecActionError("");
     setIsPdSpecActionRunning(true);
     try {
-      const response = await runStep(trimmedStudyId, "import-pd-spec-enrich");
+      const response = await runStep(trimmedStudyId, "import-pd-spec-enrich", {
+        llmDeployment: extractionDeployment || undefined
+      });
       applyBackendStatuses(response.stepStatuses);
       await setStep7ReviewDisplaySource(trimmedStudyId, "enriched_pd_spec");
       setPdSpecActionMessage(response.summary);
@@ -494,8 +533,13 @@ export function WorkflowPage(): JSX.Element {
               isDeleting={isDeletingStudy}
               error={studyListError || deleteStudyError}
               onReload={() => void loadStudies({ syncFirst: true })}
-              showBlobPickerFirst
               blobPickerId="workflow-blob-project-picker"
+              llmDeployments={llmDeployments}
+              deploymentsLoading={isLoadingDeployments}
+              extractionDeployment={extractionDeployment}
+              onExtractionDeploymentChange={setExtractionDeployment}
+              acrfSummaryDeployment={acrfSummaryDeployment}
+              onAcrfSummaryDeploymentChange={setAcrfSummaryDeployment}
             />
             {deleteStudyMessage ? <p className="step7-muted study-delete-message">{deleteStudyMessage}</p> : null}
             <div className="study-chips">
@@ -546,6 +590,7 @@ export function WorkflowPage(): JSX.Element {
                 onReRunPipeline={(extractor) => void handleRunProcessing(extractor, true)}
                 onMapPdSpecToReview={handleMapPdSpecToReview}
                 onEnrichPdSpecToReview={handleEnrichPdSpecToReview}
+                onStudiesReload={() => void loadStudies()}
                 processingProgress={processingProgress}
                 isProcessing={isProcessing}
                 isPdSpecActionRunning={isPdSpecActionRunning}

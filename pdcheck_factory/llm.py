@@ -5,8 +5,10 @@ from __future__ import annotations
 import json
 import os
 import re
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Literal, Optional, Type
+from typing import Any, Callable, Dict, Iterator, List, Literal, Optional, Type
 
 from openai import AzureOpenAI
 from pydantic import BaseModel, ConfigDict, Field
@@ -19,6 +21,8 @@ from pdcheck_factory.protocol_markdown import format_section_for_prompt, validat
 STEP1_ACRF_MAX_CHARS = 60000
 STEP1_SECTION_PROMPT_MAX_CHARS = 160000
 ACRF_SECTION_PROMPT_MAX_CHARS = 120000
+
+_deployment_override: ContextVar[str | None] = ContextVar("llm_deployment_override", default=None)
 
 
 class _StrictModel(BaseModel):
@@ -74,7 +78,20 @@ def _azure_client() -> AzureOpenAI:
 
 
 def deployment_name() -> str:
+    override = _deployment_override.get()
+    if override:
+        return override
     return blob_io.require_env("AZURE_OPENAI_DEPLOYMENT")
+
+
+@contextmanager
+def use_deployment(name: str | None) -> Iterator[None]:
+    """Temporarily override the Azure OpenAI deployment for chat calls."""
+    token = _deployment_override.set(name.strip() if name and name.strip() else None)
+    try:
+        yield
+    finally:
+        _deployment_override.reset(token)
 
 
 STEP1_TEXT_SCHEMA_VERSION = "3.0.0"

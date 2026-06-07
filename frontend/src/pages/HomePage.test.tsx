@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import App from "../App";
 import type { StepStatus } from "../services/stepApi";
@@ -25,6 +25,14 @@ vi.mock("../services/stepApi", () => ({
         nextStepId: "review-and-finalize"
       }
     ]
+  })),
+  fetchOpenAiDeployments: vi.fn(async () => ({
+    deployments: [
+      { id: "gpt-4o", modelName: "gpt-4o", version: "2024-08-06" },
+      { id: "gpt-4.1", modelName: "gpt-4.1", version: "2025-01-01" }
+    ],
+    defaultDeployment: "gpt-4o",
+    source: "fallback"
   })),
   syncStudy: vi.fn(async () => ({
     studyId: "MY-STUDY",
@@ -67,7 +75,7 @@ vi.mock("../services/stepApi", () => ({
       "review-and-finalize": "pending"
     }
   })),
-  runStep: vi.fn(async (_studyId: string, stepId: string, _options?: { llmInstructions?: string }) => {
+  runStep: vi.fn(async (_studyId: string, stepId: string, _options?: { llmInstructions?: string; llmDeployment?: string }) => {
     const summaries: Record<string, string> = {
       "index-protocol": "Indexed 25 protocol paragraphs.",
       "acrf-split-toc": "Split aCRF markdown into 12 TOC section files.",
@@ -600,33 +608,32 @@ describe("Workflow pipeline pages", () => {
   it("renders step navigation and default step panel", async () => {
     render(<App />);
 
-    expect((await screen.findAllByText(/1 project in blob/)).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText(/1 stud/)).length).toBeGreaterThan(0);
     expect(screen.getAllByText("Processing").length).toBeGreaterThan(0);
     expect(await screen.findByRole("button", { name: "Run pipeline to review" })).toBeEnabled();
     expect(screen.getByRole("button", { name: "Map to review" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Enrich and open review" })).toBeDisabled();
     expect(screen.getAllByRole("button", { name: "Re-run" }).length).toBe(3);
-    expect(screen.getByText("Pipeline progress")).toBeInTheDocument();
+    expect(screen.queryByText("Pipeline progress")).not.toBeInTheDocument();
     expect(screen.getByText("PD Specification")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "Use ID" }).length).toBeGreaterThan(0);
-    expect(screen.getAllByPlaceholderText(/Type a new project ID/i).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "New study" })).toBeInTheDocument();
     const step1Picker = document.getElementById("workflow-blob-project-picker");
     expect(step1Picker).toBeInTheDocument();
     expect(within(step1Picker!.parentElement!.parentElement!).getByRole("option", { name: "MY-STUDY" })).toBeInTheDocument();
   });
 
-  it("switches to a typed project id when Use ID is clicked", async () => {
+  it("creates a new study from the New study button", async () => {
+    const promptSpy = vi.spyOn(window, "prompt").mockReturnValue("NEW-STUDY");
     const user = userEvent.setup();
     render(<App />);
 
-    const input = (await screen.findAllByPlaceholderText(/Type a new project ID/i))[0];
-    await user.click(input);
-    await user.keyboard("{Control>}a{/Control}");
-    await user.keyboard("NEW-STUDY");
-    await user.click(screen.getAllByRole("button", { name: "Use ID" })[0]);
+    await user.click(await screen.findByRole("button", { name: "New study" }));
 
-    expect(input).toHaveValue("NEW-STUDY");
-    expect((await screen.findAllByText(/Custom project/i)).length).toBeGreaterThan(0);
+    expect(promptSpy).toHaveBeenCalled();
+    const picker = document.getElementById("workflow-blob-project-picker") as HTMLSelectElement;
+    expect(await waitFor(() => expect(picker).toHaveValue("NEW-STUDY")));
+    expect(screen.getByRole("option", { name: "NEW-STUDY (new project)" })).toBeInTheDocument();
+    promptSpy.mockRestore();
   });
 
   it("selects an existing blob project from the Step 1 dropdown", async () => {
@@ -932,10 +939,7 @@ describe("Workflow pipeline pages", () => {
     render(<App />);
 
     expect(await screen.findByRole("button", { name: /Continue pipeline to review/i })).toBeInTheDocument();
-    const statusBar = screen.getByLabelText("Processing step status");
-    expect(within(statusBar).getByText("Extract PDFs")).toBeInTheDocument();
-    expect(within(statusBar).getAllByText("Complete").length).toBeGreaterThan(0);
-    expect(within(statusBar).getAllByText("Not started").length).toBeGreaterThan(0);
+    expect(screen.queryByLabelText("Processing step status")).not.toBeInTheDocument();
   });
 
   it("sends llmInstructions when running the extraction pipeline", async () => {
@@ -1018,7 +1022,112 @@ describe("Workflow pipeline pages", () => {
     });
     const call = vi.mocked(stepApi.runStep).mock.calls.find(([_, id]) => id === "extract-rules");
     expect(call).toBeDefined();
-    expect(call![2]).toEqual({ llmInstructions: "Emphasize dosing", force: false });
+    expect(call![2]).toEqual({
+      llmInstructions: "Emphasize dosing",
+      llmDeployment: "gpt-4o",
+      force: false
+    });
+  });
+
+  it("sends acrf summary llmDeployment when running the extraction pipeline", async () => {
+    const stepApi = await import("../services/stepApi");
+    const statusesBeforeSummary: Record<string, StepStatus> = {
+      "extract-inputs": "done",
+      "index-protocol": "done",
+      "acrf-split-toc": "done",
+      "acrf-summary-text": "pending",
+      "extract-rules": "pending",
+      "extract-deviations": "pending",
+      "review-and-finalize": "pending"
+    };
+    vi.mocked(stepApi.fetchStudies).mockResolvedValueOnce({
+      studies: [
+        {
+          studyId: "MY-STUDY",
+          protocolBlob: "raw/MY-STUDY/protocol.pdf",
+          acrfBlob: "raw/MY-STUDY/acrf.pdf",
+          bothUploaded: true,
+          stepStatuses: statusesBeforeSummary,
+          nextStepId: "acrf-summary-text"
+        }
+      ]
+    });
+    vi.mocked(stepApi.syncStudy).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      sync: { uploaded: 0, downloaded: 0, skipped: 0, errors: 0, errorMessages: [] },
+      stepStatuses: statusesBeforeSummary
+    });
+    vi.mocked(stepApi.fetchStepStatuses).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      codingPhaseAccepted: false,
+      steps: Object.entries(statusesBeforeSummary).map(([stepId, status]) => ({ stepId, status })),
+      nextStepId: "acrf-summary-text"
+    });
+    vi.mocked(stepApi.fetchStep1UploadStatus).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      protocol: { uploaded: true, fileName: "protocol.pdf", size: 1, blob: "raw/MY-STUDY/protocol.pdf" },
+      acrf: { uploaded: true, fileName: "acrf.pdf", size: 1, blob: "raw/MY-STUDY/acrf.pdf" },
+      pdSpec: { uploaded: false, fileName: "pd_specifications.xlsx", size: 0, blob: "pipeline/MY-STUDY/imports/pd_specifications.xlsx" },
+      bothUploaded: true,
+      stepStatuses: statusesBeforeSummary
+    });
+
+    const user = userEvent.setup();
+    render(<App />);
+
+    await user.selectOptions(await screen.findByLabelText("aCRF summary model"), "gpt-4.1");
+    const runBtn = await screen.findByRole("button", { name: /Continue pipeline to review|Run pipeline to review/i });
+    await user.click(runBtn);
+
+    await waitFor(() => {
+      expect(stepApi.runStep).toHaveBeenCalled();
+    });
+    const call = vi.mocked(stepApi.runStep).mock.calls.find(([_, id]) => id === "acrf-summary-text");
+    expect(call).toBeDefined();
+    expect(call![2]).toEqual({
+      llmDeployment: "gpt-4.1",
+      force: false
+    });
+  });
+
+  it("shows extraction progress only after starting the pipeline", async () => {
+    const stepApi = await import("../services/stepApi");
+    const pendingStatuses: Record<string, StepStatus> = {
+      "extract-inputs": "pending",
+      "index-protocol": "pending",
+      "acrf-split-toc": "pending",
+      "acrf-summary-text": "pending",
+      "extract-rules": "pending",
+      "extract-deviations": "pending",
+      "review-and-finalize": "pending"
+    };
+    vi.mocked(stepApi.fetchStudies).mockResolvedValueOnce({
+      studies: [
+        {
+          studyId: "MY-STUDY",
+          protocolBlob: "raw/MY-STUDY/protocol.pdf",
+          acrfBlob: "raw/MY-STUDY/acrf.pdf",
+          bothUploaded: true,
+          stepStatuses: pendingStatuses,
+          nextStepId: "extract-inputs"
+        }
+      ]
+    });
+    vi.mocked(stepApi.fetchStep1UploadStatus).mockResolvedValueOnce({
+      studyId: "MY-STUDY",
+      protocol: { uploaded: true, fileName: "protocol.pdf", size: 1, blob: "raw/MY-STUDY/protocol.pdf" },
+      acrf: { uploaded: true, fileName: "acrf.pdf", size: 1, blob: "raw/MY-STUDY/acrf.pdf" },
+      pdSpec: { uploaded: false, fileName: "pd_specifications.xlsx", size: 0, blob: "pipeline/MY-STUDY/imports/pd_specifications.xlsx" },
+      bothUploaded: true,
+      stepStatuses: pendingStatuses
+    });
+
+    render(<App />);
+
+    expect(screen.queryByLabelText("Extraction status")).not.toBeInTheDocument();
+    const runBtn = await screen.findByRole("button", { name: "Run pipeline to review" });
+    fireEvent.click(runBtn);
+    expect(screen.getByLabelText("Extraction status")).toBeInTheDocument();
   });
 
   it("accepts all pending deviations in bulk and enables pseudo generation", async () => {
@@ -1287,7 +1396,9 @@ describe("Workflow pipeline pages", () => {
     await user.click(enrichButton);
 
     await waitFor(() => {
-      expect(stepApi.runStep).toHaveBeenCalledWith("MY-STUDY", "import-pd-spec-enrich");
+      expect(stepApi.runStep).toHaveBeenCalledWith("MY-STUDY", "import-pd-spec-enrich", {
+        llmDeployment: "gpt-4o"
+      });
       expect(stepApi.setStep7ReviewDisplaySource).toHaveBeenCalledWith("MY-STUDY", "enriched_pd_spec");
     });
     await screen.findByLabelText("Data to review");

@@ -1260,6 +1260,11 @@ class UiStepService:
             )
         return {"studies": studies}
 
+    def list_openai_deployments(self) -> Dict[str, Any]:
+        from pdcheck_factory import azure_openai_config
+
+        return azure_openai_config.list_openai_deployments()
+
     def delete_study(self, study_id: str) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         self._assert_safe_study_id(study_id)
@@ -1981,6 +1986,7 @@ class UiStepService:
         step_id: str,
         *,
         llm_instructions: str | None = None,
+        llm_deployment: str | None = None,
         force: bool = False,
     ) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
@@ -2026,8 +2032,11 @@ class UiStepService:
         )
         self._append_pipeline_log(study_id, f"Starting step {step_id}")
 
+        from pdcheck_factory import llm
+
         try:
-            summary = self._execute_run_step(study_id, step_id, extra=extra, force=force)
+            with llm.use_deployment(llm_deployment):
+                summary = self._execute_run_step(study_id, step_id, extra=extra, force=force)
         except Exception as exc:  # noqa: BLE001
             self._append_pipeline_log(study_id, f"Step {step_id} failed: {exc}", level="error")
             self._write_pipeline_run_state(

@@ -16,7 +16,6 @@ import { DocumentPreviewModal } from "./DocumentPreviewModal";
 import { ExtractionStatusPanel } from "./ExtractionStatusPanel";
 import type { ProcessingSubProgressItem } from "./ProcessingPanel";
 import { PipelineActionTiles } from "./PipelineActionTiles";
-import { ProcessingStepStatusBar } from "./ProcessingStepStatusBar";
 import type { ExtendedDeviationPreviewRow } from "./preview/DeviationsPreview";
 
 interface StudyPipelineViewProps {
@@ -28,6 +27,7 @@ interface StudyPipelineViewProps {
   onReRunPipeline: (extractor: Step1PdfExtractor) => Promise<void>;
   onMapPdSpecToReview: () => Promise<void>;
   onEnrichPdSpecToReview: () => Promise<void>;
+  onStudiesReload?: () => void;
   processingProgress: ProcessingSubProgressItem[];
   isProcessing: boolean;
   isPdSpecActionRunning: boolean;
@@ -80,6 +80,7 @@ export function StudyPipelineView({
   onReRunPipeline,
   onMapPdSpecToReview,
   onEnrichPdSpecToReview,
+  onStudiesReload,
   processingProgress,
   isProcessing,
   isPdSpecActionRunning,
@@ -141,7 +142,7 @@ export function StudyPipelineView({
       return;
     }
     preprocessPollRef.current = setInterval(() => {
-      void refreshUploadStatus();
+      void refreshUploadStatus(undefined, { silent: true });
       void refreshRunState();
     }, 3000);
     return () => {
@@ -298,6 +299,7 @@ export function StudyPipelineView({
       const response = await uploadStep1File(trimmedStudyId, slot, file);
       onStatusesChange(response.stepStatuses);
       await refreshUploadStatus(trimmedStudyId);
+      onStudiesReload?.();
       if (slot === "protocol") {
         setPendingProtocolFile(null);
       } else {
@@ -331,6 +333,7 @@ export function StudyPipelineView({
       const result = await uploadPdSpecWorkbook(trimmedStudyId, file);
       onStatusesChange(result.stepStatuses);
       await refreshUploadStatus(trimmedStudyId);
+      onStudiesReload?.();
       setPendingPdSpecFile(null);
     } catch (uploadError) {
       setUploadSlot("pdSpec", {
@@ -448,19 +451,18 @@ export function StudyPipelineView({
         </div>
 
         {!studyId.trim() ? (
-          <p className="step7-muted upload-gate-hint">Enter a study ID before uploading documents.</p>
+          <p className="step7-muted upload-gate-hint">Select or create a study before uploading documents.</p>
         ) : null}
       </div>
 
       <div className="study-pipeline-stage">
-        <ProcessingStepStatusBar backendStatuses={backendStatuses} visible={pipeline.bothUploaded} />
-
         <PipelineActionTiles
           bothUploaded={pipeline.bothUploaded}
           pdSpecUploaded={pdSpecSlot.status === "uploaded"}
           uploadStatusReady={!isLoadingUploadStatus && Boolean(studyId.trim())}
           isBusy={isBusy}
           isProcessing={isProcessing}
+          hideStatusMessages={showPipelineProgress}
           backendStatuses={backendStatuses}
           extractorChoice={extractorChoice}
           extractionLlmInstructions={extractionLlmInstructions}

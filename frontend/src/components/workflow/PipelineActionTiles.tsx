@@ -30,6 +30,7 @@ export interface PipelineActionTilesProps {
   onEnrichPdSpecToReview: () => void;
   pipelineMessage?: string;
   pipelineError?: string;
+  hideStatusMessages?: boolean;
 }
 
 function tileClassName(access: PipelineActionAccess): string {
@@ -83,7 +84,8 @@ export function PipelineActionTiles({
   onMapPdSpecToReview,
   onEnrichPdSpecToReview,
   pipelineMessage,
-  pipelineError
+  pipelineError,
+  hideStatusMessages = false
 }: PipelineActionTilesProps): JSX.Element {
   const processingDone = isProcessingDone(backendStatuses);
   const processingCoreDone = isProcessingCoreDone(backendStatuses);
@@ -230,11 +232,11 @@ export function PipelineActionTiles({
           </div>
         </>
       ) : (
-        <p className="step7-muted">Enter a study ID and wait for upload status before choosing a next step.</p>
+        <p className="step7-muted">Select or create a study and wait for upload status before choosing a next step.</p>
       )}
 
-      {pipelineMessage ? <p className="step1-status">{pipelineMessage}</p> : null}
-      {pipelineError ? <p className="step1-error">{pipelineError}</p> : null}
+      {hideStatusMessages ? null : pipelineMessage ? <p className="step1-status">{pipelineMessage}</p> : null}
+      {hideStatusMessages ? null : pipelineError ? <p className="step1-error">{pipelineError}</p> : null}
     </div>
   );
 }

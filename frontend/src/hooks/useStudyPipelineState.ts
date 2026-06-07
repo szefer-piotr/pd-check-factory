@@ -79,14 +79,17 @@ function preprocessFromApi(
   status: Step1UploadStatusResponse,
   previous: PreprocessStatus
 ): PreprocessStatus {
-  if (previous === "running") {
-    return "running";
-  }
   if (role === "protocol" && status.protocolPreprocessed) {
     return "done";
   }
   if (role === "acrf" && status.acrfPreprocessed) {
     return "done";
+  }
+  if (previous === "failed") {
+    return "failed";
+  }
+  if (previous === "running") {
+    return "running";
   }
   const uploaded = role === "protocol" ? status.protocol.uploaded : status.acrf.uploaded;
   return uploaded ? previous : "idle";
@@ -117,7 +120,7 @@ export interface UseStudyPipelineStateResult {
   setPipeline: Dispatch<SetStateAction<StudyPipelineState>>;
   isLoadingUploadStatus: boolean;
   uploadStatusError: string;
-  refreshUploadStatus: (overrideStudyId?: string) => Promise<Step1UploadStatusResponse | null>;
+  refreshUploadStatus: (overrideStudyId?: string, options?: { silent?: boolean }) => Promise<Step1UploadStatusResponse | null>;
   refreshRunState: (overrideStudyId?: string) => Promise<void>;
   applyUploadStatus: (status: Step1UploadStatusResponse) => void;
   setUploadSlot: (slot: "protocol" | "acrf" | "pdSpec", patch: Partial<DocumentUploadState>) => void;
@@ -157,23 +160,33 @@ export function useStudyPipelineState(
   );
 
   const refreshUploadStatus = useCallback(
-    async (overrideStudyId?: string): Promise<Step1UploadStatusResponse | null> => {
+    async (
+      overrideStudyId?: string,
+      options?: { silent?: boolean }
+    ): Promise<Step1UploadStatusResponse | null> => {
       const trimmed = (overrideStudyId ?? studyId).trim();
       if (!trimmed) {
         return null;
       }
-      setIsLoadingUploadStatus(true);
-      setUploadStatusError("");
+      const silent = options?.silent ?? false;
+      if (!silent) {
+        setIsLoadingUploadStatus(true);
+        setUploadStatusError("");
+      }
       try {
         const status = await fetchStep1UploadStatus(trimmed);
         applyUploadStatus(status);
         return status;
       } catch (loadError) {
         const message = loadError instanceof Error ? loadError.message : "Unable to load upload status.";
-        setUploadStatusError(message);
+        if (!silent) {
+          setUploadStatusError(message);
+        }
         return null;
       } finally {
-        setIsLoadingUploadStatus(false);
+        if (!silent) {
+          setIsLoadingUploadStatus(false);
+        }
       }
     },
     [applyUploadStatus, studyId]
