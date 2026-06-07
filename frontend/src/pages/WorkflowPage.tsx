@@ -7,7 +7,8 @@ import { StudyPipelineView } from "../components/workflow/StudyPipelineView";
 import { useStudyPipelineState } from "../hooks/useStudyPipelineState";
 import { CodingPhasePanel } from "../components/workflow/CodingPhasePanel";
 import { Step7ReviewPanel } from "../components/workflow/Step7ReviewPanel";
-import { StepNavigation } from "../components/workflow/StepNavigation";
+import { PipelineProgressDrawer } from "../components/workflow/PipelineProgressDrawer";
+import { WorkflowPhaseNav } from "../components/workflow/WorkflowPhaseNav";
 import type { StepRuntimeState } from "../components/workflow/StepNavigation";
 import type { PipelineStepDefinition } from "../types/pipeline";
 import {
@@ -114,6 +115,8 @@ export function WorkflowPage(): JSX.Element {
   const [isPdSpecActionRunning, setIsPdSpecActionRunning] = useState(false);
   const [pdSpecActionMessage, setPdSpecActionMessage] = useState("");
   const [pdSpecActionError, setPdSpecActionError] = useState("");
+  const [isSyncingStudy, setIsSyncingStudy] = useState(false);
+  const [studySyncError, setStudySyncError] = useState("");
 
   const navStatuses = useMemo(
     () => deriveNavStatuses(backendStatuses, { codingPhaseAccepted }),
@@ -190,17 +193,62 @@ export function WorkflowPage(): JSX.Element {
     [activeStepId]
   );
 
+  const extractionDeploymentLabel = useMemo(() => {
+    if (!settings.extractionDeployment.trim()) {
+      return "Not set";
+    }
+    const match = llmDeployments.find((deployment) => deployment.id === settings.extractionDeployment);
+    return match ? `${match.id} (${match.modelName})` : settings.extractionDeployment;
+  }, [llmDeployments, settings.extractionDeployment]);
+
+  const extractionDeploymentMissing =
+    !isLoadingDeployments && llmDeployments.length > 0 && !settings.extractionDeployment.trim();
+  const acrfSummaryDeploymentMissing =
+    !isLoadingDeployments && llmDeployments.length > 0 && !settings.acrfSummaryDeployment.trim();
+
+  const showPipelineProgressDrawer =
+    isProcessing ||
+    pipelineState.pipeline.extraction.status === "running" ||
+    pipelineState.pipeline.extraction.status === "failed" ||
+    activeStep.id === "processing";
+
+  const runStudySync = useCallback(
+    (targetStudyId: string): void => {
+      const trimmed = targetStudyId.trim();
+      if (!trimmed) {
+        return;
+      }
+      setIsSyncingStudy(true);
+      setStudySyncError("");
+      void syncStudy(trimmed)
+        .then((result) => {
+          applyBackendStatuses(result.stepStatuses);
+          if (result.sync.errors > 0) {
+            const preview = result.sync.errorMessages.slice(0, 2).join(" ");
+            setStudySyncError(
+              `Blob sync finished with ${result.sync.errors} issue(s). ${preview}`.trim()
+            );
+          } else {
+            setStudySyncError("");
+          }
+          void pipelineState.refreshUploadStatus(trimmed, { silent: true });
+          void pipelineState.refreshRunState(trimmed);
+        })
+        .catch((syncError) => {
+          setStudySyncError(syncError instanceof Error ? syncError.message : "Study sync failed.");
+        })
+        .finally(() => {
+          setIsSyncingStudy(false);
+        });
+    },
+    [applyBackendStatuses, pipelineState]
+  );
+
   const loadStudies = useCallback(
     async (options?: { syncFirst?: boolean }): Promise<void> => {
       setIsLoadingStudies(true);
       setStudyListError("");
       try {
-        if (options?.syncFirst) {
-          const sid = studyId.trim();
-          if (sid) {
-            await syncStudy(sid);
-          }
-        }
         const response = await fetchStudies();
         setStudies(response.studies);
         const current = response.studies.find((study) => study.studyId === studyId.trim());
@@ -210,6 +258,12 @@ export function WorkflowPage(): JSX.Element {
           setStudyId(response.studies[0].studyId);
           applyBackendStatuses(response.studies[0].stepStatuses);
         }
+        if (options?.syncFirst) {
+          const sid = studyId.trim();
+          if (sid) {
+            runStudySync(sid);
+          }
+        }
       } catch (studyError) {
         setStudyListError(studyError instanceof Error ? studyError.message : "Unable to load blob projects.");
         setStudies([]);
@@ -217,7 +271,7 @@ export function WorkflowPage(): JSX.Element {
         setIsLoadingStudies(false);
       }
     },
-    [applyBackendStatuses, setStudyId, studyId]
+    [applyBackendStatuses, runStudySync, setStudyId, studyId]
   );
 
   useEffect(() => {
@@ -288,15 +342,9 @@ export function WorkflowPage(): JSX.Element {
           // Keep empty statuses for new projects until API responds.
         });
     }
-    void (async () => {
-      try {
-        await syncStudy(trimmed);
-      } catch {
-        // Best-effort: upload status still hydrates PD spec from blob when present.
-      }
-      await pipelineState.refreshUploadStatus(trimmed);
-      await pipelineState.refreshRunState(trimmed);
-    })();
+    void pipelineState.refreshUploadStatus(trimmed);
+    void pipelineState.refreshRunState(trimmed);
+    runStudySync(trimmed);
     setDeleteStudyMessage("");
     setDeleteStudyError("");
   }
@@ -340,6 +388,11 @@ export function WorkflowPage(): JSX.Element {
   async function handleRunProcessing(extractor: Step1PdfExtractor, forceReRun = false): Promise<void> {
     const trimmedStudyId = studyId.trim();
     if (!trimmedStudyId || isProcessing) {
+      return;
+    }
+    if (extractionDeploymentMissing || acrfSummaryDeploymentMissing) {
+      setProcessingError("Configure extraction and aCRF summary LLM deployments in settings before running the pipeline.");
+      setSettingsOpen(true);
       return;
     }
 
@@ -535,6 +588,8 @@ export function WorkflowPage(): JSX.Element {
               blobPickerId="workflow-blob-project-picker"
             />
             {deleteStudyMessage ? <p className="step7-muted study-delete-message">{deleteStudyMessage}</p> : null}
+            {isSyncingStudy ? <p className="step1-status study-sync-message">Syncing study artifacts with blob storage…</p> : null}
+            {studySyncError ? <p className="step1-error study-sync-message">{studySyncError}</p> : null}
             <div className="study-chips">
               <span className="chip">
                 Total <strong>{data?.overview.totalDeviations ?? "—"}</strong>
@@ -547,6 +602,15 @@ export function WorkflowPage(): JSX.Element {
               </span>
               <button className="button button-ghost" type="button" onClick={() => void refresh()} disabled={isLoading}>
                 {isLoading ? "Syncing…" : "Sync"}
+              </button>
+              <button
+                className={`button button-ghost extraction-model-chip ${extractionDeploymentMissing ? "extraction-model-chip-missing" : ""}`}
+                type="button"
+                aria-label="Pipeline settings — extraction model"
+                title="Open pipeline settings"
+                onClick={() => setSettingsOpen(true)}
+              >
+                Extraction model: <strong>{extractionDeploymentLabel}</strong>
               </button>
               <button
                 className="button button-ghost settings-gear-button"
@@ -577,19 +641,40 @@ export function WorkflowPage(): JSX.Element {
           onAcrfSummaryDeploymentChange={(value) => updateSettings({ acrfSummaryDeployment: value })}
         />
 
-        <Section className="section-flat workflow-tabs-section">
-          <StepNavigation
-            steps={pipelineSteps}
-            activeStepId={activeStep.id}
-            statuses={navStatuses}
-            runtimeStates={runtimeStates}
-            onSelectStep={handleSelectStep}
-            variant="horizontal"
+        <div className="workflow-shell">
+          <PipelineProgressDrawer
+            visible={showPipelineProgressDrawer}
+            extraction={pipelineState.pipeline.extraction}
+            processingProgress={processingProgress}
+            isProcessing={isProcessing}
+            processingMessage={processingMessage}
+            processingError={processingError}
+            studyId={studyId}
+            pollRunStateDuringExtract={isProcessing}
+            onRunStatePolled={(runState) => {
+              pipelineState.setExtraction({
+                logs: runState.logs,
+                message: runState.message,
+                currentSubStepId: runState.currentSubStepId,
+                currentStage: runState.currentStage,
+                llmProgress: runState.llmProgress ?? null
+              });
+            }}
           />
-        </Section>
 
-        <div className="workflow-main">
-          <div className="workflow-content">
+          <div className="workflow-main-column">
+            <Section className="section-flat workflow-phase-nav-section">
+              <WorkflowPhaseNav
+                steps={pipelineSteps}
+                activeStepId={activeStep.id}
+                statuses={navStatuses}
+                runtimeStates={runtimeStates}
+                onSelectStep={handleSelectStep}
+              />
+            </Section>
+
+            <div className="workflow-main">
+              <div className="workflow-content">
             {activeStep.id !== "processing" && autoRunMessage ? <p className="step1-status">{autoRunMessage}</p> : null}
             {runtimeStates[activeStep.id]?.status === "running" ? (
               <p className="step1-status">Running {activeStep.title}…</p>
@@ -604,12 +689,11 @@ export function WorkflowPage(): JSX.Element {
                 pipelineState={pipelineState}
                 backendStatuses={backendStatuses}
                 onStatusesChange={applyBackendStatuses}
-                onRunFullPipeline={(extractor) => void handleRunProcessing(extractor, false)}
-                onReRunPipeline={(extractor) => void handleRunProcessing(extractor, true)}
+                onRunFullPipeline={(extractor) => handleRunProcessing(extractor, false)}
+                onReRunPipeline={(extractor) => handleRunProcessing(extractor, true)}
                 onMapPdSpecToReview={handleMapPdSpecToReview}
                 onEnrichPdSpecToReview={handleEnrichPdSpecToReview}
                 onStudiesReload={() => void loadStudies()}
-                processingProgress={processingProgress}
                 isProcessing={isProcessing}
                 isPdSpecActionRunning={isPdSpecActionRunning}
                 processingMessage={processingMessage}
@@ -617,6 +701,9 @@ export function WorkflowPage(): JSX.Element {
                 pdSpecActionMessage={pdSpecActionMessage}
                 pdSpecActionError={pdSpecActionError}
                 extractorChoice={settings.extractorChoice}
+                extractionDeploymentMissing={extractionDeploymentMissing}
+                acrfSummaryDeploymentMissing={acrfSummaryDeploymentMissing}
+                onOpenSettings={() => setSettingsOpen(true)}
               />
             ) : activeStep.id === "review-and-finalize" ? (
               <Step7ReviewPanel
@@ -629,6 +716,8 @@ export function WorkflowPage(): JSX.Element {
             ) : activeStep.id === "coding" ? (
               <CodingPhasePanel studyId={studyId} />
             ) : null}
+              </div>
+            </div>
           </div>
         </div>
       </Stack>

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set
 
+from azure.core.exceptions import HttpResponseError, ResourceNotFoundError
 from azure.storage.blob import BlobServiceClient
 
 from pdcheck_factory import blob_io, paths
@@ -15,6 +16,13 @@ from pdcheck_factory import blob_io, paths
 logger = logging.getLogger(__name__)
 
 SYNC_TOLERANCE_SEC = 1.0
+
+
+def _is_missing_blob_error(exc: BaseException) -> bool:
+    if isinstance(exc, ResourceNotFoundError):
+        return True
+    message = str(exc).lower()
+    return "blobnotfound" in message or "the specified blob does not exist" in message
 
 
 @dataclass
@@ -224,6 +232,13 @@ def sync_study(
                 )
                 report.uploaded += 1
             elif blob_item is not None and not local_exists:
+                if not blob_io.blob_exists(
+                    blob_service=bs,
+                    container_name=container,
+                    blob_path=blob_name,
+                ):
+                    report.skipped += 1
+                    continue
                 blob_io.download_file(
                     blob_service=bs,
                     container_name=container,
@@ -244,6 +259,13 @@ def sync_study(
                     )
                     report.uploaded += 1
                 else:
+                    if not blob_io.blob_exists(
+                        blob_service=bs,
+                        container_name=container,
+                        blob_path=blob_name,
+                    ):
+                        report.skipped += 1
+                        continue
                     blob_io.download_file(
                         blob_service=bs,
                         container_name=container,
@@ -251,7 +273,20 @@ def sync_study(
                         local_path=local_p,
                     )
                     report.downloaded += 1
+        except (ResourceNotFoundError, HttpResponseError) as exc:
+            if _is_missing_blob_error(exc):
+                report.skipped += 1
+                logger.debug("sync_study: skipped missing blob %s", blob_name)
+                continue
+            report.errors += 1
+            msg = f"{blob_name}: {exc}"
+            report.error_messages.append(msg)
+            logger.warning("sync_study: %s", msg)
         except Exception as exc:  # noqa: BLE001
+            if _is_missing_blob_error(exc):
+                report.skipped += 1
+                logger.debug("sync_study: skipped missing blob %s", blob_name)
+                continue
             report.errors += 1
             msg = f"{blob_name}: {exc}"
             report.error_messages.append(msg)

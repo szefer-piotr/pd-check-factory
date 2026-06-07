@@ -268,7 +268,15 @@ class UiStepService:
         if step_id == "extract-rules":
             return p.rules_parsed.exists()
         if step_id == "extract-deviations":
-            return p.deviations_parsed.exists() and p.deviations_review_state.exists()
+            if not p.deviations_parsed.exists():
+                return False
+            try:
+                parsed_obj = read_json(p.deviations_parsed)
+                if parsed_obj.get("partial") is True:
+                    return False
+            except (json.JSONDecodeError, OSError, ValueError, TypeError):
+                return False
+            return p.deviations_review_state.exists()
         if step_id == "import-pd-spec-ground":
             return self._has_import_snapshot(study_id)
         if step_id == "import-pd-spec-map":
@@ -301,6 +309,92 @@ class UiStepService:
         if not file_path.exists() or not file_path.is_file():
             return ""
         return file_path.read_text(encoding="utf-8")[:max_chars]
+
+    def _clear_deviation_extraction_artifacts(self, study_id: str) -> None:
+        p = self._study_paths(study_id)
+        for artifact in (
+            p.deviations_parsed,
+            p.deviations_review_state,
+            p.deviations_validated,
+            paths.local_deviations_raw_txt(study_id, self.output_dir),
+            paths.local_deviations_review_generated_json(study_id, self.output_dir),
+        ):
+            if artifact.is_file():
+                artifact.unlink()
+
+    def get_extraction_live(self, study_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        p = self._study_paths(study_id)
+        run_state = self._read_pipeline_run_state(study_id)
+        run_status = str(run_state.get("status", "idle"))
+        current_sub_step = str(run_state.get("currentSubStepId", ""))
+        is_running = run_status == "running"
+        llm_progress = run_state.get("llmProgress")
+        llm_progress_out = llm_progress if isinstance(llm_progress, dict) else None
+
+        rules: List[Dict[str, Any]] = []
+        if p.rules_parsed.is_file():
+            try:
+                rules_obj = read_json(p.rules_parsed)
+                for rule in rules_obj.get("rules", []):
+                    if not isinstance(rule, dict):
+                        continue
+                    rules.append(
+                        {
+                            "rule_id": str(rule.get("rule_id", "")),
+                            "title": str(rule.get("title", "")),
+                            "text": str(rule.get("text", "")),
+                            "paragraph_refs": list(rule.get("paragraph_refs", [])),
+                        }
+                    )
+            except (json.JSONDecodeError, OSError, ValueError, TypeError):
+                rules = []
+
+        deviations: List[Dict[str, Any]] = []
+        completed_rule_ids: List[str] = []
+        file_partial = False
+        if p.deviations_parsed.is_file():
+            try:
+                dev_obj = read_json(p.deviations_parsed)
+                file_partial = dev_obj.get("partial") is True
+                completed_rule_ids = [
+                    str(rule_id)
+                    for rule_id in dev_obj.get("completed_rule_ids", [])
+                    if str(rule_id).strip()
+                ]
+                for dev in dev_obj.get("deviations", []):
+                    if not isinstance(dev, dict):
+                        continue
+                    deviations.append(
+                        {
+                            "deviation_id": str(dev.get("deviation_id", "")),
+                            "rule_id": str(dev.get("rule_id", "")),
+                            "text": str(dev.get("text", "")),
+                            "paragraph_refs": list(dev.get("paragraph_refs", [])),
+                            "data_support_note": str(dev.get("data_support_note", "")),
+                            "status": str(dev.get("status", "pending")),
+                        }
+                    )
+            except (json.JSONDecodeError, OSError, ValueError, TypeError):
+                deviations = []
+                completed_rule_ids = []
+                file_partial = False
+
+        partial = file_partial or (
+            is_running and current_sub_step in {"extract-rules", "extract-deviations"}
+        )
+
+        return {
+            "studyId": study_id,
+            "rules": rules,
+            "deviations": deviations,
+            "ruleCount": len(rules),
+            "deviationCount": len(deviations),
+            "partial": partial,
+            "completedRuleIds": completed_rule_ids,
+            "llmProgress": llm_progress_out,
+            "runStatus": run_status,
+        }
 
     def _ui_upload_manifest_path(self, study_id: str) -> Path:
         return paths.local_ui_upload_manifest(study_id, self.output_dir)
@@ -2143,11 +2237,14 @@ class UiStepService:
             )
             summary = f"Extracted {len(result.get('rules', []))} rules."
         elif step_id == "extract-deviations":
+            if force:
+                self._clear_deviation_extraction_artifacts(study_id)
             result = pipeline_v2.step4_5_extract_deviations(
                 study_id,
                 self.output_dir,
                 additional_instructions=extra,
                 progress_callback=progress_callback,
+                force=force,
             )
             pipeline_v2.initialize_review_states(study_id, self.output_dir)
             summary = f"Extracted {len(result.get('deviations', []))} deviations and initialized review state."

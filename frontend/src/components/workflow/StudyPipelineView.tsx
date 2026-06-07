@@ -12,10 +12,8 @@ import {
   type StepStatus
 } from "../../services/stepApi";
 import { DocumentPreviewModal } from "./DocumentPreviewModal";
-import type { ProcessingSubProgressItem } from "./ProcessingPanel";
 import { PipelineActionTiles } from "./PipelineActionTiles";
-import { LiveExtractionPanel } from "./LiveExtractionPanel";
-import { ProgressDock } from "./ProgressDock";
+import { ExtractionLiveFeed } from "./ExtractionLiveFeed";
 import { UploadRail } from "./UploadRail";
 import type { ExtendedDeviationPreviewRow } from "./preview/DeviationsPreview";
 
@@ -29,7 +27,6 @@ interface StudyPipelineViewProps {
   onMapPdSpecToReview: () => Promise<void>;
   onEnrichPdSpecToReview: () => Promise<void>;
   onStudiesReload?: () => void;
-  processingProgress: ProcessingSubProgressItem[];
   isProcessing: boolean;
   isPdSpecActionRunning: boolean;
   processingMessage: string;
@@ -37,6 +34,9 @@ interface StudyPipelineViewProps {
   pdSpecActionMessage: string;
   pdSpecActionError: string;
   extractorChoice: Step1PdfExtractor;
+  extractionDeploymentMissing?: boolean;
+  acrfSummaryDeploymentMissing?: boolean;
+  onOpenSettings?: () => void;
 }
 
 type PreviewTarget = "protocol" | "acrf" | "pd-spec" | null;
@@ -81,14 +81,16 @@ export function StudyPipelineView({
   onMapPdSpecToReview,
   onEnrichPdSpecToReview,
   onStudiesReload,
-  processingProgress,
   isProcessing,
   isPdSpecActionRunning,
   processingMessage,
   processingError,
   pdSpecActionMessage,
   pdSpecActionError,
-  extractorChoice
+  extractorChoice,
+  extractionDeploymentMissing = false,
+  acrfSummaryDeploymentMissing = false,
+  onOpenSettings
 }: StudyPipelineViewProps): JSX.Element {
   const {
     pipeline,
@@ -438,7 +440,23 @@ export function StudyPipelineView({
         uploadStatusError={uploadStatusError}
       />
 
-      <LiveExtractionPanel studyId={studyId} active={showPipelineProgress} />
+      <ExtractionLiveFeed studyId={studyId} active={Boolean(studyId.trim())} />
+
+      {extractionDeploymentMissing || acrfSummaryDeploymentMissing ? (
+        <p className="step1-error study-pipeline-settings-warning">
+          Select LLM deployments in{" "}
+          {onOpenSettings ? (
+            <button className="button button-ghost button-inline-link" type="button" onClick={onOpenSettings}>
+              pipeline settings
+            </button>
+          ) : (
+            "pipeline settings"
+          )}{" "}
+          before running extraction.
+          {extractionDeploymentMissing ? " Extraction model is required." : ""}
+          {acrfSummaryDeploymentMissing ? " aCRF summary model is required." : ""}
+        </p>
+      ) : null}
 
       <div className="study-pipeline-stage study-pipeline-actions">
         <PipelineActionTiles
@@ -449,6 +467,7 @@ export function StudyPipelineView({
           isProcessing={isProcessing}
           hideStatusMessages={showPipelineProgress}
           backendStatuses={backendStatuses}
+          llmDeploymentsConfigured={!extractionDeploymentMissing && !acrfSummaryDeploymentMissing}
           onRunFullPipeline={() => void handleRunFullPipelineClick(false)}
           onReRunPipeline={() => void handleRunFullPipelineClick(true)}
           onMapPdSpecToReview={() => void onMapPdSpecToReview()}
@@ -457,26 +476,6 @@ export function StudyPipelineView({
           pipelineError={pdSpecActionError || processingError || pipeline.extraction.error}
         />
       </div>
-
-      <ProgressDock
-        visible={showPipelineProgress}
-        extraction={pipeline.extraction}
-        processingProgress={processingProgress}
-        isProcessing={isProcessing}
-        processingMessage={processingMessage}
-        processingError={processingError}
-        studyId={studyId}
-        pollRunStateDuringExtract={isProcessing}
-        onRunStatePolled={(runState) => {
-          setExtraction({
-            logs: runState.logs,
-            message: runState.message,
-            currentSubStepId: runState.currentSubStepId,
-            currentStage: runState.currentStage,
-            llmProgress: runState.llmProgress ?? null
-          });
-        }}
-      />
 
       <DocumentPreviewModal
         open={previewTarget !== null}

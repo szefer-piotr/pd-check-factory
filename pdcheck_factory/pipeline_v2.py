@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -295,12 +296,23 @@ def _protocol_paragraph_text(study_id: str, output_dir: Path) -> str:
     return _numbered_protocol_text(index_obj)
 
 
+def _next_deviation_index(deviations: List[Dict[str, Any]]) -> int:
+    max_idx = 0
+    for dev in deviations:
+        dev_id = str(dev.get("deviation_id", ""))
+        match = re.match(r"dev-(\d+)$", dev_id)
+        if match:
+            max_idx = max(max_idx, int(match.group(1)))
+    return max_idx + 1
+
+
 def step4_5_extract_deviations(
     study_id: str,
     output_dir: Path,
     *,
     additional_instructions: str = "",
     progress_callback: Optional[LlmProgressCallback] = None,
+    force: bool = False,
 ) -> Dict[str, Any]:
     rules_obj = read_json(paths.local_rules_parsed_json(study_id, output_dir))
     index_obj = read_json(paths.local_protocol_paragraph_index_json(study_id, output_dir))
@@ -310,12 +322,35 @@ def step4_5_extract_deviations(
     extra = additional_instructions.strip() or "(none)"
     system = load_prompt("deviations_v2_system")
     user_t = load_prompt("deviations_v2_user")
-    all_raw: List[str] = []
+    partial_path = paths.local_deviations_parsed_json(study_id, output_dir)
+    raw_out = paths.local_deviations_raw_txt(study_id, output_dir)
+
     deviations: List[Dict[str, Any]] = []
+    completed_rule_ids: List[str] = []
+    existing_raw_text = ""
     di = 1
+
+    if not force and partial_path.is_file():
+        try:
+            checkpoint = read_json(partial_path)
+            if checkpoint.get("partial") is True:
+                deviations = list(checkpoint.get("deviations", []))
+                completed_rule_ids = list(checkpoint.get("completed_rule_ids", []))
+                di = _next_deviation_index(deviations)
+                if raw_out.is_file():
+                    existing_raw_text = raw_out.read_text(encoding="utf-8").strip()
+        except (json.JSONDecodeError, OSError, ValueError, TypeError):
+            deviations = []
+            completed_rule_ids = []
+            di = 1
+            existing_raw_text = ""
+
+    all_raw: List[str] = []
     rules = list(rules_obj.get("rules", []))
     total_rules = len(rules)
-    for index, rule in enumerate(rules):
+    completed_set = set(completed_rule_ids)
+    rules_to_process = [r for r in rules if r["rule_id"] not in completed_set]
+    for index, rule in enumerate(rules_to_process):
         user = user_t.format(
             study_id=study_id,
             rule_id=rule["rule_id"],
@@ -350,10 +385,11 @@ def step4_5_extract_deviations(
                 }
             )
             di += 1
+        completed_rule_ids.append(rule["rule_id"])
         if progress_callback and total_rules > 0:
             progress_callback(
                 phase="extract-deviations",
-                current=index + 1,
+                current=len(completed_rule_ids),
                 total=total_rules,
                 unit="rules",
                 label=str(rule["rule_id"]),
@@ -363,9 +399,9 @@ def step4_5_extract_deviations(
             "study_id": study_id,
             "generated_at": _iso_now(),
             "deviations": deviations,
+            "completed_rule_ids": completed_rule_ids,
             "partial": True,
         }
-        partial_path = paths.local_deviations_parsed_json(study_id, output_dir)
         write_json(partial_path, partial)
         study_artifact_sync.mirror_upload_path(study_id, output_dir, partial_path)
     parsed = {
@@ -377,9 +413,15 @@ def step4_5_extract_deviations(
     errs = validate(parsed, load_schema("deviations_parsed_v2.schema.json"))
     if errs:
         raise ValueError("; ".join(errs))
-    raw_out = paths.local_deviations_raw_txt(study_id, output_dir)
     raw_out.parent.mkdir(parents=True, exist_ok=True)
-    raw_out.write_text("\n\n".join(all_raw), encoding="utf-8")
+    new_raw = "\n\n".join(all_raw)
+    if existing_raw_text and new_raw:
+        combined_raw = f"{existing_raw_text}\n\n{new_raw}"
+    elif existing_raw_text:
+        combined_raw = existing_raw_text
+    else:
+        combined_raw = new_raw
+    raw_out.write_text(combined_raw, encoding="utf-8")
     write_json(paths.local_deviations_parsed_json(study_id, output_dir), parsed)
     study_artifact_sync.mirror_upload_path(study_id, output_dir, raw_out)
     study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_deviations_parsed_json(study_id, output_dir))

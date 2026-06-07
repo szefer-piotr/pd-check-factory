@@ -21,6 +21,7 @@ export interface PipelineActionTilesProps {
   pipelineMessage?: string;
   pipelineError?: string;
   hideStatusMessages?: boolean;
+  llmDeploymentsConfigured?: boolean;
 }
 
 function tileClassName(access: PipelineActionAccess): string {
@@ -71,7 +72,8 @@ export function PipelineActionTiles({
   onEnrichPdSpecToReview,
   pipelineMessage,
   pipelineError,
-  hideStatusMessages = false
+  hideStatusMessages = false,
+  llmDeploymentsConfigured = true
 }: PipelineActionTilesProps): JSX.Element {
   const processingDone = isProcessingDone(backendStatuses);
   const processingCoreDone = isProcessingCoreDone(backendStatuses);
@@ -91,6 +93,14 @@ export function PipelineActionTiles({
     isProcessing
   };
   const access = getPipelineActionAccess(accessInput);
+  const pipelineAccess = llmDeploymentsConfigured
+    ? access.pipeline
+    : {
+        ...access.pipeline,
+        accessible: false,
+        blockReason:
+          access.pipeline.blockReason || "Configure extraction and aCRF summary LLM deployments in settings."
+      };
   const pipelinePrimaryLabel = getPipelinePrimaryLabel(accessInput);
 
   const introText = processingDone
@@ -119,27 +129,27 @@ export function PipelineActionTiles({
           ) : null}
 
           <div className="pipeline-action-tiles-grid">
-            <article className={tileClassName(access.pipeline)}>
+            <article className={tileClassName(pipelineAccess)}>
               <h4 className="pipeline-action-tile-title">Extract deviations from protocol</h4>
               <p className="step7-muted">
                 Run the full pipeline: PDF extraction, protocol index, aCRF summary, rule extraction, and deviation
                 candidates — then open Review.
               </p>
-              {!access.pipeline.accessible && access.pipeline.blockReason ? (
-                <p className="pipeline-action-tile-hint">{access.pipeline.blockReason}</p>
+              {!pipelineAccess.accessible && pipelineAccess.blockReason ? (
+                <p className="pipeline-action-tile-hint">{pipelineAccess.blockReason}</p>
               ) : null}
               {processingCoreDone || hasPartialProgress ? (
                 <button
                   className="button button-secondary"
                   type="button"
                   onClick={onReRunPipeline}
-                  disabled={!access.pipeline.accessible}
+                  disabled={!pipelineAccess.accessible}
                 >
                   Re-run all steps (overwrite)
                 </button>
               ) : null}
               <ActionRow
-                access={access.pipeline}
+                access={pipelineAccess}
                 primaryLabel={pipelinePrimaryLabel}
                 onPrimary={onRunFullPipeline}
                 onRerun={onReRunPipeline}

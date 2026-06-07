@@ -118,6 +118,8 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 data = self.service.get_step1_run_state(study_id)
             elif tail == "steps/status":
                 data = self.service.get_status(study_id)
+            elif tail == "extraction/live":
+                data = self.service.get_extraction_live(study_id)
             elif tail == "import-versions":
                 data = self.service.get_import_versions(study_id)
             elif tail == "step7/review-sources":

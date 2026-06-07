@@ -295,10 +295,131 @@ body {
   font-weight: 500;
 }
 
+.workflow-shell {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: var(--space-lg);
+  align-items: start;
+  min-width: 0;
+}
+
+.workflow-main-column {
+  display: grid;
+  gap: var(--space-md);
+  min-width: 0;
+}
+
 .workflow-main {
   display: grid;
   gap: var(--space-lg);
   min-width: 0;
+}
+
+.workflow-phase-nav-section {
+  padding-top: 0;
+}
+
+.workflow-phase-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  align-items: center;
+}
+
+.workflow-phase-nav-item {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  padding: 0.45rem 0.85rem;
+  border: 1px solid var(--border-subtle);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.workflow-phase-nav-item-active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.workflow-phase-nav-title {
+  font-weight: 600;
+}
+
+.pipeline-progress-drawer {
+  position: sticky;
+  top: var(--space-md);
+  width: min(18rem, 100%);
+  max-height: calc(100vh - 2 * var(--space-lg));
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 4px 18px rgba(15, 23, 42, 0.08);
+  padding: var(--space-md);
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.pipeline-progress-drawer-collapsed {
+  width: 2.6rem;
+  padding: var(--space-sm);
+}
+
+.pipeline-progress-drawer-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.pipeline-progress-drawer-title {
+  font-size: 0.82rem;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+}
+
+.pipeline-progress-drawer-live {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.pipeline-progress-drawer-toggle {
+  margin-left: auto;
+  min-width: 2rem;
+  padding-inline: 0.35rem;
+}
+
+.pipeline-progress-drawer-body {
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.extraction-model-chip {
+  font-size: 0.82rem;
+  max-width: min(24rem, 45vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.extraction-model-chip-missing strong {
+  color: var(--danger, #b42318);
+}
+
+.button-inline-link {
+  display: inline;
+  padding: 0;
+  min-height: 0;
+  vertical-align: baseline;
+  text-decoration: underline;
 }
 
 .workflow-tabs-section {
@@ -2472,6 +2593,99 @@ body {
 
 .live-extraction-count strong {
   color: var(--text);
+}
+
+.extraction-live-feed {
+  display: grid;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+}
+
+.extraction-live-feed-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.extraction-live-feed-title {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.extraction-live-feed-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  font-size: 0.86rem;
+  color: var(--text-muted);
+}
+
+.extraction-live-feed-count strong {
+  color: var(--text);
+}
+
+.extraction-live-feed-partial {
+  margin-left: var(--space-xs);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.extraction-live-feed-section-title {
+  margin: 0 0 var(--space-sm);
+  font-size: 0.92rem;
+}
+
+.extraction-live-feed-rule-list,
+.extraction-live-feed-deviation-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--space-sm);
+}
+
+.extraction-live-feed-rule-item,
+.extraction-live-feed-deviation-item {
+  padding: var(--space-sm);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-md);
+  background: color-mix(in srgb, var(--surface) 92%, var(--text-muted));
+}
+
+.extraction-live-feed-rule-heading,
+.extraction-live-feed-deviation-heading {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-xs);
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.extraction-live-feed-rule-text,
+.extraction-live-feed-deviation-text {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.extraction-live-feed-rule-group {
+  display: grid;
+  gap: var(--space-sm);
+  margin-bottom: var(--space-md);
+}
+
+.extraction-live-feed-group-title {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 650;
 }
 
 .live-extraction-partial {

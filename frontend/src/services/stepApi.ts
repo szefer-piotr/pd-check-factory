@@ -174,6 +174,34 @@ export interface LlmProgress {
   label?: string;
 }
 
+export interface ExtractionLiveRule {
+  rule_id: string;
+  title: string;
+  text: string;
+  paragraph_refs: string[];
+}
+
+export interface ExtractionLiveDeviation {
+  deviation_id: string;
+  rule_id: string;
+  text: string;
+  paragraph_refs: string[];
+  data_support_note: string;
+  status: string;
+}
+
+export interface ExtractionLiveResponse {
+  studyId: string;
+  rules: ExtractionLiveRule[];
+  deviations: ExtractionLiveDeviation[];
+  ruleCount: number;
+  deviationCount: number;
+  partial: boolean;
+  completedRuleIds: string[];
+  llmProgress: LlmProgress | null;
+  runStatus: "idle" | "running" | "done" | "failed";
+}
+
 export interface Step1RunStateResponse {
   studyId: string;
   status: "idle" | "running" | "done" | "failed";
@@ -424,13 +452,36 @@ export interface SyncStudyResponse {
   stepStatuses: Record<string, StepStatus>;
 }
 
-export async function syncStudy(studyId: string): Promise<SyncStudyResponse> {
-  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/sync`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: "{}"
-  });
-  return parseApiResponse<SyncStudyResponse>(response);
+export async function syncStudy(
+  studyId: string,
+  options?: { timeoutMs?: number; signal?: AbortSignal }
+): Promise<SyncStudyResponse> {
+  const controller = new AbortController();
+  const timeoutMs = options?.timeoutMs ?? 120_000;
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  if (options?.signal) {
+    if (options.signal.aborted) {
+      controller.abort();
+    } else {
+      options.signal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
+  }
+  try {
+    const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+      signal: controller.signal
+    });
+    return parseApiResponse<SyncStudyResponse>(response);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("Study sync timed out. The UI will keep using local files; retry sync when ready.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
 }
 
 export async function fetchStudies(): Promise<StudiesResponse> {
@@ -563,6 +614,13 @@ export async function fetchStepPreview(studyId: string, stepId: string): Promise
     `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/steps/${encodeURIComponent(stepId)}/preview`
   );
   return parseApiResponse<StepPreviewResponse>(response);
+}
+
+export async function fetchExtractionLive(studyId: string): Promise<ExtractionLiveResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/extraction/live`
+  );
+  return parseApiResponse<ExtractionLiveResponse>(response);
 }
 
 export async function fetchStep7ReviewSources(studyId: string): Promise<Step7ReviewSourcesResponse> {

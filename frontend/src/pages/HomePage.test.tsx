@@ -75,6 +75,17 @@ vi.mock("../services/stepApi", () => ({
       "review-and-finalize": "pending"
     }
   })),
+  fetchExtractionLive: vi.fn(async () => ({
+    studyId: "MY-STUDY",
+    rules: [],
+    deviations: [],
+    ruleCount: 0,
+    deviationCount: 0,
+    partial: false,
+    completedRuleIds: [],
+    llmProgress: null,
+    runStatus: "idle" as const
+  })),
   runStep: vi.fn(async (_studyId: string, stepId: string, _options?: { llmInstructions?: string; llmDeployment?: string }) => {
     const summaries: Record<string, string> = {
       "index-protocol": "Indexed 25 protocol paragraphs.",
@@ -614,7 +625,7 @@ describe("Workflow pipeline pages", () => {
     expect(screen.getByRole("button", { name: "Map to review" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Enrich and open review" })).toBeDisabled();
     expect(screen.getAllByRole("button", { name: "Re-run" }).length).toBe(3);
-    expect(screen.queryByText("Pipeline progress")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Pipeline progress")).toBeInTheDocument();
     expect(screen.getByText("PD Spec")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "New study" })).toBeInTheDocument();
     const step1Picker = document.getElementById("workflow-blob-project-picker");
@@ -939,7 +950,7 @@ describe("Workflow pipeline pages", () => {
     render(<App />);
 
     expect(await screen.findByRole("button", { name: /Continue pipeline to review/i })).toBeInTheDocument();
-    expect(screen.queryByLabelText("Processing step status")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Pipeline progress")).toBeInTheDocument();
   });
 
   it("sends llmInstructions when running the extraction pipeline", async () => {
@@ -1125,10 +1136,16 @@ describe("Workflow pipeline pages", () => {
 
     render(<App />);
 
-    expect(screen.queryByLabelText("Extraction status")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Pipeline progress")).toBeInTheDocument();
+    expect(screen.queryByText("Live")).not.toBeInTheDocument();
     const runBtn = await screen.findByRole("button", { name: "Run pipeline to review" });
     fireEvent.click(runBtn);
-    expect(screen.getByLabelText("Extraction status")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByLabelText("Extraction status")).toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(stepApi.runStep1Extraction).toHaveBeenCalled();
+    });
   });
 
   it("accepts all pending deviations in bulk and enables pseudo generation", async () => {
