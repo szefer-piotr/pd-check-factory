@@ -164,6 +164,14 @@ export interface PipelineLogLine {
   text: string;
 }
 
+export interface LlmProgress {
+  phase: string;
+  current: number;
+  total: number;
+  unit: string;
+  label?: string;
+}
+
 export interface Step1RunStateResponse {
   studyId: string;
   status: "idle" | "running" | "done" | "failed";
@@ -174,6 +182,7 @@ export interface Step1RunStateResponse {
   startedAt: string;
   finishedAt: string;
   logs: PipelineLogLine[];
+  llmProgress?: LlmProgress | null;
 }
 
 export type Step1PdfExtractor = "opendataloader" | "document_intelligence" | "both";
