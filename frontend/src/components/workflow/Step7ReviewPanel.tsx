@@ -5,9 +5,11 @@ import {
   deleteStep7Deviation,
   deleteStep7Rule,
   acceptStep7DeviationsAll,
+  fetchStep1RunState,
   fetchStep7Deviations,
   fetchStep7ReviewSources,
   generateStep7PseudoLogicAll,
+  type LlmProgress,
   exportStep7DeviationsWorkbook,
   exportStep7DeviationsCodingWorkbook,
   importStep7DeviationsWorkbook,
@@ -20,6 +22,7 @@ import {
   type StepStatus
 } from "../../services/stepApi";
 import { Step7DeviationDrawer } from "./Step7DeviationDrawer";
+import { LlmProgressBar } from "./LlmProgressBar";
 import { Step7RuleGroups, groupDeviationsByRule } from "./Step7RuleGroups";
 
 interface Step7ReviewPanelProps {
@@ -71,6 +74,7 @@ export function Step7ReviewPanel({
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [isBulkAccepting, setIsBulkAccepting] = useState(false);
   const [isBulkGenerating, setIsBulkGenerating] = useState(false);
+  const [bulkLlmProgress, setBulkLlmProgress] = useState<LlmProgress | null>(null);
   const [isExporting, setIsExporting] = useState(false);
   const [isExportingCoding, setIsExportingCoding] = useState(false);
   const [acceptStatus, setAcceptStatus] = useState("");
@@ -232,18 +236,39 @@ export function Step7ReviewPanel({
   }
 
   async function handleGenerateAllPseudoLogic(): Promise<void> {
+    const trimmed = studyId.trim();
+    if (!trimmed) {
+      return;
+    }
     setIsBulkGenerating(true);
+    setBulkLlmProgress(null);
     setError("");
     setBulkStatus("");
+    const pollTimer = window.setInterval(() => {
+      void (async () => {
+        try {
+          const [runState, refreshed] = await Promise.all([
+            fetchStep1RunState(trimmed),
+            fetchStep7Deviations(trimmed, reviewSource)
+          ]);
+          setBulkLlmProgress(runState.llmProgress ?? null);
+          setRows(refreshed.rows);
+        } catch {
+          // best-effort refresh during bulk pseudo generation
+        }
+      })();
+    }, 2500);
     try {
-      const result = await generateStep7PseudoLogicAll(studyId.trim(), reviewSource);
+      const result = await generateStep7PseudoLogicAll(trimmed, reviewSource);
       setRows(result.rows);
       onStepStatusesChange(result.stepStatuses);
       setBulkStatus(`Generated pseudo logic for ${result.generated} accepted deviation${result.generated === 1 ? "" : "s"}.`);
     } catch (generateError) {
       setError(generateError instanceof Error ? generateError.message : "Unable to generate pseudo logic.");
     } finally {
+      window.clearInterval(pollTimer);
       setIsBulkGenerating(false);
+      setBulkLlmProgress(null);
     }
   }
 
@@ -492,8 +517,17 @@ export function Step7ReviewPanel({
         </div>
       </div>
 
+      {isBulkGenerating && bulkLlmProgress && bulkLlmProgress.total > 0 ? (
+        <LlmProgressBar progress={bulkLlmProgress} />
+      ) : null}
+
       <div className={`step7-layout ${selectedRow ? "" : "step7-layout-no-drawer"}`}>
-        <Step7RuleGroups groups={groups} selectedId={selectedId} onSelect={setSelectedId} />
+        <Step7RuleGroups
+          groups={groups}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+          isBulkGeneratingPseudo={isBulkGenerating}
+        />
         {selectedRow ? (
           <Step7DeviationDrawer
             studyId={studyId}
