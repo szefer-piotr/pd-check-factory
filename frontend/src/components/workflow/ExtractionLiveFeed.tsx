@@ -1,9 +1,13 @@
-import { useEffect, useMemo, useState } from "react";
-import { fetchExtractionLive, type ExtractionLiveResponse } from "../../services/stepApi";
+import { useMemo } from "react";
+import { LlmProgressBar } from "./LlmProgressBar";
+import type { ExtractionLiveResponse, Step1RunStateResponse } from "../../services/stepApi";
 
 interface ExtractionLiveFeedProps {
   studyId: string;
   active: boolean;
+  live?: ExtractionLiveResponse | null;
+  runState?: Step1RunStateResponse | null;
+  onSelectDeviation?: (deviationId: string) => void;
 }
 
 interface RuleGroup {
@@ -53,43 +57,48 @@ function hasLiveContent(live: ExtractionLiveResponse | null): boolean {
   return live.ruleCount > 0 || live.deviationCount > 0;
 }
 
-export function ExtractionLiveFeed({ studyId, active }: ExtractionLiveFeedProps): JSX.Element | null {
-  const [live, setLive] = useState<ExtractionLiveResponse | null>(null);
+function feedLlmProgress(
+  live: ExtractionLiveResponse | null,
+  runState: Step1RunStateResponse | null | undefined
+): ExtractionLiveResponse["llmProgress"] {
+  const runProgress = runState?.llmProgress ?? null;
+  const currentSubStep = runState?.currentSubStepId ?? "";
+  if (
+    runProgress &&
+    (currentSubStep === "acrf-summary-text" || currentSubStep === "extract-deviations")
+  ) {
+    return null;
+  }
+  return live?.llmProgress ?? null;
+}
 
-  useEffect(() => {
-    if (!active || !studyId.trim()) {
-      setLive(null);
-      return;
-    }
-
-    let cancelled = false;
-    const poll = async (): Promise<void> => {
-      try {
-        const response = await fetchExtractionLive(studyId.trim());
-        if (!cancelled) {
-          setLive(response);
-        }
-      } catch {
-        // best-effort live feed polling
-      }
-    };
-
-    void poll();
-    const timer = window.setInterval(() => void poll(), 2500);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-    };
-  }, [active, studyId]);
-
+export function ExtractionLiveFeed({
+  active,
+  live = null,
+  runState = null,
+  onSelectDeviation
+}: ExtractionLiveFeedProps): JSX.Element | null {
   const groups = useMemo(() => groupByRule(live), [live]);
+  const streamProgress = feedLlmProgress(live, runState);
 
   if (!active) {
     return null;
   }
 
-  if (!hasLiveContent(live) && !live?.partial) {
+  const runStatus = live?.runStatus ?? runState?.status ?? "idle";
+  const showFeed =
+    hasLiveContent(live) || live?.partial === true || runStatus === "running";
+
+  if (!showFeed) {
     return null;
+  }
+
+  if (!hasLiveContent(live) && !live?.partial) {
+    return streamProgress ? (
+      <section className="extraction-live-feed" aria-label="Live extraction results">
+        <LlmProgressBar progress={streamProgress} />
+      </section>
+    ) : null;
   }
 
   return (
@@ -97,12 +106,12 @@ export function ExtractionLiveFeed({ studyId, active }: ExtractionLiveFeedProps)
       <header className="extraction-live-feed-header">
         <h3 className="extraction-live-feed-title">Live extraction results</h3>
         <div className="extraction-live-feed-counts">
-          {live!.ruleCount > 0 ? (
+          {(live?.ruleCount ?? 0) > 0 ? (
             <span className="extraction-live-feed-count">
               Rules <strong>{live!.ruleCount}</strong>
             </span>
           ) : null}
-          {live!.deviationCount > 0 ? (
+          {(live?.deviationCount ?? 0) > 0 ? (
             <span className="extraction-live-feed-count">
               Deviations <strong>{live!.deviationCount}</strong>
               {live!.partial ? <span className="extraction-live-feed-partial">updating…</span> : null}
@@ -111,7 +120,9 @@ export function ExtractionLiveFeed({ studyId, active }: ExtractionLiveFeedProps)
         </div>
       </header>
 
-      {live!.rules.length > 0 ? (
+      {streamProgress ? <LlmProgressBar progress={streamProgress} /> : null}
+
+      {(live?.rules.length ?? 0) > 0 ? (
         <section className="extraction-live-feed-rules" aria-label="Extracted rules">
           <h4 className="extraction-live-feed-section-title">Rules</h4>
           <ul className="extraction-live-feed-rule-list">
@@ -140,11 +151,17 @@ export function ExtractionLiveFeed({ studyId, active }: ExtractionLiveFeedProps)
               <ul className="extraction-live-feed-deviation-list">
                 {group.deviations.map((deviation) => (
                   <li key={deviation.deviation_id} className="extraction-live-feed-deviation-item">
-                    <div className="extraction-live-feed-deviation-heading">
-                      <span className="extraction-live-feed-deviation-id">{deviation.deviation_id}</span>
-                      <span className="extraction-live-feed-deviation-rule">{deviation.rule_id}</span>
-                    </div>
-                    <p className="extraction-live-feed-deviation-text">{deviation.text}</p>
+                    <button
+                      type="button"
+                      className="extraction-live-feed-deviation-button"
+                      onClick={() => onSelectDeviation?.(deviation.deviation_id)}
+                    >
+                      <div className="extraction-live-feed-deviation-heading">
+                        <span className="extraction-live-feed-deviation-id">{deviation.deviation_id}</span>
+                        <span className="extraction-live-feed-deviation-rule">{deviation.rule_id}</span>
+                      </div>
+                      <p className="extraction-live-feed-deviation-text">{deviation.text}</p>
+                    </button>
                   </li>
                 ))}
               </ul>

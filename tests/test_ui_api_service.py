@@ -32,6 +32,7 @@ def test_run_step_reports_llm_progress_for_extract_deviations(
         *,
         additional_instructions: str = "",
         progress_callback=None,
+        force: bool = False,
     ) -> dict:
         assert progress_callback is not None
         progress_callback(
@@ -68,6 +69,34 @@ def test_run_step_reports_llm_progress_for_extract_deviations(
     log_texts = [line["text"] for line in run_state["logs"]]
     assert "llm:extract-deviations:2/5:rule-002" in log_texts
     assert run_state["llmProgress"] is None
+
+
+def test_run_step_acrf_summary_honors_llm_deployment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pdcheck_factory import pipeline_v2
+
+    def fake_acrf_summary(sid: str, output_dir: Path, **_kwargs: object) -> dict:
+        out_path = paths.local_acrf_summary_text_merged(sid, output_dir)
+        _touch(out_path, '{"datasets": []}')
+        return {"datasets": []}
+
+    monkeypatch.setattr(pipeline_v2, "step1_acrf_summary_text", fake_acrf_summary)
+
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "MY-STUDY"
+
+    proto = extraction_resolve.resolve_protocol_rendered_source_md(study_id, tmp_path)
+    acrf = extraction_resolve.resolve_acrf_rendered_source_md(study_id, tmp_path)
+    _touch(proto)
+    _touch(acrf)
+    sections_dir = extraction_resolve.resolve_acrf_sections_toc_dir(study_id, tmp_path)
+    _touch(sections_dir / "001_demo.md", "# demo")
+    _touch(sections_dir / "sections_manifest.json", '{"sections": []}')
+
+    service.run_step(study_id, "acrf-summary-text", llm_deployment="o4-mini")
+
+    run_state = service.get_step1_run_state(study_id)
+    log_texts = [line["text"] for line in run_state["logs"]]
+    assert any("Using deployment: o4-mini" in text for text in log_texts)
 
 
 def test_run_step_forwards_llm_instructions_to_extract_rules(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -126,7 +155,7 @@ def test_status_progression_and_dependency_guard(tmp_path: Path, monkeypatch: py
         _touch(out, '{"rules": []}')
         return {"rules": []}
 
-    def fake_acrf_summary(sid: str, output_dir: Path):
+    def fake_acrf_summary(sid: str, output_dir: Path, **_kwargs: object):
         called["acrf"] = True
         out = output_dir / sid / "pipeline" / "acrf_summary" / "acrf_summary_text_merged.json"
         _touch(out, '{"datasets": []}')
@@ -151,7 +180,7 @@ def test_status_progression_and_dependency_guard(tmp_path: Path, monkeypatch: py
         review = output_dir / sid / "pipeline" / "review" / "deviations_review_state.json"
         _touch(review, '{"deviations": []}')
 
-    def fake_pseudo(sid: str, output_dir: Path):
+    def fake_pseudo(sid: str, output_dir: Path, **_kwargs: object):
         called["pseudo"] = True
         out = output_dir / sid / "pipeline" / "pseudo_logic" / "pseudo_logic_validated.json"
         _touch(out, '{"items": []}')
@@ -213,15 +242,95 @@ def test_list_studies_discovers_raw_blob_pairs(tmp_path: Path, monkeypatch: pyte
         ],
     )
 
+    monkeypatch.setattr(
+        service,
+        "_read_upload_manifest_blob_only",
+        lambda study_id: {
+            "STUDY-A": {"workflow": "extract", "uploadedAt": "2026-01-01T00:00:00Z"},
+            "STUDY-B": {"workflow": None, "uploadedAt": "2026-01-02T00:00:00Z"},
+            "STUDY-C": {"workflow": "map", "uploadedAt": "2026-01-03T00:00:00Z"},
+        }.get(study_id, {}),
+    )
+    monkeypatch.setattr(
+        service,
+        "_resolve_ui_stage",
+        lambda study_id, manifest=None: {
+            "STUDY-A": "summary",
+            "STUDY-B": "project",
+            "STUDY-C": "setup",
+        }.get(study_id, "project"),
+    )
+
     payload = service.list_studies()
 
     assert [study["studyId"] for study in payload["studies"]] == ["STUDY-A", "STUDY-B", "STUDY-C"]
     study_a = next(study for study in payload["studies"] if study["studyId"] == "STUDY-A")
-    assert study_a["protocolBlob"] == "raw/STUDY-A/protocol.pdf"
-    assert study_a["bothUploaded"] is True
-    assert study_a["stepStatuses"]["extract-inputs"] == "pending"
+    assert study_a["workflow"] == "extract"
+    assert study_a["stage"] == "summary"
+    assert study_a["lastModified"] == "2026-01-01T00:00:00Z"
     study_b = next(study for study in payload["studies"] if study["studyId"] == "STUDY-B")
-    assert study_b["bothUploaded"] is False
+    assert study_b["workflow"] is None
+    assert study_b["stage"] == "project"
+
+
+def test_create_study_writes_manifest_and_rejects_duplicates(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    monkeypatch.setattr(service, "_study_exists_in_blob", lambda _study_id: False)
+    monkeypatch.setattr(
+        paths,
+        "ui_upload_manifest_blob",
+        lambda study_id: f"pipeline/{study_id}/ui_upload_manifest.json",
+    )
+
+    created = service.create_study("NEW-STUDY")
+
+    assert created["studyId"] == "NEW-STUDY"
+    assert created["uiStage"] == "project"
+    assert created["manifestBlobPath"] == "pipeline/NEW-STUDY/ui_upload_manifest.json"
+    manifest_path = paths.local_ui_upload_manifest("NEW-STUDY", tmp_path)
+    assert manifest_path.is_file()
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest["workflow"] is None
+
+    monkeypatch.setattr(service, "_study_exists_in_blob", lambda _study_id: True)
+    with pytest.raises(UiApiError) as exc:
+        service.create_study("NEW-STUDY")
+    assert exc.value.status_code == 409
+
+
+def test_set_study_workflow_persists_manifest_fields(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    monkeypatch.setattr(service, "_study_exists_in_blob", lambda _study_id: False)
+    service.create_study("WF-STUDY")
+
+    result = service.set_study_workflow("WF-STUDY", "enrich")
+
+    assert result["workflow"] == "enrich"
+    assert result["entryMode"] == "imported_pd_spec"
+    assert result["pdSpecImportMode"] == "enrich"
+    manifest = json.loads(paths.local_ui_upload_manifest("WF-STUDY", tmp_path).read_text(encoding="utf-8"))
+    assert manifest["workflow"] == "enrich"
+
+
+def test_get_study_summary_returns_consolidated_payload(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    monkeypatch.setattr(service, "_study_exists_in_blob", lambda _study_id: False)
+    service.create_study("SUMMARY-STUDY")
+    service.set_study_workflow("SUMMARY-STUDY", "extract")
+    monkeypatch.setattr(service, "_deviation_counts", lambda _study_id: None)
+
+    summary = service.get_study_summary("SUMMARY-STUDY")
+
+    assert summary["studyId"] == "SUMMARY-STUDY"
+    assert summary["workflow"] == "extract"
+    assert "uploadStatus" in summary
+    assert "stepStatuses" in summary
+    assert summary["runState"]["status"] == "idle"
+    assert summary["deviationCounts"] is None
 
 
 def test_delete_study_removes_all_blob_prefixes_and_local_output(
@@ -641,7 +750,7 @@ def test_generate_step7_pseudo_logic_bulk_returns_rows_and_count(
 
     from pdcheck_factory import paths, pipeline_v2
 
-    def fake_bulk(sid: str, output_dir: Path):
+    def fake_bulk(sid: str, output_dir: Path, **_kwargs: object):
         out = {
             "schema_version": "1.0.0",
             "study_id": sid,
@@ -677,7 +786,7 @@ def test_generate_step7_pseudo_logic_bulk_returns_rows_and_count(
 def test_run_step1_extract_opendataloader_flags_and_choice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = UiStepService(output_dir=tmp_path)
     study_id = "EX-S"
-    captured: dict = {}
+    captured: list[dict] = []
 
     monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
     monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
@@ -685,24 +794,33 @@ def test_run_step1_extract_opendataloader_flags_and_choice(tmp_path: Path, monke
     monkeypatch.setattr(blob_io, "upload_blob_bytes", lambda **_kwargs: None)
 
     def fake_run_extract(**kwargs: object) -> None:
-        captured.update(kwargs)
+        captured.append(dict(kwargs))
 
     from pdcheck_factory import cli as cli_mod
 
     monkeypatch.setattr(cli_mod, "run_extract", fake_run_extract)
     out = service.run_step1_extract(study_id, extractor="opendataloader")
-    assert captured.get("opendataloader_only") is True
-    assert captured.get("run_opendataloader_ocr") is True
+    assert len(captured) == 2
+    assert captured[0]["skip_acrf"] is True
+    assert captured[0]["opendataloader_only"] is True
+    assert captured[0]["run_opendataloader_ocr"] is True
+    assert captured[1]["skip_protocol"] is True
+    assert captured[1]["opendataloader_only"] is True
     assert out["extractor"] == "opendataloader"
+    assert out["protocolExtractor"] == "opendataloader"
+    assert out["acrfExtractor"] == "opendataloader"
     choice_path = extraction_resolve.local_ui_extractor_choice_json(study_id, tmp_path)
     assert choice_path.is_file()
-    assert read_json(choice_path)["extractor"] == "opendataloader"
+    choice = read_json(choice_path)
+    assert choice["schema_version"] == "2.0.0"
+    assert choice["protocol"] == "opendataloader"
+    assert choice["acrf"] == "opendataloader"
 
 
 def test_run_step1_extract_document_intelligence_flags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = UiStepService(output_dir=tmp_path)
     study_id = "EX-S"
-    captured: dict = {}
+    captured: list[dict] = []
 
     monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
     monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
@@ -710,23 +828,26 @@ def test_run_step1_extract_document_intelligence_flags(tmp_path: Path, monkeypat
     monkeypatch.setattr(blob_io, "upload_blob_bytes", lambda **_kwargs: None)
 
     def fake_run_extract(**kwargs: object) -> None:
-        captured.update(kwargs)
+        captured.append(dict(kwargs))
 
     from pdcheck_factory import cli as cli_mod
 
     monkeypatch.setattr(cli_mod, "run_extract", fake_run_extract)
     out = service.run_step1_extract(study_id, extractor="document_intelligence")
-    assert captured.get("opendataloader_only") is False
-    assert captured.get("run_opendataloader_ocr") is False
+    assert len(captured) == 2
+    assert captured[0]["opendataloader_only"] is False
+    assert captured[0]["run_opendataloader_ocr"] is False
+    assert captured[1]["opendataloader_only"] is False
     assert out["extractor"] == "document_intelligence"
-    choice_path = extraction_resolve.local_ui_extractor_choice_json(study_id, tmp_path)
-    assert read_json(choice_path)["extractor"] == "document_intelligence"
+    choice = read_json(extraction_resolve.local_ui_extractor_choice_json(study_id, tmp_path))
+    assert choice["protocol"] == "document_intelligence"
+    assert choice["acrf"] == "document_intelligence"
 
 
 def test_run_step1_extract_default_both(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = UiStepService(output_dir=tmp_path)
     study_id = "EX-S"
-    captured: dict = {}
+    captured: list[dict] = []
 
     monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
     monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
@@ -734,16 +855,52 @@ def test_run_step1_extract_default_both(tmp_path: Path, monkeypatch: pytest.Monk
     monkeypatch.setattr(blob_io, "upload_blob_bytes", lambda **_kwargs: None)
 
     def fake_run_extract(**kwargs: object) -> None:
-        captured.update(kwargs)
+        captured.append(dict(kwargs))
 
     from pdcheck_factory import cli as cli_mod
 
     monkeypatch.setattr(cli_mod, "run_extract", fake_run_extract)
     out = service.run_step1_extract(study_id, extractor=None)
-    assert captured.get("run_opendataloader_ocr") is True
-    assert captured.get("opendataloader_only") is False
+    assert len(captured) == 2
+    assert captured[0]["run_opendataloader_ocr"] is True
+    assert captured[0]["opendataloader_only"] is True
+    assert captured[1]["run_opendataloader_ocr"] is False
     assert out["extractor"] == "both"
-    assert read_json(extraction_resolve.local_ui_extractor_choice_json(study_id, tmp_path))["extractor"] == "both"
+    assert out["protocolExtractor"] == "opendataloader"
+    assert out["acrfExtractor"] == "document_intelligence"
+    choice = read_json(extraction_resolve.local_ui_extractor_choice_json(study_id, tmp_path))
+    assert choice["protocol"] == "opendataloader"
+    assert choice["acrf"] == "document_intelligence"
+
+
+def test_run_step1_extract_per_document_extractors(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "EX-S"
+    captured: list[dict] = []
+
+    monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
+    monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
+    monkeypatch.setattr(blob_io, "blob_exists", lambda **_kwargs: True)
+    monkeypatch.setattr(blob_io, "upload_blob_bytes", lambda **_kwargs: None)
+
+    def fake_run_extract(**kwargs: object) -> None:
+        captured.append(dict(kwargs))
+
+    from pdcheck_factory import cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "run_extract", fake_run_extract)
+    out = service.run_step1_extract(
+        study_id,
+        protocol_extractor="document_intelligence",
+        acrf_extractor="opendataloader",
+    )
+    assert len(captured) == 2
+    assert captured[0]["skip_acrf"] is True
+    assert captured[0]["run_opendataloader_ocr"] is False
+    assert captured[1]["skip_protocol"] is True
+    assert captured[1]["opendataloader_only"] is True
+    assert out["protocolExtractor"] == "document_intelligence"
+    assert out["acrfExtractor"] == "opendataloader"
 
 
 def test_upload_step1_files_persists_original_filenames(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -849,7 +1006,7 @@ def test_get_specifications_preview_maps_workbook_and_review_state(tmp_path: Pat
     row = workbook_source["rows"][0]
     assert row[PD_SPEC_HEADERS[0]] == "Eligibility Criteria"
     assert row[PD_SPEC_HEADERS[2]] == "Subject enrolled below minimum age"
-    assert row[PD_SPEC_HEADERS[9]] == "RAVE"
+    assert row[PD_SPEC_HEADERS[8]] == "RAVE"
 
     review_source = next(s for s in preview["sources"] if s["key"] == "review_state")
     assert review_source["rows"][0]["deviation_text"] == "Generated deviation text"

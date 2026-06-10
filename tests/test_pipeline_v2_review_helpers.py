@@ -119,8 +119,13 @@ class PipelineV2ReviewHelpersTests(unittest.TestCase):
                     return "<<<BEGIN_PSEUDO>>>\nPSEUDO_LOGIC: SELECT 1\n<<<END_PSEUDO>>>"
                 return "PROGRAMMABLE: yes\nRATIONALE: Date field and window are present."
 
-            with patch(
-                "pdcheck_factory.pipeline_v2.llm.chat_text_repairs",
+            with patch.object(
+                pipeline_v2.llm,
+                "generate_pseudo_logic_structured",
+                side_effect=ValueError("force fallback"),
+            ), patch.object(
+                pipeline_v2.llm,
+                "chat_text_repairs",
                 side_effect=_fake_chat_text_repairs,
             ):
                 item = pipeline_v2.generate_pseudo_logic_for_deviation(

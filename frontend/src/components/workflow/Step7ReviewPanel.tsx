@@ -23,14 +23,14 @@ import {
 } from "../../services/stepApi";
 import { Step7DeviationDrawer } from "./Step7DeviationDrawer";
 import { LlmProgressBar } from "./LlmProgressBar";
-import { Step7RuleGroups, groupDeviationsByRule } from "./Step7RuleGroups";
+import { Step7RuleGroups } from "./Step7RuleGroups";
+import { groupDeviationsByRule } from "../../utils/step7RuleGroups";
 
 interface Step7ReviewPanelProps {
   studyId: string;
   onStepStatusesChange: (statuses: Record<string, StepStatus>) => void;
-  onAcceptAndContinue?: () => void;
-  isAcceptingCoding?: boolean;
-  codingAcceptError?: string;
+  selectedDeviationId?: string | null;
+  onSelectedDeviationIdChange?: (deviationId: string | null) => void;
 }
 
 const EMPTY_DEVIATION_FORM: Step7DeviationPayload = {
@@ -64,9 +64,8 @@ function refsToText(value: string[]): string {
 export function Step7ReviewPanel({
   studyId,
   onStepStatusesChange,
-  onAcceptAndContinue,
-  isAcceptingCoding = false,
-  codingAcceptError = ""
+  selectedDeviationId = null,
+  onSelectedDeviationIdChange
 }: Step7ReviewPanelProps): JSX.Element {
   const [rows, setRows] = useState<Step7DeviationRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -90,10 +89,17 @@ export function Step7ReviewPanel({
   const [reviewSource, setReviewSource] = useState<Step7ReviewSource>("generated");
   const [sourcesLoading, setSourcesLoading] = useState(false);
 
+  const activeSelectedId = selectedDeviationId ?? selectedId;
+
   const selectedRow = useMemo(
-    () => rows.find((row) => row.deviation_id === selectedId) ?? null,
-    [rows, selectedId]
+    () => rows.find((row) => row.deviation_id === activeSelectedId) ?? null,
+    [rows, activeSelectedId]
   );
+
+  function handleSelectDeviation(deviationId: string | null): void {
+    setSelectedId(deviationId);
+    onSelectedDeviationIdChange?.(deviationId);
+  }
 
   const groups = useMemo(() => groupDeviationsByRule(rows), [rows]);
 
@@ -107,13 +113,7 @@ export function Step7ReviewPanel({
 
   const acceptedCount = statusCounts.accepted;
   const acceptAllCount = statusCounts.pending + statusCounts.to_review;
-  const incompleteReviewCount = acceptAllCount;
-  const canContinueToCoding =
-    rows.length === 0 || rows.every((row) => row.status === "accepted" || row.status === "rejected");
-  const continueBlockReason =
-    incompleteReviewCount > 0
-      ? `${incompleteReviewCount} deviation${incompleteReviewCount === 1 ? "" : "s"} still pending or to review. Accept or reject each before continuing to coding.`
-      : "";
+  const bulkDisabled = isLoading;
 
   useEffect(() => {
     async function loadSources(): Promise<void> {
@@ -145,12 +145,18 @@ export function Step7ReviewPanel({
     void loadSources();
   }, [studyId, onStepStatusesChange]);
 
+  useEffect(() => {
+    if (selectedDeviationId && rows.some((row) => row.deviation_id === selectedDeviationId)) {
+      setSelectedId(selectedDeviationId);
+    }
+  }, [selectedDeviationId, rows]);
+
   async function handleReviewSourceChange(nextSource: Step7ReviewSource): Promise<void> {
     if (!studyId.trim() || nextSource === reviewSource) {
       return;
     }
     setReviewSource(nextSource);
-    setSelectedId(null);
+    handleSelectDeviation(null);
     setIsLoading(true);
     setError("");
     try {
@@ -399,8 +405,6 @@ export function Step7ReviewPanel({
       {bulkStatus ? <p className="step7-muted">{bulkStatus}</p> : null}
       {exportStatus ? <p className="step7-muted">{exportStatus}</p> : null}
       {exportCodingStatus ? <p className="step7-muted">{exportCodingStatus}</p> : null}
-      {codingAcceptError ? <p className="step1-error">{codingAcceptError}</p> : null}
-      {!canContinueToCoding && continueBlockReason ? <p className="step7-muted">{continueBlockReason}</p> : null}
       {activeSourceMeta ? (
         <p className="step7-muted">
           Reviewing <strong>{activeSourceMeta.label}</strong>. Changes apply only to this dataset.
@@ -410,26 +414,10 @@ export function Step7ReviewPanel({
 
       <div className="step7-toolbar">
         <button
-          className="button button-primary"
-          type="button"
-          onClick={() => void handleExportWorkbook()}
-          disabled={isExporting || isExportingCoding || isLoading || !studyId.trim()}
-        >
-          {isExporting ? "Generating Excel..." : "Generate Excel"}
-        </button>
-        <button
-          className="button button-optional"
-          type="button"
-          onClick={() => void handleExportCodingWorkbook()}
-          disabled={isExporting || isExportingCoding || isLoading || !studyId.trim()}
-        >
-          {isExportingCoding ? "Generating Company PDS..." : "Generate Company PDS"}
-        </button>
-        <button
           className="button button-optional"
           type="button"
           onClick={() => void handleAcceptAll()}
-          disabled={isBulkAccepting || isLoading || acceptAllCount === 0 || !studyId.trim()}
+          disabled={bulkDisabled || isBulkAccepting || acceptAllCount === 0 || !studyId.trim()}
           title={
             reviewSource === "enriched_pd_spec"
               ? "Accept all pending deviations with their current text (does not apply enriched suggestions)"
@@ -445,23 +433,27 @@ export function Step7ReviewPanel({
         <button
           className="button button-optional"
           type="button"
-          onClick={() => void handleGenerateAllPseudoLogic()}
-          disabled={isBulkGenerating || isBulkAccepting || acceptedCount === 0}
+          onClick={() => void handleExportCodingWorkbook()}
+          disabled={bulkDisabled || isExporting || isExportingCoding || !studyId.trim()}
         >
-          {isBulkGenerating ? "Generating..." : `Generate all pseudo (${acceptedCount})`}
+          {isExportingCoding ? "Generating Company PDS..." : "Generate Company PDS"}
         </button>
-        {onAcceptAndContinue ? (
-          <button
-            className="button button-primary step7-accept-continue"
-            type="button"
-            aria-label="Accept and continue to coding"
-            onClick={onAcceptAndContinue}
-            disabled={!canContinueToCoding || isAcceptingCoding || isLoading || !studyId.trim()}
-            title={!canContinueToCoding ? continueBlockReason : "Continue to coding phase"}
-          >
-            {isAcceptingCoding ? "Continuing…" : "Accept"}
-          </button>
-        ) : null}
+        <button
+          className="button button-optional"
+          type="button"
+          onClick={() => void handleExportWorkbook()}
+          disabled={bulkDisabled || isExporting || isExportingCoding || !studyId.trim()}
+        >
+          {isExporting ? "Generating Excel..." : "Export Excel"}
+        </button>
+        <button
+          className="button button-optional"
+          type="button"
+          onClick={() => void handleGenerateAllPseudoLogic()}
+          disabled={bulkDisabled || isBulkGenerating || isBulkAccepting || acceptedCount === 0}
+        >
+          {isBulkGenerating ? "Generating..." : `Generate pseudocode for all (${acceptedCount})`}
+        </button>
         <div className="step7-overflow-menu">
           <button className="button button-secondary" type="button" onClick={() => setMenuOpen((open) => !open)}>
             More actions
@@ -524,8 +516,8 @@ export function Step7ReviewPanel({
       <div className={`step7-layout ${selectedRow ? "" : "step7-layout-no-drawer"}`}>
         <Step7RuleGroups
           groups={groups}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
+          selectedId={activeSelectedId}
+          onSelect={handleSelectDeviation}
           isBulkGeneratingPseudo={isBulkGenerating}
         />
         {selectedRow ? (
@@ -533,7 +525,7 @@ export function Step7ReviewPanel({
             studyId={studyId}
             reviewSource={reviewSource}
             row={selectedRow}
-            onClose={() => setSelectedId(null)}
+            onClose={() => handleSelectDeviation(null)}
             onRowUpdated={handleRowUpdated}
             onStepStatusesChange={onStepStatusesChange}
           />

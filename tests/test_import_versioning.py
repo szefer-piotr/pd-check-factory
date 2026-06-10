@@ -56,9 +56,9 @@ class TestImportVersioning(unittest.TestCase):
             index_path.parent.mkdir(parents=True, exist_ok=True)
             index_path.write_text('{"paragraphs": []}', encoding="utf-8")
             with self.assertRaises(UiApiError) as blocked:
-                svc.run_step(study_id, "extract-rules")
+                svc.run_step(study_id, "extract-deviations")
             self.assertEqual(blocked.exception.code, "STEP_BLOCKED")
-            self.assertIn("extract-inputs", blocked.exception.message)
+            self.assertIn("acrf-summary-text", blocked.exception.message)
 
 
 if __name__ == "__main__":

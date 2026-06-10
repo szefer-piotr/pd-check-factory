@@ -1,7 +1,7 @@
 import type { LlmProgress } from "../../services/stepApi";
 
 const PHASE_LABELS: Record<string, string> = {
-  "acrf-summary": "Merging aCRF summary",
+  "acrf-summary": "ACRF summarizing",
   "extract-deviations": "Generating deviations",
   "pseudo-logic": "Generating pseudo logic",
   "pd-enrich": "Enriching PD specifications"

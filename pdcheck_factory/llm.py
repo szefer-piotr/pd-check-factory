@@ -70,10 +70,12 @@ def _azure_client() -> AzureOpenAI:
             "Missing AZURE_OPENAI_API_KEY (or use a token credential path not yet wired)."
         )
     api_version = os.getenv("OPENAI_API_VERSION", "2024-08-01-preview")
+    timeout_s = blob_io._int_from_env("AZURE_OPENAI_TIMEOUT_SEC", 600)
     return AzureOpenAI(
         azure_endpoint=endpoint,
         api_key=api_key,
         api_version=api_version,
+        timeout=timeout_s,
     )
 
 
@@ -95,6 +97,14 @@ def use_deployment(name: str | None) -> Iterator[None]:
 
 
 STEP1_TEXT_SCHEMA_VERSION = "3.0.0"
+
+
+def _completion_temperature(deployment: str) -> float | None:
+    """Return 0.0 for standard chat models; omit for o-series deployments."""
+    name = deployment.lower()
+    if re.search(r"\bo[134](?:-|\b)", name):
+        return None
+    return 0.0
 
 
 def _log_chat_usage(resp: Any, deployment: str, label: str) -> None:
@@ -129,11 +139,14 @@ def chat_text_repairs(
     ]
     last = ""
     for attempt in range(max_repairs + 1):
-        resp = client.chat.completions.create(
-            model=deployment,
-            messages=messages,
-            temperature=0.0,
-        )
+        create_kwargs: Dict[str, Any] = {
+            "model": deployment,
+            "messages": messages,
+        }
+        temp = _completion_temperature(deployment)
+        if temp is not None:
+            create_kwargs["temperature"] = temp
+        resp = client.chat.completions.create(**create_kwargs)
         _log_chat_usage(resp, deployment, label)
         last = (resp.choices[0].message.content or "").strip()
         err = validate_reply(last)
@@ -167,12 +180,15 @@ def chat_json(
     ]
 
     for attempt in range(max_repairs + 1):
-        resp = client.beta.chat.completions.parse(
-            model=deployment,
-            messages=messages,
-            response_format=response_model,
-            temperature=0.0,
-        )
+        parse_kwargs: Dict[str, Any] = {
+            "model": deployment,
+            "messages": messages,
+            "response_format": response_model,
+        }
+        temp = _completion_temperature(deployment)
+        if temp is not None:
+            parse_kwargs["temperature"] = temp
+        resp = client.beta.chat.completions.parse(**parse_kwargs)
         usage = getattr(resp, "usage", None)
         prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
         completion_tokens = (

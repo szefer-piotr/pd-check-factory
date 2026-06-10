@@ -246,16 +246,24 @@ See repository owner for license terms.
 
 ## React UI (Vite + TypeScript)
 
-A new single-page React dashboard scaffold is available under `frontend/`.
+**Rho PD Assurance** is a multi-page React app under `frontend/`.
 
 ### Frontend structure
 
-- `frontend/src/pages/HomePage.tsx` — single-page dashboard flow.
-- `frontend/src/components/layout/` — shared layout primitives (`Page`, `Section`, `Card`, `Stack`).
-- `frontend/src/components/ui/` — typed presentational UI components.
-- `frontend/src/hooks/useStudyDashboard.ts` — state orchestration for loading/filter/refresh.
-- `frontend/src/services/studyService.ts` — mock data service (replace with real API next).
-- `frontend/src/pages/HomePage.test.tsx` — primary integration path tests.
+- `frontend/src/pages/WelcomePage.tsx` — landing screen with New Project and Project Library entry tiles
+- `frontend/src/pages/NewProjectPage.tsx` — Study ID form and project creation
+- `frontend/src/pages/ProjectPage.tsx` — workflow tile picker (Extract / Enrich / Map)
+- `frontend/src/pages/SetupPage.tsx` — LLM deployment, OCR method, document uploads
+- `frontend/src/pages/SummaryPage.tsx` — pre-run config summary and Start extraction
+- `frontend/src/pages/LiveReviewPage.tsx` — live extraction feed and Step7 review panel
+- `frontend/src/layouts/StudyLayout.tsx` — study bar with deviation chips and manual Sync
+- `frontend/src/components/library/ProjectLibraryView.tsx` — project library table
+- `frontend/src/components/workflow/` — `UploadRail`, `ExtractionLiveFeed`, `Step7ReviewPanel`, etc.
+- `frontend/src/services/stepApi.ts` — typed API client for the Step API
+- `frontend/src/hooks/useStudySummary.ts` — study summary fetch (no auto-sync on open)
+- `frontend/src/App.routing.test.tsx` — routing and workflow integration tests
+
+See [`docs/ui-spec.md`](docs/ui-spec.md) for the full UI specification.
 
 ### Run locally
 
@@ -279,12 +287,16 @@ npm run build
 
 ### Step API endpoints (React integration)
 
-- `POST /api/v1/studies/{studyId}/step1/upload`
-- `POST /api/v1/studies/{studyId}/step1/extract`
-- `GET /api/v1/studies/{studyId}/step1/preview`
-- `GET /api/v1/studies/{studyId}/steps/status`
-- `POST /api/v1/studies/{studyId}/steps/{stepId}/run`
-- `GET /api/v1/studies/{studyId}/steps/{stepId}/preview`
+- `GET /api/v1/studies` — list projects (library)
+- `POST /api/v1/studies` — create study manifest
+- `GET /api/v1/studies/{studyId}/summary` — consolidated study state and deviation counts
+- `POST /api/v1/studies/{studyId}/workflow` — set workflow (extract / enrich / map)
+- `POST /api/v1/studies/{studyId}/sync` — on-demand blob sync
+- `GET /api/v1/config/openai-deployments` — LLM deployment list
+- `POST /api/v1/studies/{studyId}/step1/upload` — protocol / aCRF upload
+- `POST /api/v1/studies/{studyId}/step1/extract` — run extraction pipeline
+- `GET /api/v1/studies/{studyId}/extraction/live` — live rules/deviations polling
+- `GET /api/v1/studies/{studyId}/step7/deviations` — review deviation rows
 
 ### Troubleshooting (`Failed to fetch`)
 

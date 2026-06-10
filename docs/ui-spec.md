@@ -1,54 +1,69 @@
-# React Single-Page UI Specification
+# Rho PD Assurance UI Specification
 
 ## Purpose
-Provide a lightweight web interface for reviewing pipeline execution status and recent study outputs using the React frontend + API workflow.
+
+Provide a guided corporate workflow for Rho Inc. clinical data management teams to create studies, configure extraction, and review protocol deviations.
 
 ## Primary User
-Data manager or QA reviewer who needs a quick read-only dashboard with simple filtering.
 
-## Core User Actions
-- Select a `studyId` from an input field.
-- Refresh summary data for the selected study.
-- Filter deviations by status.
-- Inspect a deviation summary card list.
+Data manager or QA reviewer running PD assurance from protocol and aCRF source documents (or imported PD Spec workbooks).
 
-## Required View States
-- `loading`: show skeleton placeholders while data loads.
-- `empty`: show an empty-state panel when no deviations exist.
-- `error`: show an alert with retry action when data retrieval fails.
-- `success`: show summary metrics plus filtered deviations.
+## User Flows
 
-## Acceptance Criteria
-- Page works on mobile, tablet, and desktop.
-- All controls are keyboard reachable and labeled.
-- Filtering updates rendered results immediately.
-- Refresh action is disabled while loading.
-- Error state provides a clear message and retry action.
+### Flow A — New Project
+
+1. **Welcome** — Rho logo, product title, two entry tiles: New Project | Select from Project Library
+2. **New Project** — Study ID form (non-empty, no `/`, unique in blob); `POST /api/v1/studies`
+3. **Project** — Three workflow tiles: Extract | Enrich | Map; persisted via `POST …/workflow`
+4. **Setup** — LLM deployment, OCR method, workflow-specific file uploads
+5. **Summary** — Config + files review; single "Start extraction" button
+6. **Live Review** — Streaming rules/deviations, Step7 review panel, bulk actions after extraction completes
+
+### Flow B — Project Library
+
+1. **Welcome** → Select from Project Library
+2. List from `GET /api/v1/studies` (id, workflow, stage, last modified)
+3. Open at correct stage (project / setup / summary / review)
+4. Lazy sync: no full sync on open; sync on demand before pipeline run or via manual Sync button
+
+## Routes
+
+| Path | Page |
+|------|------|
+| `/welcome` | WelcomePage |
+| `/projects/new` | NewProjectPage |
+| `/projects/:studyId` | ProjectPage (workflow picker) |
+| `/projects/:studyId/setup` | SetupPage |
+| `/projects/:studyId/summary` | SummaryPage |
+| `/projects/:studyId/review` | LiveReviewPage |
+
+Study routes use `StudyLayout` (study bar with deviation chips + manual Sync).
 
 ## Component Map
-- `HomePage`
-  - `Page`
-    - `Section` (header)
-      - `StudySelector`
-      - `RefreshButton`
-    - `Section` (summary)
-      - `MetricCard` x3
-    - `Section` (filters)
-      - `StatusFilter`
-    - `Section` (content)
-      - `LoadingState` or `ErrorState` or `EmptyState` or `DeviationList`
 
-## Data Contract (MVP Mock)
-- `StudyOverview`
-  - `studyId: string`
-  - `totalDeviations: number`
-  - `acceptedCount: number`
-  - `toReviewCount: number`
-  - `rejectedCount: number`
-  - `updatedAt: string`
-- `DeviationItem`
-  - `id: string`
-  - `title: string`
-  - `status: "accepted" | "to_review" | "rejected"`
-  - `ruleId: string`
-  - `summary: string`
+- `WelcomePage`
+  - `Page` → hero (logo, title, subtitle)
+  - Entry tiles or `ProjectLibraryView`
+- `NewProjectPage` — Study ID form
+- `StudyLayout` — study bar (metrics from `GET …/summary`), `Outlet`
+- `ProjectPage` — workflow tile picker
+- `SetupPage` — `LlmDeploymentSelect`, OCR select, `UploadRail`
+- `SummaryPage` — config summary, Start extraction
+- `LiveReviewPage` — `ExtractionLiveFeed`, `Step7ReviewPanel`
+- `Step7ReviewPanel` — `Step7RuleGroups`, `Step7DeviationDrawer`, bulk toolbar
+
+## Data Contract
+
+- `StudySummaryResponse` — consolidated study state from `GET /api/v1/studies/{id}/summary`
+- `LibraryStudyOption` — lightweight list item from `GET /api/v1/studies`
+- `ExtractionLiveResponse` — streaming rules/deviations from `GET …/extraction/live`
+- `Step7DeviationsResponse` — review rows from `GET …/step7/deviations`
+
+## Acceptance Criteria
+
+- Welcome is the first screen; no study bar on Welcome
+- New project end-to-end without `window.prompt`
+- Library opens existing study without full sync delay
+- Live Review streams rules/deviations; per-deviation actions work during generation
+- Bulk actions disabled until extraction complete
+- Header chips use real deviation counts (via study summary)

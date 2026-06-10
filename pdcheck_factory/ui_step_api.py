@@ -77,13 +77,6 @@ class StepApiHandler(BaseHTTPRequestHandler):
         try:
             parsed = urlparse(self.path)
             path = parsed.path
-            if path.startswith("/api/step1/preview"):
-                qs = parse_qs(parsed.query)
-                study_id = (qs.get("studyId") or [""])[0]
-                full = (qs.get("full") or ["false"])[0].lower() in {"1", "true", "yes"}
-                data = self.service.get_step1_preview(study_id, full=full)
-                _json_response(self, HTTPStatus.OK, _response_payload(request_id=request_id, data=data))
-                return
             if path == "/api/v1/studies":
                 data = self.service.list_studies()
                 _json_response(self, HTTPStatus.OK, _response_payload(request_id=request_id, data=data))
@@ -106,7 +99,9 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 return
 
             study_id, tail = v1
-            if tail == "step1/preview":
+            if tail == "summary":
+                data = self.service.get_study_summary(study_id)
+            elif tail == "step1/preview":
                 qs = parse_qs(parsed.query)
                 full = (qs.get("full") or ["false"])[0].lower() in {"1", "true", "yes"}
                 data = self.service.get_step1_preview(study_id, full=full)
@@ -187,12 +182,13 @@ class StepApiHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         request_id = str(uuid.uuid4())
         try:
-            if self.path == "/api/step1/upload":
-                data = self._legacy_upload()
-                _json_response(self, HTTPStatus.OK, _response_payload(request_id=request_id, data=data))
-                return
-            if self.path == "/api/step1/extract":
-                data = self._legacy_extract()
+            if self.path == "/api/v1/studies":
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0:
+                    raise UiApiError("BAD_JSON", "Missing JSON body", 400)
+                payload = parse_json_body(self.rfile.read(length))
+                study_id = str(payload.get("studyId") or "")
+                data = self.service.create_study(study_id)
                 _json_response(self, HTTPStatus.OK, _response_payload(request_id=request_id, data=data))
                 return
 
@@ -201,7 +197,9 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 raise UiApiError("NOT_FOUND", "Not found", 404)
 
             study_id, tail = v1
-            if tail == "sync":
+            if tail == "workflow":
+                data = self._parse_study_workflow(study_id)
+            elif tail == "sync":
                 data = self.service.sync_study(study_id)
             elif tail == "step1/upload":
                 data = self._parse_step1_upload(study_id)
@@ -360,45 +358,13 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 ),
             )
 
-    def _legacy_upload(self) -> Dict[str, Any]:
-        form = cgi.FieldStorage(
-            fp=self.rfile,
-            headers=self.headers,
-            environ={
-                "REQUEST_METHOD": "POST",
-                "CONTENT_TYPE": self.headers.get("Content-Type", ""),
-            },
-        )
-        study_id = str(form.getvalue("studyId") or "")
-        protocol_item = form["protocolFile"] if "protocolFile" in form else None
-        acrf_item = form["acrfFile"] if "acrfFile" in form else None
-        if protocol_item is None and acrf_item is None:
-            raise UiApiError(
-                "VALIDATION_ERROR",
-                "At least one of protocolFile or acrfFile is required",
-                400,
-            )
-
-        protocol_bytes = protocol_item.file.read() if protocol_item is not None else None
-        acrf_bytes = acrf_item.file.read() if acrf_item is not None else None
-        protocol_name = getattr(protocol_item, "filename", None) if protocol_item is not None else None
-        acrf_name = getattr(acrf_item, "filename", None) if acrf_item is not None else None
-        return self.service.upload_step1_files(
-            study_id,
-            protocol_bytes,
-            acrf_bytes,
-            protocol_file_name=protocol_name,
-            acrf_file_name=acrf_name,
-        )
-
-    def _legacy_extract(self) -> Dict[str, Any]:
+    def _parse_study_workflow(self, study_id: str) -> Dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0"))
         if length <= 0:
             raise UiApiError("BAD_JSON", "Missing JSON body", 400)
         payload = parse_json_body(self.rfile.read(length))
-        study_id = str(payload.get("studyId") or "")
-        extractor = str(payload.get("extractor", "")).strip() or None
-        return self.service.run_step1_extract(study_id, extractor=extractor)
+        workflow = str(payload.get("workflow") or "").strip()
+        return self.service.set_study_workflow(study_id, workflow)
 
     def _parse_step1_upload(self, study_id: str) -> Dict[str, Any]:
         content_type = self.headers.get("Content-Type", "")
@@ -441,8 +407,16 @@ class StepApiHandler(BaseHTTPRequestHandler):
         else:
             payload = parse_json_body(self.rfile.read(length))
         extractor = str(payload.get("extractor", "")).strip() or None
+        protocol_extractor = str(payload.get("protocolExtractor", "")).strip() or None
+        acrf_extractor = str(payload.get("acrfExtractor", "")).strip() or None
         force = bool(payload.get("force", False))
-        return self.service.run_step1_extract(study_id, extractor=extractor, force=force)
+        return self.service.run_step1_extract(
+            study_id,
+            extractor=extractor,
+            protocol_extractor=protocol_extractor,
+            acrf_extractor=acrf_extractor,
+            force=force,
+        )
 
     def _review_source_from_query(self) -> str | None:
         parsed = urlparse(self.path)

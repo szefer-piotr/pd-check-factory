@@ -80,6 +80,7 @@ export function Step7DeviationDrawer({
   const [enrichmentDetail, setEnrichmentDetail] = useState<Step7EnrichmentDetailResponse | null>(null);
   const [enrichmentLoading, setEnrichmentLoading] = useState(false);
   const [enrichmentError, setEnrichmentError] = useState("");
+  const [enrichmentReloadToken, setEnrichmentReloadToken] = useState(0);
 
   const threadRef = useRef<HTMLDivElement>(null);
 
@@ -115,6 +116,38 @@ export function Step7DeviationDrawer({
     el.scrollTop = el.scrollHeight;
   }, [messages, isSending]);
 
+  useEffect(() => {
+    if (reviewSource !== "enriched_pd_spec" || !deviationId) {
+      setEnrichmentDetail(null);
+      setEnrichmentError("");
+      setEnrichmentLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setEnrichmentLoading(true);
+    setEnrichmentError("");
+    void (async () => {
+      try {
+        const detail = await fetchStep7EnrichmentDetail(studyId.trim(), deviationId);
+        if (!cancelled) {
+          setEnrichmentDetail(detail);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setEnrichmentDetail(null);
+          setEnrichmentError(err instanceof Error ? err.message : "Failed to load enrichment details.");
+        }
+      } finally {
+        if (!cancelled) {
+          setEnrichmentLoading(false);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [deviationId, reviewSource, studyId, enrichmentReloadToken]);
+
   if (!row) {
     return null;
   }
@@ -139,29 +172,6 @@ export function Step7DeviationDrawer({
   const canAcceptEnriched =
     isEnrichedReview && Boolean(suggestedText) && suggestedText !== currentDeviationText;
   const reviewFinalizedTitle = isReviewFinalized ? `Deviation is already ${row.status}` : undefined;
-
-  async function loadEnrichmentDetail(): Promise<void> {
-    if (reviewSource !== "enriched_pd_spec" || !deviationId) {
-      return;
-    }
-    setEnrichmentLoading(true);
-    setEnrichmentError("");
-    try {
-      const detail = await fetchStep7EnrichmentDetail(studyId.trim(), deviationId);
-      setEnrichmentDetail(detail);
-    } catch (err) {
-      setEnrichmentDetail(null);
-      setEnrichmentError(err instanceof Error ? err.message : "Failed to load enrichment details.");
-    } finally {
-      setEnrichmentLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    if (reviewSource === "enriched_pd_spec" && deviationId) {
-      void loadEnrichmentDetail();
-    }
-  }, [deviationId, reviewSource, studyId]);
 
   async function handleStatusUpdate(status: Step7DeviationRow["status"]): Promise<void> {
     setError("");
@@ -505,7 +515,7 @@ export function Step7DeviationDrawer({
               open
               onToggle={(event) => {
                 if (event.currentTarget.open && !enrichmentDetail && !enrichmentLoading) {
-                  void loadEnrichmentDetail();
+                  setEnrichmentReloadToken((token) => token + 1);
                 }
               }}
             >
@@ -697,6 +707,12 @@ export function Step7DeviationDrawer({
               </div>
             </div>
           </details>
+
+          <div className="step7-drawer-stub-action">
+            <button className="button button-secondary" type="button" disabled title="Coming soon">
+              Generate Code and Preview Results
+            </button>
+          </div>
         </div>
 
       </div>

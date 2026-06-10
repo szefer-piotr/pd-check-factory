@@ -14,7 +14,7 @@ from pdcheck_factory import document_chat_agent, extraction_resolve, import_grou
 from pdcheck_factory.pd_spec_export import write_final_pd_spec_xlsx
 from pdcheck_factory.deviation_contract import pd_spec_field
 from pdcheck_factory.pd_spec_import import parse_pd_spec_xlsx
-from pdcheck_factory.json_util import load_schema, read_json, validate, write_json
+from pdcheck_factory.json_util import load_schema, read_json, try_read_json, validate, write_json
 from pdcheck_factory.prompt_loader import load_prompt
 
 
@@ -193,14 +193,36 @@ def step1_acrf_summary_text(
     output_dir: Path,
     *,
     progress_callback: Optional[LlmProgressCallback] = None,
+    force: bool = False,
 ) -> Dict[str, Any]:
     system = load_prompt("acrf_text_summary_v2_system")
     user_t = load_prompt("acrf_text_summary_v2_user")
+    out = paths.local_acrf_summary_text_merged(study_id, output_dir)
     datasets: List[Dict[str, Any]] = []
+    completed_section_ids: List[str] = []
+
+    if not force and out.is_file():
+        checkpoint = try_read_json(out, {})
+        if isinstance(checkpoint, dict) and checkpoint.get("partial") is True:
+            datasets = list(checkpoint.get("datasets", []))
+            completed_section_ids = list(checkpoint.get("completed_section_ids", []))
+
     toc_dir = _acrf_sections_dir(study_id, output_dir)
     section_files = sorted(toc_dir.glob("*.md"))
     total_sections = len(section_files)
-    for index, section_md in enumerate(section_files):
+    completed_set = set(completed_section_ids)
+    sections_to_process = [f for f in section_files if f.stem not in completed_set]
+
+    if progress_callback and total_sections > 0:
+        progress_callback(
+            phase="acrf-summary",
+            current=len(completed_section_ids),
+            total=total_sections,
+            unit="sections",
+            label="",
+        )
+
+    for section_md in sections_to_process:
         section_id = section_md.stem
         user = user_t.format(
             study_id=study_id,
@@ -216,23 +238,39 @@ def step1_acrf_summary_text(
             label=f"v2-acrf-{section_id}",
         )
         datasets.extend(text_parse.parse_acrf_dataset_blocks(reply))
+        completed_section_ids.append(section_id)
         if progress_callback and total_sections > 0:
             progress_callback(
                 phase="acrf-summary",
-                current=index + 1,
+                current=len(completed_section_ids),
                 total=total_sections,
                 unit="sections",
                 label=section_id,
             )
+        partial = {
+            "schema_version": "1.0.0",
+            "study_id": study_id,
+            "generated_at": _iso_now(),
+            "datasets": datasets,
+            "completed_section_ids": completed_section_ids,
+            "partial": True,
+        }
+        write_json(out, partial)
+        study_artifact_sync.mirror_upload_path(study_id, output_dir, out)
+
     merged = {
         "schema_version": "1.0.0",
         "study_id": study_id,
         "generated_at": _iso_now(),
         "datasets": datasets,
     }
-    out = paths.local_acrf_summary_text_merged(study_id, output_dir)
+    print(
+        f"[acrf-summary] Writing merged summary: {len(datasets)} datasets "
+        f"from {total_sections} sections → {out}"
+    )
     write_json(out, merged)
     study_artifact_sync.mirror_upload_path(study_id, output_dir, out)
+    print(f"[acrf-summary] Done. Merged summary written ({len(datasets)} datasets).")
     return merged
 
 
@@ -404,6 +442,7 @@ def step4_5_extract_deviations(
         }
         write_json(partial_path, partial)
         study_artifact_sync.mirror_upload_path(study_id, output_dir, partial_path)
+        sync_partial_review_state(study_id, output_dir)
     parsed = {
         "schema_version": "1.0.0",
         "study_id": study_id,
@@ -622,6 +661,41 @@ def step10_finalize(study_id: str, output_dir: Path) -> Dict[str, Any]:
     study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_final_deviations_json(study_id, output_dir))
     study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_final_deviations_xlsx(study_id, output_dir))
     return out
+
+
+def sync_partial_review_state(study_id: str, output_dir: Path) -> None:
+    from pdcheck_factory import review_sources
+
+    parsed_path = paths.local_deviations_parsed_json(study_id, output_dir)
+    if not parsed_path.is_file():
+        return
+    parsed = read_json(parsed_path)
+    if parsed.get("partial") is not True:
+        return
+
+    generated_path = review_sources.review_state_path(
+        study_id, output_dir, review_sources.REVIEW_SOURCE_GENERATED
+    )
+    if generated_path.is_file():
+        existing = read_json(generated_path)
+    else:
+        existing = review_sources.empty_review_state(study_id)
+
+    by_id = {
+        str(row.get("deviation_id", "")).strip(): row
+        for row in existing.get("deviations", [])
+        if str(row.get("deviation_id", "")).strip()
+    }
+    for row in parsed.get("deviations", []):
+        dev_id = str(row.get("deviation_id", "")).strip()
+        if dev_id and dev_id not in by_id:
+            by_id[dev_id] = row
+
+    existing["deviations"] = list(by_id.values())
+    existing["generated_at"] = _iso_now()
+    generated_path.parent.mkdir(parents=True, exist_ok=True)
+    write_json(generated_path, existing)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, generated_path)
 
 
 def initialize_review_states(study_id: str, output_dir: Path) -> None:
