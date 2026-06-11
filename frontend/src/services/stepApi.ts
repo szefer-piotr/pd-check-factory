@@ -69,28 +69,87 @@ export interface ImportSourceOption {
   type: "import" | "merged";
 }
 
-export interface StudyOption {
+export type WorkflowChoice = "extract" | "map" | "enrich";
+
+export type WizardStage = "project" | "setup" | "summary" | "processing" | "review";
+
+export interface StudyListItem {
   studyId: string;
-  protocolBlob: string;
-  acrfBlob: string;
-  protocolFileName?: string;
-  acrfFileName?: string;
-  bothUploaded?: boolean;
-  entryMode?: EntryMode;
-  activeDeviationsSource?: string | null;
-  importVersions?: ImportVersionsInfo;
-  stepStatuses: Record<string, StepStatus>;
-  nextStepId: string | null;
+  workflow: WorkflowChoice | null;
+  workflowLabel: string;
+  stage: WizardStage;
+  lastModified?: string | null;
 }
 
+export interface StudyUploadSlot {
+  uploaded: boolean;
+  fileName: string;
+  size: number;
+  blob: string;
+}
+
+export interface DeviationSummary {
+  total: number;
+  accepted: number;
+  toReview: number;
+  rejected: number;
+}
+
+export interface StudySummary {
+  studyId: string;
+  workflow: WorkflowChoice | null;
+  inferredWorkflow?: WorkflowChoice | null;
+  workflowLabel: string;
+  stage: WizardStage;
+  entryMode: EntryMode;
+  workflowChoice?: WorkflowChoice | null;
+  pdSpecImportMode?: string | null;
+  lastModified?: string | null;
+  uiStage?: string | null;
+  uploads: {
+    protocol: StudyUploadSlot;
+    acrf: StudyUploadSlot;
+    pdSpec: StudyUploadSlot;
+  };
+  bothUploaded: boolean;
+  allThreeUploaded: boolean;
+  preprocess: {
+    protocol: boolean;
+    acrf: boolean;
+  };
+  processingComplete: boolean;
+  runState: Step1RunStateResponse;
+  steps: StepItemStatus[];
+  stepStatuses: Record<string, StepStatus>;
+  nextStepId: string | null;
+  importVersions?: ImportVersionsInfo;
+  codingPhaseAccepted?: boolean;
+  deviationSummary?: DeviationSummary | null;
+}
+
+/** @deprecated Use StudyListItem for library list. */
+export type StudyOption = StudyListItem;
+
 export interface StudiesResponse {
-  studies: StudyOption[];
+  studies: StudyListItem[];
+}
+
+export interface CreateStudyResponse {
+  studyId: string;
+  manifestBlobPath: string;
+}
+
+export interface PatchStudyManifestResponse {
+  studyId: string;
+  stage: WizardStage;
+  workflow: WorkflowChoice | null;
 }
 
 export interface OpenAiDeploymentOption {
   id: string;
   modelName: string;
   version: string;
+  supportsTemperature?: boolean;
 }
 
 export interface OpenAiDeploymentsResponse {
@@ -351,7 +410,7 @@ function step7ReviewQuery(reviewSource?: Step7ReviewSource): string {
   return `?reviewSource=${encodeURIComponent(reviewSource)}`;
 }
 
-function step7ReviewJsonBody(payload: Record<string, unknown>, reviewSource?: Step7ReviewSource): string {
+function step7ReviewJsonBody(payload: object, reviewSource?: Step7ReviewSource): string {
   const body = reviewSource ? { ...payload, reviewSource } : payload;
   return JSON.stringify(body);
 }
@@ -500,6 +559,32 @@ export async function syncStudy(
 export async function fetchStudies(): Promise<StudiesResponse> {
   const response = await fetch(`${API_BASE}/api/v1/studies`);
   return parseApiResponse<StudiesResponse>(response);
+}
+
+export async function createStudy(studyId: string): Promise<CreateStudyResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/studies`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ studyId })
+  });
+  return parseApiResponse<CreateStudyResponse>(response);
+}
+
+export async function fetchStudySummary(studyId: string): Promise<StudySummary> {
+  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/summary`);
+  return parseApiResponse<StudySummary>(response);
+}
+
+export async function patchStudyManifest(
+  studyId: string,
+  patch: { workflowChoice?: WorkflowChoice; uiStage?: WizardStage }
+): Promise<PatchStudyManifestResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/manifest`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch)
+  });
+  return parseApiResponse<PatchStudyManifestResponse>(response);
 }
 
 export async function fetchOpenAiDeployments(): Promise<OpenAiDeploymentsResponse> {
@@ -715,14 +800,20 @@ export async function refineStep7Deviation(
   message: string,
   runRevisionCycle = true,
   alsoPseudo = false,
-  reviewSource?: Step7ReviewSource
+  reviewSource?: Step7ReviewSource,
+  llmDeployment?: string
 ): Promise<Step7RefineResponse> {
+  const body: Record<string, unknown> = { message, runRevisionCycle, alsoPseudo };
+  const deployment = llmDeployment?.trim();
+  if (deployment) {
+    body.llmDeployment = deployment;
+  }
   const response = await fetch(
     `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/${encodeURIComponent(deviationId)}/refine`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: step7ReviewJsonBody({ message, runRevisionCycle, alsoPseudo }, reviewSource)
+      body: step7ReviewJsonBody(body, reviewSource)
     }
   );
   return parseApiResponse<Step7RefineResponse>(response);

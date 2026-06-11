@@ -21,6 +21,8 @@ interface SettingsDrawerProps {
   onExtractionDeploymentChange: (value: string) => void;
   acrfSummaryDeployment: string;
   onAcrfSummaryDeploymentChange: (value: string) => void;
+  chatDeployment: string;
+  onChatDeploymentChange: (value: string) => void;
 }
 
 export function SettingsDrawer({
@@ -36,7 +38,9 @@ export function SettingsDrawer({
   extractionDeployment,
   onExtractionDeploymentChange,
   acrfSummaryDeployment,
-  onAcrfSummaryDeploymentChange
+  onAcrfSummaryDeploymentChange,
+  chatDeployment,
+  onChatDeploymentChange
 }: SettingsDrawerProps): JSX.Element | null {
   if (!open) {
     return null;
@@ -81,6 +85,14 @@ export function SettingsDrawer({
                   value={acrfSummaryDeployment}
                   deployments={llmDeployments}
                   onChange={onAcrfSummaryDeploymentChange}
+                  isLoading={deploymentsLoading}
+                />
+                <LlmDeploymentSelect
+                  id="settings-chat-llm-deployment"
+                  label="Chat / refinement model"
+                  value={chatDeployment}
+                  deployments={llmDeployments}
+                  onChange={onChatDeploymentChange}
                   isLoading={deploymentsLoading}
                 />
               </div>

@@ -18,6 +18,7 @@ import {
   type Step7DeviationRow,
   type Step7ReviewSource,
   type Step7ReviewSourceOption,
+  type OpenAiDeploymentOption,
   type Step7RulePayload,
   type StepStatus
 } from "../../services/stepApi";
@@ -33,6 +34,11 @@ interface Step7ReviewPanelProps {
   codingAcceptError?: string;
   /** Notifies the host page whenever the loaded rows change (completion bar). */
   onRowsChange?: (rows: Step7DeviationRow[]) => void;
+  llmDeployments: OpenAiDeploymentOption[];
+  deploymentsLoading: boolean;
+  chatDeployment: string;
+  onChatDeploymentChange: (value: string) => void;
+  hideSourceSelector?: boolean;
 }
 
 const EMPTY_DEVIATION_FORM: Step7DeviationPayload = {
@@ -69,7 +75,12 @@ export function Step7ReviewPanel({
   onAcceptAndContinue,
   isAcceptingCoding = false,
   codingAcceptError = "",
-  onRowsChange
+  onRowsChange,
+  llmDeployments,
+  deploymentsLoading,
+  chatDeployment,
+  onChatDeploymentChange,
+  hideSourceSelector = false
 }: Step7ReviewPanelProps): JSX.Element {
   const [rows, setRows] = useState<Step7DeviationRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -360,7 +371,7 @@ export function Step7ReviewPanel({
 
   return (
     <section className="step7-panel workflow-panel" aria-label="Deviation review">
-      {reviewSources.length > 0 ? (
+      {!hideSourceSelector && reviewSources.length > 0 ? (
         <label className="control-group" htmlFor="step7-review-source">
           <span className="control-label">Data to review</span>
           <select
@@ -377,7 +388,11 @@ export function Step7ReviewPanel({
             ))}
           </select>
         </label>
-      ) : sourcesLoading ? (
+      ) : hideSourceSelector && activeSourceMeta ? (
+        <p className="step7-muted">
+          Reviewing <strong>{activeSourceMeta.label}</strong>.
+        </p>
+      ) : !hideSourceSelector && sourcesLoading ? (
         <p className="step7-muted">Loading review data sources…</p>
       ) : (
         <p className="step7-muted">
@@ -543,6 +558,10 @@ export function Step7ReviewPanel({
             onClose={() => setSelectedId(null)}
             onRowUpdated={handleRowUpdated}
             onStepStatusesChange={onStepStatusesChange}
+            llmDeployments={llmDeployments}
+            deploymentsLoading={deploymentsLoading}
+            chatDeployment={chatDeployment}
+            onChatDeploymentChange={onChatDeploymentChange}
           />
         ) : null}
       </div>

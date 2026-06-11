@@ -10,11 +10,15 @@ function sampleRow(overrides: Partial<Step7DeviationRow> = {}): Step7DeviationRo
     rule_text: "Dose must match protocol",
     deviation_text: "Check dose",
     paragraph_refs: ["p1"],
+    paragraph_refs_text: "p1",
+    supporting_sentences: [],
+    data_support_note: "",
+    dm_comment: "",
     status: "accepted",
     pseudo_logic: "",
     programmable: null,
     ...overrides
-  };
+  } as Step7DeviationRow;
 }
 
 describe("Step7RuleGroups", () => {

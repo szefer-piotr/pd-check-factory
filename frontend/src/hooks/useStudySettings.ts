@@ -6,13 +6,15 @@ export interface StudySettings {
   extractionLlmInstructions: string;
   extractionDeployment: string;
   acrfSummaryDeployment: string;
+  chatDeployment: string;
 }
 
-const DEFAULT_SETTINGS: StudySettings = {
+export const DEFAULT_SETTINGS: StudySettings = {
   extractorChoice: "both",
   extractionLlmInstructions: "",
   extractionDeployment: "",
-  acrfSummaryDeployment: ""
+  acrfSummaryDeployment: "",
+  chatDeployment: ""
 };
 
 function storageKey(studyId: string): string {
@@ -47,7 +49,9 @@ function readSettings(studyId: string): StudySettings {
       acrfSummaryDeployment:
         typeof parsed.acrfSummaryDeployment === "string"
           ? parsed.acrfSummaryDeployment
-          : DEFAULT_SETTINGS.acrfSummaryDeployment
+          : DEFAULT_SETTINGS.acrfSummaryDeployment,
+      chatDeployment:
+        typeof parsed.chatDeployment === "string" ? parsed.chatDeployment : DEFAULT_SETTINGS.chatDeployment
     };
   } catch {
     return DEFAULT_SETTINGS;
@@ -61,9 +65,49 @@ function writeSettings(studyId: string, settings: StudySettings): void {
   sessionStorage.setItem(storageKey(studyId), JSON.stringify(settings));
 }
 
+/** Fill empty deployment fields from API default without overwriting user choices. */
+export function applyDefaultDeployments(
+  settings: StudySettings,
+  defaultDeployment: string
+): StudySettings {
+  if (!defaultDeployment.trim()) {
+    return settings;
+  }
+  const patch: Partial<StudySettings> = {};
+  if (!settings.extractionDeployment.trim()) {
+    patch.extractionDeployment = defaultDeployment;
+  }
+  if (!settings.acrfSummaryDeployment.trim()) {
+    patch.acrfSummaryDeployment = defaultDeployment;
+  }
+  if (!settings.chatDeployment.trim()) {
+    patch.chatDeployment = defaultDeployment;
+  }
+  return Object.keys(patch).length > 0 ? { ...settings, ...patch } : settings;
+}
+
+export function deploymentForStep(
+  stepId: string,
+  settings: StudySettings,
+  defaultDeployment: string
+): string | undefined {
+  const fallback = defaultDeployment.trim();
+  if (stepId === "acrf-summary-text") {
+    return settings.acrfSummaryDeployment.trim() || fallback || undefined;
+  }
+  if (stepId === "extract-rules" || stepId === "extract-deviations" || stepId === "import-pd-spec-enrich") {
+    return settings.extractionDeployment.trim() || fallback || undefined;
+  }
+  return undefined;
+}
+
+export type StudySettingsPatch =
+  | Partial<StudySettings>
+  | ((previous: StudySettings) => Partial<StudySettings>);
+
 export function useStudySettings(studyId: string): {
   settings: StudySettings;
-  updateSettings: (patch: Partial<StudySettings>) => void;
+  updateSettings: (patch: StudySettingsPatch) => void;
 } {
   const [settings, setSettings] = useState<StudySettings>(() => readSettings(studyId));
 
@@ -72,9 +116,10 @@ export function useStudySettings(studyId: string): {
   }, [studyId]);
 
   const updateSettings = useCallback(
-    (patch: Partial<StudySettings>) => {
+    (patch: Partial<StudySettings> | ((previous: StudySettings) => Partial<StudySettings>)) => {
       setSettings((previous) => {
-        const next = { ...previous, ...patch };
+        const resolvedPatch = typeof patch === "function" ? patch(previous) : patch;
+        const next = { ...previous, ...resolvedPatch };
         writeSettings(studyId, next);
         return next;
       });

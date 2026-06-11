@@ -37,6 +37,9 @@ interface StudyPipelineViewProps {
   extractionDeploymentMissing?: boolean;
   acrfSummaryDeploymentMissing?: boolean;
   onOpenSettings?: () => void;
+  /** Setup wizard: uploads only, no pipeline action tiles. */
+  uploadsOnly?: boolean;
+  showPdSpecSlot?: boolean;
 }
 
 type PreviewTarget = "protocol" | "acrf" | "pd-spec" | null;
@@ -90,7 +93,9 @@ export function StudyPipelineView({
   extractorChoice,
   extractionDeploymentMissing = false,
   acrfSummaryDeploymentMissing = false,
-  onOpenSettings
+  onOpenSettings,
+  uploadsOnly = false,
+  showPdSpecSlot = true
 }: StudyPipelineViewProps): JSX.Element {
   const {
     pipeline,
@@ -378,7 +383,7 @@ export function StudyPipelineView({
       <UploadRail
         slots={[
           {
-            id: "protocol",
+            id: "protocol" as const,
             label: "Protocol",
             shortLabel: "Protocol",
             inputId: "pipeline-protocol-file",
@@ -386,7 +391,7 @@ export function StudyPipelineView({
             preprocessLine: preprocessLine(pipeline.preprocess.protocol, protocolSlot.status === "uploaded"),
             previewLabel: protocolPreviewReady ? "Preview markdown" : "Preview after preparation",
             previewDisabled: !protocolPreviewReady,
-            onFileSelected: (file) => void handleUploadSlot("protocol", file),
+            onFileSelected: (file: File) => void handleUploadSlot("protocol", file),
             onRetry: () => {
               const file = pendingProtocolFile;
               if (file) {
@@ -397,7 +402,7 @@ export function StudyPipelineView({
               protocolSlot.status === "uploaded" ? () => void openMarkdownPreview("protocol") : undefined
           },
           {
-            id: "acrf",
+            id: "acrf" as const,
             label: "Annotated CRF (aCRF)",
             shortLabel: "aCRF",
             inputId: "pipeline-acrf-file",
@@ -405,7 +410,7 @@ export function StudyPipelineView({
             preprocessLine: preprocessLine(pipeline.preprocess.acrf, acrfSlot.status === "uploaded"),
             previewLabel: acrfPreviewReady ? "Preview markdown" : "Preview after preparation",
             previewDisabled: !acrfPreviewReady,
-            onFileSelected: (file) => void handleUploadSlot("acrf", file),
+            onFileSelected: (file: File) => void handleUploadSlot("acrf", file),
             onRetry: () => {
               const file = pendingAcrfFile;
               if (file) {
@@ -414,25 +419,29 @@ export function StudyPipelineView({
             },
             onPreview: acrfSlot.status === "uploaded" ? () => void openMarkdownPreview("acrf") : undefined
           },
-          {
-            id: "pdSpec",
-            label: "PD Specification",
-            shortLabel: "PD Spec",
-            inputId: "pipeline-pd-spec-file",
-            slot: pdSpecSlot,
-            accept: ".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            chooseLabel: pdSpecSlot.status === "uploaded" ? "Replace workbook" : "Choose workbook (.xlsx)",
-            preprocessLine: pdSpecSlot.status === "uploaded" ? "Uploaded" : undefined,
-            previewLabel: "Preview workbook",
-            onFileSelected: (file) => void handleUploadPdSpec(file),
-            onRetry: () => {
-              const file = pendingPdSpecFile;
-              if (file) {
-                void handleUploadPdSpec(file);
-              }
-            },
-            onPreview: pdSpecSlot.status === "uploaded" ? () => void openPdSpecPreview() : undefined
-          }
+          ...(showPdSpecSlot
+            ? [
+                {
+                  id: "pdSpec" as const,
+                  label: "PD Specification",
+                  shortLabel: "PD Spec",
+                  inputId: "pipeline-pd-spec-file",
+                  slot: pdSpecSlot,
+                  accept: ".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                  chooseLabel: pdSpecSlot.status === "uploaded" ? "Replace workbook" : "Choose workbook (.xlsx)",
+                  preprocessLine: pdSpecSlot.status === "uploaded" ? "Uploaded" : undefined,
+                  previewLabel: "Preview workbook",
+                  onFileSelected: (file: File) => void handleUploadPdSpec(file),
+                  onRetry: () => {
+                    const file = pendingPdSpecFile;
+                    if (file) {
+                      void handleUploadPdSpec(file);
+                    }
+                  },
+                  onPreview: pdSpecSlot.status === "uploaded" ? () => void openPdSpecPreview() : undefined
+                }
+              ]
+            : [])
         ]}
         disabled={isUploadSlotBusy}
         studySelected={Boolean(studyId.trim())}
@@ -440,9 +449,9 @@ export function StudyPipelineView({
         uploadStatusError={uploadStatusError}
       />
 
-      <ExtractionLiveFeed studyId={studyId} active={Boolean(studyId.trim())} />
+      {uploadsOnly ? null : <ExtractionLiveFeed studyId={studyId} active={Boolean(studyId.trim())} />}
 
-      {extractionDeploymentMissing || acrfSummaryDeploymentMissing ? (
+      {!uploadsOnly && (extractionDeploymentMissing || acrfSummaryDeploymentMissing) ? (
         <p className="step1-error study-pipeline-settings-warning">
           Select LLM deployments in{" "}
           {onOpenSettings ? (
@@ -458,6 +467,7 @@ export function StudyPipelineView({
         </p>
       ) : null}
 
+      {uploadsOnly ? null : (
       <div className="study-pipeline-stage study-pipeline-actions">
         <PipelineActionTiles
           bothUploaded={pipeline.bothUploaded}
@@ -476,6 +486,7 @@ export function StudyPipelineView({
           pipelineError={pdSpecActionError || processingError || pipeline.extraction.error}
         />
       </div>
+      )}
 
       <DocumentPreviewModal
         open={previewTarget !== null}

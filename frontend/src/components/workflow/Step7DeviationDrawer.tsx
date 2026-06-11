@@ -15,6 +15,8 @@ import {
   type StepStatus
 } from "../../services/stepApi";
 import { getParagraphTextMap } from "../../services/paragraphCache";
+import type { OpenAiDeploymentOption } from "../../services/stepApi";
+import { LlmDeploymentSelect } from "../ui/LlmDeploymentSelect";
 import { ParagraphRefChip } from "../viewers/RefChip";
 import { navigateToStep } from "../../utils/hashRoute";
 
@@ -25,6 +27,10 @@ interface Step7DeviationDrawerProps {
   onClose: () => void;
   onRowUpdated: (row: Step7DeviationRow) => void;
   onStepStatusesChange: (statuses: Record<string, StepStatus>) => void;
+  llmDeployments: OpenAiDeploymentOption[];
+  deploymentsLoading: boolean;
+  chatDeployment: string;
+  onChatDeploymentChange: (value: string) => void;
 }
 
 function refsToText(value: string[]): string {
@@ -70,7 +76,11 @@ export function Step7DeviationDrawer({
   row,
   onClose,
   onRowUpdated,
-  onStepStatusesChange
+  onStepStatusesChange,
+  llmDeployments,
+  deploymentsLoading,
+  chatDeployment,
+  onChatDeploymentChange
 }: Step7DeviationDrawerProps): JSX.Element | null {
   const [messages, setMessages] = useState<Step7ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
@@ -239,7 +249,8 @@ export function Step7DeviationDrawer({
         message,
         true,
         alsoPseudo,
-        reviewSource
+        reviewSource,
+        chatDeployment
       );
       let currentRow = result.row;
       setMessages(result.messages);
@@ -456,6 +467,15 @@ export function Step7DeviationDrawer({
           </div>
 
           <footer className="step7-chatgpt-footer">
+            <LlmDeploymentSelect
+              id="step7-chat-llm-deployment"
+              label="Chat model"
+              value={chatDeployment}
+              deployments={llmDeployments}
+              onChange={onChatDeploymentChange}
+              isLoading={deploymentsLoading}
+              disabled={isSending}
+            />
             <label className="step7-chatgpt-option">
               <input type="checkbox" checked={alsoPseudo} onChange={(event) => setAlsoPseudo(event.target.checked)} />
               <span>Generate pseudo logic after refine (when accepted)</span>

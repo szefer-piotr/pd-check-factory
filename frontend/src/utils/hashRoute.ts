@@ -1,4 +1,4 @@
-/** Hash routing helpers: "#/step-id?focus=p154" → { stepId, params }. */
+/** Legacy hash helpers — deep links now route to the guided wizard. */
 
 export interface HashRoute {
   stepId: string;
@@ -13,12 +13,12 @@ export function parseHash(hash: string): HashRoute {
   return { stepId, params };
 }
 
-export function buildHash(stepId: string, params?: Record<string, string> | URLSearchParams): string {
+export function buildHash(_stepId: string, params?: Record<string, string> | URLSearchParams): string {
   const search =
     params instanceof URLSearchParams ? params.toString() : new URLSearchParams(params ?? {}).toString();
-  return `/${stepId}${search ? `?${search}` : ""}`;
+  return `/processing${search ? `?${search}` : ""}`;
 }
 
-export function navigateToStep(stepId: string, params?: Record<string, string> | URLSearchParams): void {
-  window.location.hash = buildHash(stepId, params);
+export function navigateToStep(_stepId: string, params?: Record<string, string> | URLSearchParams): void {
+  window.location.hash = buildHash("processing", params);
 }
