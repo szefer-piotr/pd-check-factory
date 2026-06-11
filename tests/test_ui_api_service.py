@@ -126,7 +126,7 @@ def test_status_progression_and_dependency_guard(tmp_path: Path, monkeypatch: py
         _touch(out, '{"rules": []}')
         return {"rules": []}
 
-    def fake_acrf_summary(sid: str, output_dir: Path):
+    def fake_acrf_summary(sid: str, output_dir: Path, *args, **kwargs):
         called["acrf"] = True
         out = output_dir / sid / "pipeline" / "acrf_summary" / "acrf_summary_text_merged.json"
         _touch(out, '{"datasets": []}')

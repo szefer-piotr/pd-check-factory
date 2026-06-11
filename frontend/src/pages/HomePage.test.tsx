@@ -679,7 +679,7 @@ describe("Workflow pipeline pages", () => {
     });
 
     render(<App />);
-    await user.click(screen.getByRole("button", { name: /Review and Finalize/i }));
+    await user.click(screen.getByRole("button", { name: "Review" }));
     await user.click(screen.getByRole("button", { name: "Generate Excel" }));
 
     await waitFor(() => {
@@ -709,7 +709,7 @@ describe("Workflow pipeline pages", () => {
     });
 
     render(<App />);
-    await user.click(screen.getByRole("button", { name: /Review and Finalize/i }));
+    await user.click(screen.getByRole("button", { name: "Review" }));
     await user.click(screen.getByRole("button", { name: "Generate Company PDS" }));
 
     await waitFor(() => {
@@ -726,7 +726,7 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /Review and Finalize/i }));
+    await user.click(screen.getByRole("button", { name: "Review" }));
     await screen.findByLabelText("Data to review");
     const devRow = await screen.findByRole("button", { name: /dev-0001/i });
     await user.click(devRow);
@@ -1153,7 +1153,7 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /Review and Finalize/i }));
+    await user.click(screen.getByRole("button", { name: "Review" }));
     await screen.findByRole("button", { name: /dev-0001/i });
 
     const acceptAllButton = screen.getByRole("button", { name: /Accept all \(1\)/i });
@@ -1169,7 +1169,7 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /Review and Finalize/i }));
+    await user.click(screen.getByRole("button", { name: "Review" }));
     await screen.findByRole("button", { name: /dev-0001/i });
 
     const bulkButton = screen.getByRole("button", { name: /Generate all pseudo \(0\)/i });
@@ -1224,7 +1224,7 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /Review and Finalize/i }));
+    await user.click(screen.getByRole("button", { name: "Review" }));
     const devRow = await screen.findByRole("button", { name: /dev-0001/i });
     await user.click(devRow);
     expect(await screen.findByText("Not generated yet.")).toBeInTheDocument();
@@ -1240,7 +1240,7 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /Review and Finalize/i }));
+    await user.click(screen.getByRole("button", { name: "Review" }));
     await screen.findByRole("button", { name: /dev-0001/i });
 
     await user.click(screen.getByRole("button", { name: "More actions" }));
@@ -1580,7 +1580,7 @@ describe("Workflow pipeline pages", () => {
 
     const user = userEvent.setup();
     render(<App />);
-    await user.click(screen.getByRole("button", { name: /Review and Finalize/i }));
+    await user.click(screen.getByRole("button", { name: "Review" }));
     expect(await screen.findByRole("button", { name: "Accept and continue to coding" })).toBeDisabled();
     expect(screen.getByText(/still pending or to review/i)).toBeInTheDocument();
   });
@@ -1615,7 +1615,7 @@ describe("Workflow pipeline pages", () => {
     const user = userEvent.setup();
     render(<App />);
 
-    await user.click(screen.getByRole("button", { name: /Review and Finalize/i }));
+    await user.click(screen.getByRole("button", { name: "Review" }));
     const continueButton = await screen.findByRole("button", { name: "Accept and continue to coding" });
     await waitFor(() => expect(continueButton).toBeEnabled());
     await user.click(continueButton);

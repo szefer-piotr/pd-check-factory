@@ -55,9 +55,34 @@ def _file_response(
         handler.send_header("Content-Disposition", content_disposition)
         handler.send_header("Access-Control-Allow-Origin", "*")
         handler.send_header("Access-Control-Allow-Headers", "Content-Type")
-        handler.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
+        handler.send_header("Access-Control-Allow-Methods", "GET,HEAD,POST,PATCH,DELETE,OPTIONS")
         handler.end_headers()
         handler.wfile.write(body)
+    except _CLIENT_DISCONNECT_ERRORS:
+        return
+
+
+def _inline_response(
+    handler: BaseHTTPRequestHandler,
+    *,
+    body: bytes | None,
+    content_type: str,
+    content_length: int,
+    file_name: str | None = None,
+) -> None:
+    """Serve content inline (no attachment); body=None sends headers only (HEAD)."""
+    try:
+        handler.send_response(HTTPStatus.OK)
+        handler.send_header("Content-Type", content_type)
+        handler.send_header("Content-Length", str(content_length))
+        if file_name:
+            handler.send_header("Content-Disposition", f'inline; filename="{file_name}"')
+        handler.send_header("Access-Control-Allow-Origin", "*")
+        handler.send_header("Access-Control-Allow-Headers", "Content-Type")
+        handler.send_header("Access-Control-Allow-Methods", "GET,HEAD,POST,PATCH,DELETE,OPTIONS")
+        handler.end_headers()
+        if body is not None:
+            handler.wfile.write(body)
     except _CLIENT_DISCONNECT_ERRORS:
         return
 
@@ -69,8 +94,48 @@ class StepApiHandler(BaseHTTPRequestHandler):
         self.send_response(HTTPStatus.NO_CONTENT)
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.send_header("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET,HEAD,POST,PATCH,DELETE,OPTIONS")
         self.end_headers()
+
+    def do_HEAD(self) -> None:  # noqa: N802
+        try:
+            parsed = urlparse(self.path)
+            v1 = self._match_v1(parsed.path)
+            if v1 is None:
+                self.send_response(HTTPStatus.NOT_FOUND)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                return
+            study_id, tail = v1
+            if tail == "artifacts/text":
+                qs = parse_qs(parsed.query)
+                artifact = (qs.get("artifact") or [""])[0]
+                meta = self.service.get_artifact_meta(study_id, artifact)
+                _inline_response(
+                    self,
+                    body=None,
+                    content_type=meta["contentType"],
+                    content_length=meta["size"],
+                    file_name=meta["fileName"],
+                )
+                return
+            self.send_response(HTTPStatus.NOT_FOUND)
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+        except UiApiError as exc:
+            try:
+                self.send_response(exc.status_code)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+            except _CLIENT_DISCONNECT_ERRORS:
+                return
+        except Exception:  # noqa: BLE001
+            try:
+                self.send_response(HTTPStatus.INTERNAL_SERVER_ERROR)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+            except _CLIENT_DISCONNECT_ERRORS:
+                return
 
     def do_GET(self) -> None:  # noqa: N802
         request_id = str(uuid.uuid4())
@@ -106,6 +171,30 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 return
 
             study_id, tail = v1
+            if tail == "artifacts/raw":
+                qs = parse_qs(parsed.query)
+                doc = (qs.get("doc") or [""])[0]
+                pdf = self.service.get_raw_pdf(study_id, doc)
+                _inline_response(
+                    self,
+                    body=pdf["content"],
+                    content_type=pdf["contentType"],
+                    content_length=len(pdf["content"]),
+                    file_name=pdf["fileName"],
+                )
+                return
+            if tail == "artifacts/text":
+                qs = parse_qs(parsed.query)
+                artifact = (qs.get("artifact") or [""])[0]
+                payload = self.service.get_artifact_text(study_id, artifact)
+                _inline_response(
+                    self,
+                    body=payload["content"],
+                    content_type=payload["contentType"],
+                    content_length=payload["size"],
+                    file_name=payload["fileName"],
+                )
+                return
             if tail == "step1/preview":
                 qs = parse_qs(parsed.query)
                 full = (qs.get("full") or ["false"])[0].lower() in {"1", "true", "yes"}

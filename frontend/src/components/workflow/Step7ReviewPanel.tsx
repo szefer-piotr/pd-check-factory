@@ -31,6 +31,8 @@ interface Step7ReviewPanelProps {
   onAcceptAndContinue?: () => void;
   isAcceptingCoding?: boolean;
   codingAcceptError?: string;
+  /** Notifies the host page whenever the loaded rows change (completion bar). */
+  onRowsChange?: (rows: Step7DeviationRow[]) => void;
 }
 
 const EMPTY_DEVIATION_FORM: Step7DeviationPayload = {
@@ -66,7 +68,8 @@ export function Step7ReviewPanel({
   onStepStatusesChange,
   onAcceptAndContinue,
   isAcceptingCoding = false,
-  codingAcceptError = ""
+  codingAcceptError = "",
+  onRowsChange
 }: Step7ReviewPanelProps): JSX.Element {
   const [rows, setRows] = useState<Step7DeviationRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -96,6 +99,10 @@ export function Step7ReviewPanel({
   );
 
   const groups = useMemo(() => groupDeviationsByRule(rows), [rows]);
+
+  useEffect(() => {
+    onRowsChange?.(rows);
+  }, [rows, onRowsChange]);
 
   const statusCounts = useMemo(() => {
     const counts = { pending: 0, to_review: 0, accepted: 0, rejected: 0 };

@@ -33,6 +33,11 @@ export interface ApiEnvelope<T> {
 export interface StepItemStatus {
   stepId: string;
   status: StepStatus;
+  /** Backend step ids this step depends on (from STEP_DEPENDENCIES). */
+  dependencies?: string[];
+  /** Primary output count for done steps (e.g. 42 rules). */
+  count?: number;
+  unit?: string;
 }
 
 export interface StepStatusesResponse {
@@ -174,6 +179,12 @@ export interface LlmProgress {
   label?: string;
 }
 
+export interface RunStateProgress {
+  done: number;
+  total: number;
+  currentItem: string;
+}
+
 export interface ExtractionLiveRule {
   rule_id: string;
   title: string;
@@ -211,6 +222,8 @@ export interface Step1RunStateResponse {
   error: string;
   startedAt: string;
   finishedAt: string;
+  /** Structured per-item progress for long loops (sections / rules). */
+  progress?: RunStateProgress | null;
   logs: PipelineLogLine[];
   llmProgress?: LlmProgress | null;
 }

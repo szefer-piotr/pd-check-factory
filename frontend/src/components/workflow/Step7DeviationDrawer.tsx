@@ -14,6 +14,9 @@ import {
   type Step7ReviewSource,
   type StepStatus
 } from "../../services/stepApi";
+import { getParagraphTextMap } from "../../services/paragraphCache";
+import { ParagraphRefChip } from "../viewers/RefChip";
+import { navigateToStep } from "../../utils/hashRoute";
 
 interface Step7DeviationDrawerProps {
   studyId: string;
@@ -80,10 +83,28 @@ export function Step7DeviationDrawer({
   const [enrichmentDetail, setEnrichmentDetail] = useState<Step7EnrichmentDetailResponse | null>(null);
   const [enrichmentLoading, setEnrichmentLoading] = useState(false);
   const [enrichmentError, setEnrichmentError] = useState("");
+  const [paragraphTexts, setParagraphTexts] = useState<Map<string, string>>(new Map());
 
   const threadRef = useRef<HTMLDivElement>(null);
 
   const deviationId = row?.deviation_id ?? "";
+  const paragraphRefsKey = (row?.paragraph_refs ?? []).join(",");
+
+  useEffect(() => {
+    if (!studyId.trim() || !paragraphRefsKey) {
+      setParagraphTexts(new Map());
+      return;
+    }
+    let cancelled = false;
+    void getParagraphTextMap(studyId).then((map) => {
+      if (!cancelled) {
+        setParagraphTexts(map);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [studyId, paragraphRefsKey]);
 
   useEffect(() => {
     if (!deviationId) {
@@ -586,6 +607,44 @@ export function Step7DeviationDrawer({
               </div>
             </details>
           ) : null}
+
+          <details className="step7-drawer-collapsible">
+            <summary>Linked protocol paragraphs</summary>
+            <div className="step7-drawer-collapsible-inner">
+              <div className="step7-evidence-panel">
+                {(row.paragraph_refs ?? []).length === 0 ? (
+                  <p className="step7-evidence-body">No paragraph references.</p>
+                ) : (
+                  (row.paragraph_refs ?? []).map((refId) => (
+                    <div key={refId} className="step7-linked-paragraph">
+                      <ParagraphRefChip refId={refId} />
+                      <p className="step7-evidence-body">
+                        {paragraphTexts.get(refId) ?? "Paragraph text unavailable (run index-protocol)."}
+                      </p>
+                    </div>
+                  ))
+                )}
+                <div className="step7-chat-actions">
+                  <button
+                    className="button button-ghost"
+                    type="button"
+                    onClick={() => navigateToStep("upload", { tab: "protocol-pdf" })}
+                    title="Open the original protocol PDF viewer"
+                  >
+                    View protocol PDF
+                  </button>
+                  <button
+                    className="button button-ghost"
+                    type="button"
+                    onClick={() => navigateToStep("acrf-summary-text")}
+                    title="Open the aCRF dataset summaries"
+                  >
+                    View aCRF datasets
+                  </button>
+                </div>
+              </div>
+            </div>
+          </details>
 
           <details className="step7-drawer-collapsible">
             <summary>Supporting evidence</summary>
