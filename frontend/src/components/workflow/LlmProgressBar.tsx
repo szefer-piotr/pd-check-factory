@@ -2,6 +2,7 @@ import type { LlmProgress } from "../../services/stepApi";
 
 const PHASE_LABELS: Record<string, string> = {
   "acrf-summary": "Merging aCRF summary",
+  "extract-rules": "Extracting rules",
   "extract-deviations": "Generating deviations",
   "pseudo-logic": "Generating pseudo logic",
   "pd-enrich": "Enriching PD specifications"
@@ -10,7 +11,8 @@ const PHASE_LABELS: Record<string, string> = {
 const UNIT_LABELS: Record<string, string> = {
   sections: "sections",
   rules: "rules",
-  deviations: "deviations"
+  deviations: "deviations",
+  phases: "phases"
 };
 
 interface LlmProgressBarProps {

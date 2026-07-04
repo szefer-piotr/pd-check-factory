@@ -273,7 +273,7 @@ export const IMPORT_PIPELINE_STEPS: PipelineStepDefinition[] = [
     title: "Step 2 - Import & Ground PD Spec",
     summary: "Import PD Specifications workbook, ground deviations, and generate pseudo-logic.",
     instructions: [
-      "Upload the company PD Specifications XLSX (NAL00-106 layout).",
+      "Upload the company PD Specifications XLSX (NAL00-107 layout).",
       "Run import & grounding to parse rows and attach protocol/aCRF evidence.",
       "After a second import, run semantic merge and choose the active snapshot for review."
     ],

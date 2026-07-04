@@ -59,6 +59,8 @@ def local_path_to_blob_path(study_id: str, output_dir: Path, local_path: Path) -
         return paths.ui_upload_manifest_blob(study_id)
     if rel_posix == "ui_pipeline_run_state.json":
         return f"pipeline/{study_id}/ui_pipeline_run_state.json"
+    if rel_posix == "ui_run_manifest.json":
+        return paths.ui_run_manifest_blob(study_id)
     if rel_posix.startswith("extractions/"):
         tail = rel_posix[len("extractions/") :]
         return f"extractions/{study_id}/{tail}"
@@ -80,6 +82,9 @@ def blob_path_to_local_path(study_id: str, output_dir: Path, blob_name: str) -> 
     run_state_blob = f"pipeline/{study_id}/ui_pipeline_run_state.json"
     if blob_name == run_state_blob:
         return root / "ui_pipeline_run_state.json"
+    run_manifest_blob = paths.ui_run_manifest_blob(study_id)
+    if blob_name == run_manifest_blob:
+        return root / "ui_run_manifest.json"
     prefix_p = f"pipeline/{study_id}/"
     prefix_e = f"extractions/{study_id}/"
     prefix_r = f"review/{study_id}/"
@@ -154,7 +159,7 @@ def iter_tracked_local_files(study_id: str, output_dir: Path) -> List[Path]:
     """Enumerate local files that participate in blob sync."""
     root = paths.local_study_root(study_id, output_dir)
     out: List[Path] = []
-    for name in ("ui_upload_manifest.json", "ui_pipeline_run_state.json"):
+    for name in ("ui_upload_manifest.json", "ui_pipeline_run_state.json", "ui_run_manifest.json"):
         p = root / name
         if p.is_file():
             out.append(p.resolve())

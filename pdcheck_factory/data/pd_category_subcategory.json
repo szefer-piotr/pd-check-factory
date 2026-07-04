@@ -1,0 +1,59 @@
+{
+  "source": "docs/refernce-files/NAL00-107 PD Specifications.xlsx",
+  "schema_version": "1.0.0",
+  "generated_at": "2026-06-29T11:10:49.591328+00:00",
+  "categories": {
+    "AE/SAE Reporting": [
+      "AE reported out of window",
+      "SAE reported out of window"
+    ],
+    "Concomitant/ Rescue Medication": [
+      "Prohibited medication",
+      "Concomitant/ Rescue Medication non-compliance"
+    ],
+    "Eligibility Criteria": [
+      "Inclusion Criteria not met",
+      "Exclusion Criteria not followed"
+    ],
+    "Informed Consent/Assent": [
+      "Informed Consent/Assent not performed prior to study procedures",
+      "Informed Consent/Assent not obtained",
+      "Subject consented utilizing an ICF that has not been IRB approved",
+      "Consent/Assent was not signed by appropriate individuals",
+      "Consent/Assent on invalid or outdated ICF",
+      "Original ICF not available"
+    ],
+    "Investigational Product/Device": [
+      "IP Non-compliance",
+      "Incorrect IP dose administered",
+      "IP dose taken Out of Window",
+      "CRA unable to reconcile IP accountability",
+      "Pharmacy conditions inadequate",
+      "Discontinuation Criteria met, but IP not discontinued"
+    ],
+    "IRB/EC Regulatory": [
+      "IRB/EC Approval expired",
+      "GCP non compliance",
+      "Non-delegated task performed by staff",
+      "Training of site personnel not completed prior to performing study assessments",
+      "IRB/EC Approval not received"
+    ],
+    "Other, specify": [
+      "Other"
+    ],
+    "Randomization Related": [
+      "Incorrect Randomization Assignment"
+    ],
+    "Study Procedure Related": [
+      "Study Procedure Missed",
+      "Study Procedure Out of Window",
+      "Assessment impacted by inadequate equipment",
+      "Assessment performed in error",
+      "Study Procedure Completed/Not Resulted"
+    ],
+    "Study Visit Related": [
+      "Study Visit Missed",
+      "Study Visit Out of Window"
+    ]
+  }
+}

@@ -17,6 +17,8 @@ Do not summarize the protocol generally. Extract actionable participant requirem
 
 Use only information explicitly present in the protocol. Do not invent thresholds, visit windows, procedures, datasets, or rules. If something is unclear, missing, contradictory, or requires investigator judgment, state this explicitly inside COVERAGE_NOTE.
 
+When the schedule of assessments or visit schedule includes visit names and timing windows, extract explicit visit-window rules as separate atomic rules.
+
 Extraction scope:
 
 Extract rules from all protocol sections that may affect participant eligibility, study conduct, procedure compliance, dosing/intervention, continuation, discontinuation, withdrawal, or follow-up. At minimum, review:

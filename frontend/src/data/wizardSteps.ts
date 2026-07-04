@@ -24,7 +24,7 @@ export const WIZARD_STAGES: WizardStageDef[] = [
   { id: "library", title: "Project Library", shortTitle: "Library", showInStepper: false },
   { id: "project", title: "Project", shortTitle: "Project", showInStepper: true },
   { id: "setup", title: "Setup", shortTitle: "Setup", showInStepper: true },
-  { id: "summary", title: "Summary", shortTitle: "Summary", showInStepper: true },
+  { id: "summary", title: "Summary", shortTitle: "Summary", showInStepper: false },
   { id: "processing", title: "Processing", shortTitle: "Processing", showInStepper: true },
   { id: "review", title: "Review", shortTitle: "Review", showInStepper: true }
 ];

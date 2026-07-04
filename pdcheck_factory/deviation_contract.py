@@ -30,6 +30,7 @@ PD_SPEC_IMPORT_KEYS = (
     "programmer_comments",
     "reviewer_comments",
     "aa_comment",
+    "programmer_check_number",
     "grounding_error",
     "occurrence_date",
     "additional_information",

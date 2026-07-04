@@ -12,6 +12,9 @@ export function parseWizardHash(hash: string): WizardStageId {
     "processing",
     "review"
   ];
+  if (stageId === "summary") {
+    return "setup";
+  }
   return known.includes(stageId as WizardStageId) ? (stageId as WizardStageId) : DEFAULT_WIZARD_STAGE;
 }
 

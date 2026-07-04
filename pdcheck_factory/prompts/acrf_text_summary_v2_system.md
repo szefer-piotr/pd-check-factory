@@ -6,6 +6,7 @@ Summarize aCRF content into parseable text blocks.
 Output rules:
 - Output only blocks in this exact format.
 - No prose outside blocks.
+- Capture visit names, visit windows, and form short names (for example AE, CM, MH, SUBJ, SV) when present.
 
 Block format:
 <<<BEGIN_DATASET>>>

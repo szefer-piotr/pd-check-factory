@@ -56,7 +56,7 @@ def test_upload_pd_spec_does_not_force_import_entry_mode(tmp_path: Path, monkeyp
     result = service.upload_pd_spec_workbook(study_id, b"fake-xlsx", file_name="spec.xlsx")
     assert result["entryMode"] == ENTRY_MODE_EXTRACTED
     assert result["pdSpecBlob"] == paths.pd_spec_workbook_blob(study_id)
-    assert uploaded == [paths.pd_spec_workbook_blob(study_id)]
+    assert paths.pd_spec_workbook_blob(study_id) in uploaded
 
 
 def test_accept_coding_phase_requires_all_reviewed(tmp_path: Path) -> None:
@@ -102,7 +102,7 @@ def test_import_grounding_allowed_in_extracted_mode(tmp_path: Path, monkeypatch:
 
     from pdcheck_factory import pipeline_v2
 
-    def fake_import(**_kwargs):
+    def fake_import(study_id: str, output_dir: Path, **_kwargs: object) -> dict:
         snap = tmp_path / study_id / "pipeline" / "review" / "deviations_import_v1.json"
         snap.parent.mkdir(parents=True, exist_ok=True)
         snap.write_text('{"deviations": []}', encoding="utf-8")

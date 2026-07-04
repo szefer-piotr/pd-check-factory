@@ -22,6 +22,11 @@ def test_is_chat_deployment_filters_embeddings() -> None:
     assert azure_openai_config._is_chat_deployment("text-embedding-3-large") is False
 
 
+def test_supports_temperature() -> None:
+    assert azure_openai_config.supports_temperature("gpt-4o") is True
+    assert azure_openai_config.supports_temperature("o4-mini") is False
+
+
 def test_list_openai_deployments_falls_back_without_arm_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://example.openai.azure.com/")
     monkeypatch.setenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4o")
@@ -32,7 +37,14 @@ def test_list_openai_deployments_falls_back_without_arm_env(monkeypatch: pytest.
 
     assert result["source"] == "fallback"
     assert result["defaultDeployment"] == "gpt-4o"
-    assert result["deployments"] == [{"id": "gpt-4o", "modelName": "gpt-4o", "version": ""}]
+    assert result["deployments"] == [
+        {
+            "id": "gpt-4o",
+            "modelName": "gpt-4o",
+            "version": "",
+            "supportsTemperature": True,
+        }
+    ]
 
 
 def test_list_openai_deployments_from_arm(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -80,3 +92,4 @@ def test_list_openai_deployments_from_arm(monkeypatch: pytest.MonkeyPatch) -> No
     assert result["source"] == "azure"
     assert result["defaultDeployment"] == "gpt-4o"
     assert [entry["id"] for entry in result["deployments"]] == ["gpt-4.1", "gpt-4o"]
+    assert result["deployments"][0]["supportsTemperature"] is True

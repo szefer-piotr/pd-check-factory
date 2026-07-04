@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   acceptStep7DeviationEnriched,
+  fetchPdTaxonomy,
   fetchStep7DeviationChat,
   fetchStep7EnrichmentDetail,
   generateStep7PseudoLogic,
@@ -94,6 +95,7 @@ export function Step7DeviationDrawer({
   const [enrichmentLoading, setEnrichmentLoading] = useState(false);
   const [enrichmentError, setEnrichmentError] = useState("");
   const [paragraphTexts, setParagraphTexts] = useState<Map<string, string>>(new Map());
+  const [taxonomy, setTaxonomy] = useState<Record<string, string[]>>({});
 
   const threadRef = useRef<HTMLDivElement>(null);
 
@@ -115,6 +117,24 @@ export function Step7DeviationDrawer({
       cancelled = true;
     };
   }, [studyId, paragraphRefsKey]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void fetchPdTaxonomy()
+      .then((payload) => {
+        if (!cancelled) {
+          setTaxonomy(payload.categories ?? {});
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setTaxonomy({});
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     if (!deviationId) {
@@ -322,9 +342,17 @@ export function Step7DeviationDrawer({
       paragraph_refs: activeRow.paragraph_refs,
       data_support_note: activeRow.data_support_note,
       dm_comment: activeRow.dm_comment,
-      status: activeRow.status
+      status: activeRow.status,
+      protocol_deviation_category: activeRow.protocol_deviation_category ?? "",
+      protocol_deviation_sub_category: activeRow.protocol_deviation_sub_category ?? ""
     });
   }
+
+  const categoryOptions = Object.keys(taxonomy);
+  const subCategoryOptions =
+    editForm?.protocol_deviation_category && taxonomy[editForm.protocol_deviation_category]
+      ? taxonomy[editForm.protocol_deviation_category]
+      : [];
 
   return (
     <aside className="step7-drawer" aria-label={`Deviation ${row.deviation_id}`}>
@@ -726,6 +754,52 @@ export function Step7DeviationDrawer({
                     }
                     placeholder="data support note"
                   />
+                  <label className="step7-muted">
+                    Category
+                    <select
+                      className="input"
+                      value={editForm.protocol_deviation_category ?? ""}
+                      onChange={(event) =>
+                        setEditForm((previous) =>
+                          previous
+                            ? {
+                                ...previous,
+                                protocol_deviation_category: event.target.value,
+                                protocol_deviation_sub_category: ""
+                              }
+                            : previous
+                        )
+                      }
+                    >
+                      <option value="">Select category</option>
+                      {categoryOptions.map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="step7-muted">
+                    Sub-category
+                    <select
+                      className="input"
+                      value={editForm.protocol_deviation_sub_category ?? ""}
+                      onChange={(event) =>
+                        setEditForm((previous) =>
+                          previous
+                            ? { ...previous, protocol_deviation_sub_category: event.target.value }
+                            : previous
+                        )
+                      }
+                    >
+                      <option value="">Select sub-category</option>
+                      {subCategoryOptions.map((option) => (
+                        <option key={option} value={option}>
+                          {option}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                   <div className="step7-chat-actions">
                     <button className="button button-primary" type="button" onClick={() => void handleSaveEdit()}>
                       Save

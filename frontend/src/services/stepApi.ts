@@ -73,6 +73,56 @@ export type WorkflowChoice = "extract" | "map" | "enrich";
 
 export type WizardStage = "project" | "setup" | "summary" | "processing" | "review";
 
+export type Step1PdfExtractor = "opendataloader" | "document_intelligence" | "both";
+
+export interface StudyRunUploads {
+  protocolFileName: string;
+  acrfFileName: string;
+  pdSpecFileName: string | null;
+}
+
+export interface StudyRunSettings {
+  extractorChoice: Step1PdfExtractor;
+  extractionDeployment: string;
+  acrfSummaryDeployment: string;
+  extractionLlmInstructions: string;
+}
+
+export interface StudyRunEntry {
+  runId: string;
+  fingerprint: string;
+  createdAt: string;
+  updatedAt: string;
+  workflow: WorkflowChoice;
+  uploads: StudyRunUploads;
+  settings: StudyRunSettings;
+  lastRunAt: string | null;
+  stepStatusesSnapshot: Record<string, StepStatus>;
+}
+
+export interface StudyRunsResponse {
+  studyId: string;
+  activeRunId: string;
+  runs: StudyRunEntry[];
+}
+
+export interface ApplyStudyRunResponse {
+  studyId: string;
+  runId: string;
+  fingerprint: string;
+  created: boolean;
+  settings: StudyRunSettings;
+  activeRunId: string;
+  runs: StudyRunEntry[];
+}
+
+export interface ActivateStudyRunResponse {
+  studyId: string;
+  activeRunId: string;
+  settings: StudyRunSettings;
+  run: StudyRunEntry;
+}
+
 export interface StudyListItem {
   studyId: string;
   workflow: WorkflowChoice | null;
@@ -287,8 +337,6 @@ export interface Step1RunStateResponse {
   llmProgress?: LlmProgress | null;
 }
 
-export type Step1PdfExtractor = "opendataloader" | "document_intelligence" | "both";
-
 export interface Step1ExtractResponse {
   studyId: string;
   message: string;
@@ -361,6 +409,8 @@ export interface Step7DeviationRow {
   entry_source: string;
   programmable: boolean | null;
   programmability_note: string;
+  protocol_deviation_category?: string;
+  protocol_deviation_sub_category?: string;
   original_deviation_text?: string;
   suggested_deviation_text?: string;
   enrichment_status?: string;
@@ -386,6 +436,14 @@ export interface Step7DeviationPayload {
   data_support_note?: string;
   dm_comment?: string;
   status?: Step7DeviationRow["status"];
+  protocol_deviation_category?: string;
+  protocol_deviation_sub_category?: string;
+}
+
+export interface PdTaxonomyResponse {
+  categories: Record<string, string[]>;
+  categoryOptions: string[];
+  subCategoryOptions: string[];
 }
 
 export interface Step7RulePayload {
@@ -575,6 +633,35 @@ export async function fetchStudySummary(studyId: string): Promise<StudySummary> 
   return parseApiResponse<StudySummary>(response);
 }
 
+export async function fetchStudyRuns(studyId: string): Promise<StudyRunsResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/runs`);
+  return parseApiResponse<StudyRunsResponse>(response);
+}
+
+export async function applyStudyRun(
+  studyId: string,
+  payload: {
+    workflow: WorkflowChoice;
+    uploads: StudyRunUploads;
+    settings: StudyRunSettings;
+  }
+): Promise<ApplyStudyRunResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/runs/apply`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  return parseApiResponse<ApplyStudyRunResponse>(response);
+}
+
+export async function activateStudyRun(studyId: string, runId: string): Promise<ActivateStudyRunResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/runs/${encodeURIComponent(runId)}/activate`,
+    { method: "PATCH" }
+  );
+  return parseApiResponse<ActivateStudyRunResponse>(response);
+}
+
 export async function patchStudyManifest(
   studyId: string,
   patch: { workflowChoice?: WorkflowChoice; uiStage?: WizardStage }
@@ -590,6 +677,11 @@ export async function patchStudyManifest(
 export async function fetchOpenAiDeployments(): Promise<OpenAiDeploymentsResponse> {
   const response = await fetch(`${API_BASE}/api/v1/config/openai-deployments`);
   return parseApiResponse<OpenAiDeploymentsResponse>(response);
+}
+
+export async function fetchPdTaxonomy(): Promise<PdTaxonomyResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/pd-taxonomy`);
+  return parseApiResponse<PdTaxonomyResponse>(response);
 }
 
 export async function deleteStudy(studyId: string): Promise<DeleteStudyResponse> {

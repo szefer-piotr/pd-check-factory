@@ -113,6 +113,9 @@ class PipelineV2ReviewHelpersTests(unittest.TestCase):
             }
             rule_by_id = {"rule-010": {"title": "Visit timing"}}
 
+            def _fake_generate_pseudo_logic_structured(**_kwargs):  # type: ignore[no-untyped-def]
+                return "SELECT 1"
+
             def _fake_chat_text_repairs(**kwargs):  # type: ignore[no-untyped-def]
                 label = kwargs.get("label", "")
                 if str(label).startswith("v2-pseudo-"):
@@ -120,6 +123,9 @@ class PipelineV2ReviewHelpersTests(unittest.TestCase):
                 return "PROGRAMMABLE: yes\nRATIONALE: Date field and window are present."
 
             with patch(
+                "pdcheck_factory.pipeline_v2.llm.generate_pseudo_logic_structured",
+                side_effect=_fake_generate_pseudo_logic_structured,
+            ), patch(
                 "pdcheck_factory.pipeline_v2.llm.chat_text_repairs",
                 side_effect=_fake_chat_text_repairs,
             ):

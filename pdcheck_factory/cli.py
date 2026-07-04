@@ -1714,6 +1714,39 @@ def cmd_v2_run(
     )
 
 
+@v2_app.command("validate")
+def cmd_v2_validate(
+    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
+    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
+) -> None:
+    """Validate final PD specification artifacts for a study."""
+    _load_env()
+    from pdcheck_factory.json_util import read_json
+    from pdcheck_factory.pd_spec_validate import validate_final_deviations
+
+    final_path = paths.local_final_deviations_json(study_id, output_dir)
+    if not final_path.is_file():
+        raise typer.BadParameter(f"Missing final deviations JSON: {final_path}")
+    final_obj = read_json(final_path)
+    paragraph_index: dict = {}
+    index_path = paths.local_protocol_paragraph_index_json(study_id, output_dir)
+    if index_path.is_file():
+        paragraph_index = read_json(index_path)
+    report = validate_final_deviations(final_obj, paragraph_index=paragraph_index)
+    typer.echo(json.dumps(report.to_dict(), indent=2))
+    if not report.ok:
+        raise typer.Exit(code=1)
+
+
+@v2_app.command("ready-for-review")
+def cmd_v2_ready_for_review(
+    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
+    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
+) -> None:
+    """Run ready-for-review checklist on final PD specification output."""
+    cmd_v2_validate(study_id=study_id, output_dir=output_dir)
+
+
 @app.command("run-all")
 def cmd_run_all(
     study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),

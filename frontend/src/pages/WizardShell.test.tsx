@@ -69,8 +69,34 @@ vi.mock("../services/stepApi", async (importOriginal) => {
     fetchStep1RunState: vi.fn(async (studyId: string) => ({
       studyId,
       status: "idle",
+      currentStage: "",
+      currentSubStepId: "",
+      message: "",
+      error: "",
+      startedAt: "",
+      finishedAt: "",
       logs: []
-    }))
+    })),
+    fetchStudyRuns: vi.fn(async () => ({
+      studyId: "",
+      activeRunId: "",
+      runs: []
+    })),
+    applyStudyRun: vi.fn(async () => ({
+      studyId: "NEW-STUDY",
+      runId: "run-test",
+      fingerprint: "abc",
+      created: true,
+      settings: {
+        extractorChoice: "both" as const,
+        extractionDeployment: "gpt-4o",
+        acrfSummaryDeployment: "gpt-4o",
+        extractionLlmInstructions: ""
+      },
+      activeRunId: "run-test",
+      runs: []
+    })),
+    activateStudyRun: vi.fn()
   };
 });
 
@@ -93,6 +119,7 @@ describe("WizardShell", () => {
     expect(await screen.findByRole("heading", { name: "Project Library" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "EXISTING-STUDY" }));
     await waitFor(() => expect(stepApi.fetchStudySummary).toHaveBeenCalledWith("EXISTING-STUDY"));
+    expect(await screen.findByRole("heading", { name: "Setup" })).toBeInTheDocument();
     expect(stepApi.syncStudy).not.toHaveBeenCalled();
   });
 

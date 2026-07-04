@@ -108,6 +108,14 @@ def local_ui_pipeline_run_state(study_id: str, output_dir: Path) -> Path:
     return local_study_root(study_id, output_dir) / "ui_pipeline_run_state.json"
 
 
+def ui_run_manifest_blob(study_id: str) -> str:
+    return f"pipeline/{study_id}/ui_run_manifest.json"
+
+
+def local_ui_run_manifest(study_id: str, output_dir: Path) -> Path:
+    return local_study_root(study_id, output_dir) / "ui_run_manifest.json"
+
+
 def local_extraction_layout(study_id: str, doc_role: str, output_dir: Path) -> Path:
     return local_study_root(study_id, output_dir) / "extractions" / doc_role / "layout"
 
@@ -268,6 +276,18 @@ def local_deviations_review_export_xlsx(study_id: str, output_dir: Path) -> Path
 
 def local_deviations_coding_export_xlsx(study_id: str, output_dir: Path) -> Path:
     return local_review_dir(study_id, output_dir) / "deviations_coding_export.xlsx"
+
+
+def local_deviation_classification_audit_json(study_id: str, output_dir: Path) -> Path:
+    return local_review_dir(study_id, output_dir) / "deviation_classification_audit.json"
+
+
+def local_deviation_consolidation_audit_json(study_id: str, output_dir: Path) -> Path:
+    return local_review_dir(study_id, output_dir) / "deviation_consolidation_audit.json"
+
+
+def local_model_output_log_json(study_id: str, output_dir: Path) -> Path:
+    return local_review_dir(study_id, output_dir) / "model_output_log.json"
 
 
 def local_pseudo_logic_dir(study_id: str, output_dir: Path) -> Path:

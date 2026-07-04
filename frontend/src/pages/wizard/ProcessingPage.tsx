@@ -1,7 +1,9 @@
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { DocumentPreviewModal } from "../../components/workflow/DocumentPreviewModal";
-import { ExtractionLiveFeed } from "../../components/workflow/ExtractionLiveFeed";
+import { PipelineLogTicker } from "../../components/workflow/PipelineLogTicker";
+import { ProcessingStepRow } from "../../components/workflow/ProcessingStepRow";
 import { BACKEND_STEP_LABELS, WORKFLOW_STEP_IDS, reviewSourceForWorkflow, type WorkflowChoice } from "../../data/wizardSteps";
+import { usePipelineRunState } from "../../hooks/usePipelineRunState";
 import type { StudySettings } from "../../hooks/useStudySettings";
 import { deploymentForStep } from "../../hooks/useStudySettings";
 import {
@@ -11,6 +13,7 @@ import {
   setStep7ReviewDisplaySource,
   syncStudy,
   type Step1PdfExtractor,
+  type PipelineLogLine,
   type StepStatus
 } from "../../services/stepApi";
 import { isWorkflowComplete } from "../../utils/workflowProgress";
@@ -47,6 +50,18 @@ function buildRunOptions(
   return opts;
 }
 
+function logsForStep(logs: PipelineLogLine[], stepId: string): PipelineLogLine[] {
+  const stepToken = stepId;
+  const filtered = logs.filter(
+    (line) =>
+      line.text.includes(stepToken) ||
+      line.text.includes("Starting step") ||
+      line.text.includes("[llm-text]") ||
+      line.text.includes("llm:")
+  );
+  return filtered.length > 0 ? filtered : logs;
+}
+
 export function ProcessingPage({
   studyId,
   workflow,
@@ -69,8 +84,12 @@ export function ProcessingPage({
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState("");
 
+  const pollRunState = Boolean(studyId.trim()) && (isRunActive || Boolean(runningStepId));
+  const { runState } = usePipelineRunState(studyId, { enabled: pollRunState, pollMs: 1500 });
+
   const stepIds = workflow ? WORKFLOW_STEP_IDS[workflow] : [];
   const complete = isWorkflowComplete(workflow, stepStatuses);
+  const activeStepId = runningStepId ?? runState.currentSubStepId ?? "";
 
   const ensureSync = useCallback(async (): Promise<void> => {
     if (hasSynced || !studyId.trim()) {
@@ -201,6 +220,8 @@ export function ProcessingPage({
     }
   }
 
+  const globalLogs = useMemo(() => runState.logs, [runState.logs]);
+
   return (
     <section className="wizard-processing" aria-label="Processing">
       <header className="wizard-page-header">
@@ -228,6 +249,8 @@ export function ProcessingPage({
         </div>
       </header>
 
+      <PipelineLogTicker logs={globalLogs} active={pollRunState} className="wizard-processing-log-ticker" />
+
       {message ? <p className="step1-status">{message}</p> : null}
       {error ? <p className="step1-error">{error}</p> : null}
       {complete ? (
@@ -236,8 +259,6 @@ export function ProcessingPage({
         </p>
       ) : null}
 
-      <ExtractionLiveFeed studyId={studyId} active={Boolean(studyId.trim())} />
-
       <ul className="wizard-processing-steps">
         {stepIds.map((stepId) => {
           if (stepId === "review-and-finalize") {
@@ -245,39 +266,24 @@ export function ProcessingPage({
           }
           const status = stepStatuses[stepId] ?? "pending";
           const isRunning = runningStepId === stepId;
+          const isActiveStep = activeStepId === stepId;
           return (
-            <li key={stepId} className="wizard-processing-step">
-              <div className="wizard-processing-step-head">
-                <strong>{BACKEND_STEP_LABELS[stepId] ?? stepId}</strong>
-                <span className={`chip chip-${status}`}>{isRunning ? "running" : status}</span>
-              </div>
-              <div className="wizard-processing-step-actions">
-                <button
-                  className="button button-primary"
-                  type="button"
-                  disabled={Boolean(runningStepId) || isRunActive}
-                  onClick={() => void handleRunStep(stepId, false)}
-                >
-                  Run
-                </button>
-                <button
-                  className="button button-secondary"
-                  type="button"
-                  disabled={Boolean(runningStepId) || isRunActive}
-                  onClick={() => void handleRunStep(stepId, true)}
-                >
-                  Re-run
-                </button>
-                <button
-                  className="button button-optional"
-                  type="button"
-                  disabled={previewLoading}
-                  onClick={() => void handlePreview(stepId)}
-                >
-                  Preview
-                </button>
-              </div>
-            </li>
+            <ProcessingStepRow
+              key={stepId}
+              stepId={stepId}
+              label={BACKEND_STEP_LABELS[stepId] ?? stepId}
+              status={status}
+              isRunning={isRunning}
+              isActiveStep={isActiveStep}
+              llmProgress={runState.llmProgress}
+              stepLogs={logsForStep(runState.logs, stepId)}
+              runActive={pollRunState}
+              onRun={() => void handleRunStep(stepId, false)}
+              onReRun={() => void handleRunStep(stepId, true)}
+              onPreview={() => void handlePreview(stepId)}
+              actionsDisabled={Boolean(runningStepId) || isRunActive}
+              previewLoading={previewLoading}
+            />
           );
         })}
       </ul>

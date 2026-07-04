@@ -23,7 +23,14 @@
             "minItems": 1,
             "items": { "type": "string", "pattern": "^p[0-9]+$" }
           },
-          "pseudo_logic": { "type": "string", "minLength": 1 }
+          "pseudo_logic": { "type": "string", "minLength": 1 },
+          "protocol_deviation_category": { "type": "string" },
+          "protocol_deviation_sub_category": { "type": "string" },
+          "classification": { "type": "string" },
+          "manual_or_programmable": { "type": "string" },
+          "data_source": { "type": "string" },
+          "programming_status": { "type": "string" },
+          "programmable": { "type": ["boolean", "null"] }
         },
         "additionalProperties": false
       }

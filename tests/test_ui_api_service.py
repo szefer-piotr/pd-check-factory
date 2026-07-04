@@ -7,7 +7,19 @@ from openpyxl import Workbook, load_workbook
 
 from pdcheck_factory import blob_io, extraction_resolve, paths
 from pdcheck_factory.json_util import read_json, write_json
-from pdcheck_factory.ui_api.service import STEP_ORDER, UiApiError, UiStepService, parse_json_body
+from pdcheck_factory.ui_api.service import (
+    STEP_ORDER,
+    UI_STAGE_PROCESSING,
+    UI_STAGE_PROJECT,
+    UI_STAGE_REVIEW,
+    UI_STAGE_SETUP,
+    UI_STAGE_SUMMARY,
+    WORKFLOW_CHOICE_EXTRACT,
+    WORKFLOW_CHOICE_MAP,
+    UiApiError,
+    UiStepService,
+    parse_json_body,
+)
 
 
 def _touch(path: Path, content: str = "x") -> None:
@@ -32,6 +44,7 @@ def test_run_step_reports_llm_progress_for_extract_deviations(
         *,
         additional_instructions: str = "",
         progress_callback=None,
+        force: bool = False,
     ) -> dict:
         assert progress_callback is not None
         progress_callback(
@@ -75,7 +88,7 @@ def test_run_step_forwards_llm_instructions_to_extract_rules(tmp_path: Path, mon
 
     captured: dict[str, str] = {}
 
-    def fake_rules(sid: str, output_dir: Path, *, additional_instructions: str = "") -> dict:
+    def fake_rules(sid: str, output_dir: Path, *, additional_instructions: str = "", **kwargs: object) -> dict:
         captured["additional_instructions"] = additional_instructions
         out_path = paths.local_rules_parsed_json(sid, output_dir)
         _touch(out_path, '{"rules": []}')
@@ -217,11 +230,11 @@ def test_list_studies_discovers_raw_blob_pairs(tmp_path: Path, monkeypatch: pyte
 
     assert [study["studyId"] for study in payload["studies"]] == ["STUDY-A", "STUDY-B", "STUDY-C"]
     study_a = next(study for study in payload["studies"] if study["studyId"] == "STUDY-A")
-    assert study_a["protocolBlob"] == "raw/STUDY-A/protocol.pdf"
-    assert study_a["bothUploaded"] is True
-    assert study_a["stepStatuses"]["extract-inputs"] == "pending"
+    assert study_a["workflow"] == WORKFLOW_CHOICE_EXTRACT
+    assert study_a["stage"] == UI_STAGE_PROJECT
+    assert "stepStatuses" not in study_a
     study_b = next(study for study in payload["studies"] if study["studyId"] == "STUDY-B")
-    assert study_b["bothUploaded"] is False
+    assert study_b["stage"] == UI_STAGE_PROJECT
 
 
 def test_delete_study_removes_all_blob_prefixes_and_local_output(
@@ -510,12 +523,13 @@ def test_export_step7_deviations_coding_xlsx_writes_workbook(tmp_path: Path) -> 
 
     data_row = next(sheet.iter_rows(min_row=2, max_row=2, values_only=True))
     row_map = dict(zip(headers, data_row))
-    assert row_map["Protocol Deviation Category"] == "Visit window timing"
-    assert row_map["Protocol Deviation Classification"] == "accepted"
+    assert row_map["Protocol Deviation Category"] in ("", None)
+    assert row_map["Protocol Deviation Classification"] in ("", None)
     assert row_map["Manual or Programmable Deviation"] == "Programmable"
     assert "SELECT 1" in str(row_map["Programming Information"])
-    assert "deviation_id: dev-0001" in str(row_map["Additional Information / Comments"])
-    assert row_map["Programmer Comments"] == "ok"
+    assert row_map["Additional Information / Comments"] in ("", None)
+    assert row_map["Programmer Comments"] in ("", None)
+    assert row_map["Data Source (e.g., RAVE, Clario, LabConnect)\n30 Character Limit"] == "Rave"
 
 
 def test_step7_manual_rule_crud(tmp_path: Path) -> None:
@@ -641,7 +655,7 @@ def test_generate_step7_pseudo_logic_bulk_returns_rows_and_count(
 
     from pdcheck_factory import paths, pipeline_v2
 
-    def fake_bulk(sid: str, output_dir: Path):
+    def fake_bulk(sid: str, output_dir: Path, **kwargs: object):
         out = {
             "schema_version": "1.0.0",
             "study_id": sid,
@@ -849,7 +863,7 @@ def test_get_specifications_preview_maps_workbook_and_review_state(tmp_path: Pat
     row = workbook_source["rows"][0]
     assert row[PD_SPEC_HEADERS[0]] == "Eligibility Criteria"
     assert row[PD_SPEC_HEADERS[2]] == "Subject enrolled below minimum age"
-    assert row[PD_SPEC_HEADERS[9]] == "RAVE"
+    assert row[PD_SPEC_HEADERS[8]] == "RAVE"
 
     review_source = next(s for s in preview["sources"] if s["key"] == "review_state")
     assert review_source["rows"][0]["deviation_text"] == "Generated deviation text"
@@ -1397,3 +1411,218 @@ def test_enriched_patch_accept_with_text_promotes_suggestion(tmp_path: Path) -> 
     assert row["text"] == "Suggested enriched text"
     assert row["original_deviation_text"] == "Imported text"
     assert row["suggested_deviation_text"] == "Suggested enriched text"
+
+
+def test_create_study_writes_manifest(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
+    monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
+    monkeypatch.setattr(blob_io, "list_blob_names_with_prefix", lambda **_kwargs: [])
+    monkeypatch.setattr(blob_io, "upload_blob_bytes", lambda **_kwargs: None)
+    monkeypatch.setattr(service, "_study_exists", lambda _sid: False)
+
+    result = service.create_study("NEW-STUDY")
+    assert result["studyId"] == "NEW-STUDY"
+    manifest_path = paths.local_ui_upload_manifest("NEW-STUDY", tmp_path)
+    assert manifest_path.is_file()
+    manifest = read_json(manifest_path)
+    assert manifest["uiStage"] == UI_STAGE_PROJECT
+    assert manifest.get("workflowChoice") is None
+
+
+def test_create_study_rejects_duplicate(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    monkeypatch.setattr(service, "_study_exists", lambda _sid: True)
+    with pytest.raises(UiApiError) as exc:
+        service.create_study("EXISTING")
+    assert exc.value.code == "DUPLICATE_STUDY"
+
+
+def test_create_study_rejects_unsafe_id(tmp_path: Path) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    with pytest.raises(UiApiError) as exc:
+        service.create_study("bad/id")
+    assert exc.value.code == "VALIDATION_ERROR"
+
+
+def test_patch_manifest_sets_workflow_choice(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "WF-STUDY"
+    monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
+    monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
+    monkeypatch.setattr(blob_io, "upload_blob_bytes", lambda **_kwargs: None)
+    monkeypatch.setattr(service, "_study_exists", lambda _sid: False)
+    service.create_study(study_id)
+
+    patched = service.patch_study_manifest(study_id, {"workflowChoice": WORKFLOW_CHOICE_MAP})
+    assert patched["workflow"] == WORKFLOW_CHOICE_MAP
+    manifest = read_json(paths.local_ui_upload_manifest(study_id, tmp_path))
+    assert manifest["entryMode"] == "imported_pd_spec"
+    assert manifest["pdSpecImportMode"] == "map"
+
+
+def test_get_study_summary_and_stage_derivation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "SUMMARY-STUDY"
+    monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
+    monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
+    monkeypatch.setattr(blob_io, "upload_blob_bytes", lambda **_kwargs: None)
+    monkeypatch.setattr(blob_io, "list_blob_names_with_prefix", lambda **_kwargs: [])
+    monkeypatch.setattr(service, "_study_exists", lambda _sid: False)
+    monkeypatch.setattr(service, "_blob_has_upload", lambda _sid, role: False)
+    monkeypatch.setattr(service, "_blob_has_pd_spec_workbook", lambda _sid: False)
+
+    service.create_study(study_id)
+    summary = service.get_study_summary(study_id)
+    assert summary["stage"] == UI_STAGE_PROJECT
+    assert summary["workflow"] is None
+
+    service.patch_study_manifest(study_id, {"workflowChoice": WORKFLOW_CHOICE_EXTRACT})
+    summary = service.get_study_summary(study_id)
+    assert summary["stage"] == UI_STAGE_SETUP
+    assert summary["workflow"] == WORKFLOW_CHOICE_EXTRACT
+    assert "uploads" in summary
+    assert "runState" in summary
+    assert "steps" in summary
+
+
+def test_derive_stage_processing_and_review(tmp_path: Path) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    upload_status = {
+        "protocol": {"uploaded": True},
+        "acrf": {"uploaded": True},
+        "pdSpec": {"uploaded": True},
+    }
+    statuses_pending = {step_id: "pending" for step_id in STEP_ORDER}
+    assert (
+        service.derive_stage(
+            workflow=WORKFLOW_CHOICE_EXTRACT,
+            upload_status=upload_status,
+            statuses=statuses_pending,
+        )
+        == UI_STAGE_SETUP
+    )
+
+    statuses_started = dict(statuses_pending)
+    statuses_started["extract-inputs"] = "done"
+    assert (
+        service.derive_stage(
+            workflow=WORKFLOW_CHOICE_EXTRACT,
+            upload_status=upload_status,
+            statuses=statuses_started,
+        )
+        == UI_STAGE_PROCESSING
+    )
+
+    statuses_done = dict(statuses_pending)
+    for step_id in (
+        "extract-inputs",
+        "index-protocol",
+        "acrf-split-toc",
+        "acrf-summary-text",
+        "extract-rules",
+        "extract-deviations",
+        "review-and-finalize",
+    ):
+        statuses_done[step_id] = "done"
+    assert (
+        service.derive_stage(
+            workflow=WORKFLOW_CHOICE_EXTRACT,
+            upload_status=upload_status,
+            statuses=statuses_done,
+        )
+        == UI_STAGE_REVIEW
+    )
+
+
+def test_apply_and_activate_study_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "RUN-MANIFEST"
+    monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
+    monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
+    monkeypatch.setattr(blob_io, "upload_blob_bytes", lambda **_kwargs: None)
+    monkeypatch.setattr(blob_io, "list_blob_names_with_prefix", lambda **_kwargs: [])
+    monkeypatch.setattr(service, "_study_exists", lambda _sid: False)
+    service.create_study(study_id)
+    payload = {
+        "workflow": WORKFLOW_CHOICE_EXTRACT,
+        "uploads": {
+            "protocolFileName": "protocol.pdf",
+            "acrfFileName": "acrf.pdf",
+            "pdSpecFileName": None,
+        },
+        "settings": {
+            "extractorChoice": "both",
+            "extractionDeployment": "gpt-4o",
+            "acrfSummaryDeployment": "gpt-4o",
+            "extractionLlmInstructions": "",
+        },
+    }
+    first = service.apply_study_run(study_id, payload)
+    assert first["created"] is True
+    assert first["runId"].startswith("run-")
+    assert first["activeRunId"] == first["runId"]
+
+    second = service.apply_study_run(study_id, payload)
+    assert second["created"] is False
+    assert second["runId"] == first["runId"]
+    assert len(second["runs"]) == 1
+
+    payload["settings"] = {**payload["settings"], "extractionDeployment": "gpt-4o-mini"}
+    third = service.apply_study_run(study_id, payload)
+    assert third["created"] is True
+    assert third["runId"] != first["runId"]
+    assert len(third["runs"]) == 2
+
+    activated = service.activate_study_run(study_id, first["runId"])
+    assert activated["activeRunId"] == first["runId"]
+    assert activated["settings"]["extractionDeployment"] == "gpt-4o"
+
+    listing = service.get_study_runs(study_id)
+    assert listing["activeRunId"] == first["runId"]
+    assert len(listing["runs"]) == 2
+
+
+def test_run_step_extract_rules_emits_progress_logs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pdcheck_factory import pipeline_v2
+
+    def fake_rules(
+        sid: str,
+        output_dir: Path,
+        *,
+        additional_instructions: str = "",
+        progress_callback=None,
+        log_callback=None,
+    ) -> dict:
+        if log_callback:
+            log_callback("Preparing protocol text (3 paragraphs)…")
+            log_callback("Calling LLM for rule extraction…")
+            log_callback("Parsed 2 raw rule blocks")
+        if progress_callback:
+            progress_callback(
+                phase="extract-rules",
+                current=1,
+                total=3,
+                unit="phases",
+                label="prepare",
+            )
+        out_path = paths.local_rules_parsed_json(sid, output_dir)
+        _touch(out_path, '{"rules": [{"rule_id": "rule-001"}]}')
+        return {"rules": [{"rule_id": "rule-001"}]}
+
+    monkeypatch.setattr(pipeline_v2, "step3_extract_rules", fake_rules)
+
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "RULE-LOGS"
+    proto = extraction_resolve.resolve_protocol_rendered_source_md(study_id, tmp_path)
+    acrf = extraction_resolve.resolve_acrf_rendered_source_md(study_id, tmp_path)
+    _touch(proto)
+    _touch(acrf)
+    pindex = paths.local_protocol_paragraph_index_json(study_id, tmp_path)
+    _touch(pindex, '{"paragraphs": [{"paragraph_id": "p1"}]}')
+
+    service.run_step(study_id, "extract-rules")
+    run_state = service.get_step1_run_state(study_id)
+    log_texts = [line["text"] for line in run_state["logs"]]
+    assert any("Preparing protocol text" in text for text in log_texts)
+    assert any("llm:extract-rules:1/3:prepare" in text for text in log_texts)

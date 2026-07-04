@@ -1,18 +1,28 @@
-"""Export final deviations to the company PD Specifications workbook layout."""
+"""Export deviations to the NAL00-107 PD Specifications workbook layout."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Mapping, Sequence
 
 from openpyxl import Workbook
 from openpyxl.worksheet.datavalidation import DataValidation
 from openpyxl.worksheet.worksheet import Worksheet
 
+from pdcheck_factory.pd_taxonomy import (
+    all_sub_category_options,
+    category_options,
+    export_headers,
+    load_template_meta,
+    programming_status_options,
+)
+
 PD_SPEC_SHEET_TITLE = "PD Specifications"
+
+# Backward-compatible aliases
 DICTIONARIES_SHEET_TITLE = "Dictionaries"
 
-PD_SPEC_HEADERS: List[str] = [
+PD_SPEC_HEADERS: List[str] = export_headers() or [
     "Protocol Deviation Category",
     "Protocol Deviation Sub-Category",
     "Protocol Deviation Description\n250 Character Limit",
@@ -25,24 +35,12 @@ PD_SPEC_HEADERS: List[str] = [
     "Programming Information",
     "Programmer Comments",
     "Reviewer Comments",
-    "AA comment",
+    "Programmer Check Number",
 ]
 
-# Top-level categories observed in schemas/examples/NAL00-106 PD Specifications.xlsx
-PD_CATEGORY_OPTIONS: List[str] = [
-    "AE/SAE Reporting",
-    "Concomitant/ Rescue Medication",
-    "Eligibility Criteria",
-    "Informed Consent/Assent",
-    "Investigational Product/Device",
-    "IRB/EC Regulatory",
-    "Other, specify",
-    "Randomization Related",
-    "Study Procedure Related",
-    "Study Visit Related",
-]
+PD_CATEGORY_OPTIONS: List[str] = category_options()
 
-PROGRAMMING_STATUS_OPTIONS: List[str] = [
+PROGRAMMING_STATUS_OPTIONS: List[str] = programming_status_options() or [
     "Specd for CTL Review",
     "Not Applicable",
     "Question - Pending",
@@ -55,12 +53,12 @@ PROGRAMMING_STATUS_OPTIONS: List[str] = [
 
 MANUAL_OR_PROGRAMMABLE_OPTIONS: List[str] = ["Manual", "Programmable"]
 
-# Column letters for validations (1-based index in PD_SPEC_HEADERS)
 _COL_CATEGORY = 1
+_COL_SUB_CATEGORY = 2
 _COL_MANUAL_PROGRAMMABLE = 6
 _COL_PROGRAMMING_STATUS = 8
 
-_PD_SPEC_COLUMN_WIDTHS = {
+_DEFAULT_COLUMN_WIDTHS = {
     1: 28,
     2: 28,
     3: 48,
@@ -77,69 +75,56 @@ _PD_SPEC_COLUMN_WIDTHS = {
 }
 
 
-def _additional_information(item: Dict[str, Any]) -> str:
-    """Build concise context for the Additional Information / Comments column."""
-    parts: List[str] = []
-    rule_id = str(item.get("rule_id", "")).strip()
-    deviation_id = str(item.get("deviation_id", "")).strip()
-    rule_title = str(item.get("rule_title", "")).strip()
-    paragraph_refs = ", ".join(str(ref) for ref in item.get("paragraph_refs", []))
-    if rule_id:
-        parts.append(f"rule_id: {rule_id}")
-    if deviation_id:
-        parts.append(f"deviation_id: {deviation_id}")
-    if rule_title:
-        parts.append(f"rule_title: {rule_title}")
-    if paragraph_refs:
-        parts.append(f"paragraph_refs: {paragraph_refs}")
-    return "\n".join(parts)
+def _column_widths() -> Dict[int, float]:
+    meta = load_template_meta()
+    raw = meta.get("column_widths")
+    if isinstance(raw, dict) and raw:
+        return {int(k): float(v) for k, v in raw.items()}
+    return dict(_DEFAULT_COLUMN_WIDTHS)
 
 
-def map_final_item_to_pd_spec_row(item: Dict[str, Any]) -> List[str]:
-    """Map one final_deviations_v2 item to a PD Specifications data row."""
+def _field(item: Mapping[str, Any], *keys: str, default: str = "") -> str:
+    for key in keys:
+        value = item.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return default
+
+
+def _manual_or_programmable_value(item: Mapping[str, Any]) -> str:
+    explicit = _field(item, "manual_or_programmable")
+    if explicit in MANUAL_OR_PROGRAMMABLE_OPTIONS:
+        return explicit
+    programmable = item.get("programmable")
+    if programmable is True:
+        return "Programmable"
+    if programmable is False:
+        return "Manual"
+    return ""
+
+
+def map_deviation_to_pd_spec_row(item: Mapping[str, Any]) -> List[str]:
+    """Map one deviation item to a PD Specifications data row."""
     return [
-        str(item.get("protocol_deviation_category", "") or "").strip(),
-        str(item.get("protocol_deviation_sub_category", "") or "").strip(),
-        str(item.get("deviation_text", "") or "").strip(),
-        str(item.get("occurrence_date", "") or "").strip(),
-        str(item.get("classification", "") or "").strip(),
-        str(item.get("manual_or_programmable", "") or "").strip(),
-        _additional_information(item),
-        str(item.get("programming_status", "") or "").strip(),
-        str(item.get("data_source", "") or "").strip(),
-        str(item.get("pseudo_logic", "") or "").strip(),
-        str(item.get("programmer_comments", "") or "").strip(),
-        str(item.get("reviewer_comments", "") or "").strip(),
-        str(item.get("aa_comment", "") or "").strip(),
+        _field(item, "protocol_deviation_category"),
+        _field(item, "protocol_deviation_sub_category"),
+        _field(item, "deviation_text", "text"),
+        "",
+        _field(item, "classification"),
+        _manual_or_programmable_value(item),
+        "",
+        _field(item, "programming_status"),
+        _field(item, "data_source"),
+        _field(item, "pseudo_logic"),
+        "",
+        "",
+        "",
     ]
 
 
-def _write_dictionaries_sheet(ws: Worksheet) -> None:
-    for col_idx, category in enumerate(PD_CATEGORY_OPTIONS, start=1):
-        ws.cell(row=1, column=col_idx, value=category)
-    for row_idx, status in enumerate(PROGRAMMING_STATUS_OPTIONS, start=1):
-        ws.cell(row=row_idx, column=len(PD_CATEGORY_OPTIONS) + 2, value=status)
-    for row_idx, option in enumerate(MANUAL_OR_PROGRAMMABLE_OPTIONS, start=1):
-        ws.cell(row=row_idx, column=len(PD_CATEGORY_OPTIONS) + 4, value=option)
-
-
-def _category_list_range() -> str:
-    end_col = chr(ord("A") + len(PD_CATEGORY_OPTIONS) - 1)
-    return f"{DICTIONARIES_SHEET_TITLE}!$A$1:${end_col}$1"
-
-
-def _status_list_range() -> str:
-    status_col = len(PD_CATEGORY_OPTIONS) + 2
-    col_letter = ws_column_letter(status_col)
-    end_row = len(PROGRAMMING_STATUS_OPTIONS)
-    return f"{DICTIONARIES_SHEET_TITLE}!${col_letter}$1:${col_letter}${end_row}"
-
-
-def _manual_programmable_list_range() -> str:
-    mp_col = len(PD_CATEGORY_OPTIONS) + 4
-    col_letter = ws_column_letter(mp_col)
-    end_row = len(MANUAL_OR_PROGRAMMABLE_OPTIONS)
-    return f"{DICTIONARIES_SHEET_TITLE}!${col_letter}$1:${col_letter}${end_row}"
+def map_final_item_to_pd_spec_row(item: Dict[str, Any]) -> List[str]:
+    """Backward-compatible alias for final_deviations_v2 items."""
+    return map_deviation_to_pd_spec_row(item)
 
 
 def ws_column_letter(col_idx: int) -> str:
@@ -151,18 +136,25 @@ def ws_column_letter(col_idx: int) -> str:
     return result
 
 
-def _add_list_validation(
+def _inline_list_formula(values: Sequence[str]) -> str:
+    escaped = [str(v).replace('"', '""') for v in values if str(v).strip()]
+    return '"' + ",".join(escaped) + '"'
+
+
+def _add_inline_list_validation(
     ws: Worksheet,
     *,
     column_index: int,
-    formula_range: str,
+    values: Sequence[str],
     first_data_row: int = 2,
     last_data_row: int = 1048576,
 ) -> None:
+    if not values:
+        return
     col_letter = ws_column_letter(column_index)
     validation = DataValidation(
         type="list",
-        formula1=f"={formula_range}",
+        formula1=f"={_inline_list_formula(values)}",
         allow_blank=True,
     )
     ws.add_data_validation(validation)
@@ -170,38 +162,47 @@ def _add_list_validation(
 
 
 def _format_pd_spec_sheet(ws: Worksheet, *, data_row_count: int) -> None:
-    ws.freeze_panes = "A2"
+    meta = load_template_meta()
+    freeze = str(meta.get("freeze_panes") or "A2")
+    ws.freeze_panes = freeze
     if data_row_count > 0:
         ws.auto_filter.ref = f"A1:{ws_column_letter(len(PD_SPEC_HEADERS))}{data_row_count + 1}"
-    for col_idx, width in _PD_SPEC_COLUMN_WIDTHS.items():
+    for col_idx, width in _column_widths().items():
         ws.column_dimensions[ws_column_letter(col_idx)].width = width
+
+
+def _apply_validations(ws: Worksheet) -> None:
+    _add_inline_list_validation(ws, column_index=_COL_CATEGORY, values=PD_CATEGORY_OPTIONS)
+    _add_inline_list_validation(ws, column_index=_COL_SUB_CATEGORY, values=all_sub_category_options())
+    _add_inline_list_validation(
+        ws,
+        column_index=_COL_MANUAL_PROGRAMMABLE,
+        values=MANUAL_OR_PROGRAMMABLE_OPTIONS,
+    )
+    _add_inline_list_validation(
+        ws,
+        column_index=_COL_PROGRAMMING_STATUS,
+        values=PROGRAMMING_STATUS_OPTIONS,
+    )
+
+
+def write_pd_spec_xlsx(rows: Sequence[Mapping[str, Any]], out_path: Path) -> None:
+    """Write deviation rows to a single-sheet PD Specifications workbook."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = PD_SPEC_SHEET_TITLE
+    ws.append(PD_SPEC_HEADERS)
+    for item in rows:
+        ws.append(map_deviation_to_pd_spec_row(item))
+
+    _format_pd_spec_sheet(ws, data_row_count=len(rows))
+    _apply_validations(ws)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    wb.save(out_path)
 
 
 def write_final_pd_spec_xlsx(final_obj: Dict[str, Any], out_path: Path) -> None:
     """Write final deviations JSON to a PD Specifications workbook."""
-    wb = Workbook()
-    dict_ws = wb.active
-    dict_ws.title = DICTIONARIES_SHEET_TITLE
-    _write_dictionaries_sheet(dict_ws)
-
-    ws = wb.create_sheet(PD_SPEC_SHEET_TITLE, 0)
-    ws.append(PD_SPEC_HEADERS)
     items: Sequence[Dict[str, Any]] = final_obj.get("items", [])
-    for item in items:
-        ws.append(map_final_item_to_pd_spec_row(item))
-
-    _format_pd_spec_sheet(ws, data_row_count=len(items))
-    _add_list_validation(ws, column_index=_COL_CATEGORY, formula_range=_category_list_range())
-    _add_list_validation(
-        ws,
-        column_index=_COL_MANUAL_PROGRAMMABLE,
-        formula_range=_manual_programmable_list_range(),
-    )
-    _add_list_validation(
-        ws,
-        column_index=_COL_PROGRAMMING_STATUS,
-        formula_range=_status_list_range(),
-    )
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    wb.save(out_path)
+    write_pd_spec_xlsx(items, out_path)

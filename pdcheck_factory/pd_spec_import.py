@@ -10,7 +10,13 @@ from typing import Any, Dict, List, Mapping, Tuple
 from openpyxl import load_workbook
 
 from pdcheck_factory.deviation_contract import split_pd_spec_row
-from pdcheck_factory.pd_spec_export import PD_SPEC_HEADERS, PD_SPEC_SHEET_TITLE
+from pdcheck_factory.pd_spec_export import PD_SPEC_SHEET_TITLE
+
+
+def _normalize_header(value: str) -> str:
+    text = str(value or "").strip().lower()
+    text = text.replace("\n", " ")
+    return re.sub(r"\s+", " ", text)
 
 _PD_FIELDS = [
     "protocol_deviation_category",
@@ -25,17 +31,33 @@ _PD_FIELDS = [
     "pseudo_logic_seed",
     "programmer_comments",
     "reviewer_comments",
-    "aa_comment",
+    "programmer_check_number",
 ]
 
+_LEGACY_AA_FIELD = "aa_comment"
 
-def _normalize_header(value: str) -> str:
-    text = str(value or "").strip().lower()
-    text = text.replace("\n", " ")
-    return re.sub(r"\s+", " ", text)
-
-
-_PD_HEADER_TO_FIELD = {_normalize_header(h): _PD_FIELDS[i] for i, h in enumerate(PD_SPEC_HEADERS)}
+_HEADER_ALIASES = {
+    _normalize_header(h): field
+    for h, field in zip(
+        [
+            "Protocol Deviation Category",
+            "Protocol Deviation Sub-Category",
+            "Protocol Deviation Description\n250 Character Limit",
+            "Protocol Deviation Occurrence Date",
+            "Protocol Deviation Classification",
+            "Manual or Programmable Deviation",
+            "Additional Information / Comments",
+            "Programming Status",
+            "Data Source (e.g., RAVE, Clario, LabConnect)\n30 Character Limit",
+            "Programming Information",
+            "Programmer Comments",
+            "Reviewer Comments",
+            "Programmer Check Number",
+        ],
+        _PD_FIELDS,
+    )
+}
+_HEADER_ALIASES[_normalize_header("AA comment")] = _LEGACY_AA_FIELD
 
 
 def stable_deviation_id(category: str, sub_category: str, description: str) -> str:
@@ -98,14 +120,20 @@ def _row_values_from_pd_spec(
     row: Tuple[Any, ...],
     header_map: Mapping[str, int],
 ) -> Dict[str, str]:
-    values: Dict[str, str] = {}
-    for pd_header, field in zip(PD_SPEC_HEADERS, _PD_FIELDS):
-        idx = header_map.get(_normalize_header(pd_header))
-        if idx is not None and idx < len(row):
-            cell_val = row[idx]
-            values[field] = str(cell_val).strip() if cell_val is not None else ""
-        else:
-            values[field] = ""
+    values: Dict[str, str] = {field: "" for field in _PD_FIELDS}
+    values[_LEGACY_AA_FIELD] = ""
+    for header_key, col_index in header_map.items():
+        field = _HEADER_ALIASES.get(header_key)
+        if not field or col_index >= len(row):
+            continue
+        cell_val = row[col_index]
+        values[field] = str(cell_val).strip() if cell_val is not None else ""
+    if values.get("text"):
+        return values
+    description_idx = header_map.get(_normalize_header("Protocol Deviation Description 250 Character Limit"))
+    if description_idx is not None and description_idx < len(row):
+        cell_val = row[description_idx]
+        values["text"] = str(cell_val).strip() if cell_val is not None else ""
     return values
 
 
@@ -146,7 +174,8 @@ def map_pd_spec_row_to_deviation(
         "programming_status": str(row_values.get("programming_status", "") or "").strip(),
         "programmer_comments": str(row_values.get("programmer_comments", "") or "").strip(),
         "reviewer_comments": str(row_values.get("reviewer_comments", "") or "").strip(),
-        "aa_comment": str(row_values.get("aa_comment", "") or "").strip(),
+        "aa_comment": str(row_values.get(_LEGACY_AA_FIELD, "") or "").strip(),
+        "programmer_check_number": str(row_values.get("programmer_check_number", "") or "").strip(),
         "occurrence_date": str(row_values.get("occurrence_date", "") or "").strip(),
         "additional_information": str(row_values.get("additional_information", "") or "").strip(),
         "pseudo_logic_seed": str(row_values.get("pseudo_logic_seed", "") or "").strip(),

@@ -9,6 +9,24 @@ from urllib.parse import urlparse
 from pdcheck_factory import blob_io
 
 _CHAT_MODEL_PREFIXES = ("gpt-", "o1", "o3", "o4", "chatgpt-")
+_NO_TEMPERATURE_PREFIXES = ("o1", "o3", "o4")
+
+
+def supports_temperature(model_name: str) -> bool:
+    """Return False for reasoning models (o1/o3/o4) that reject temperature."""
+    normalized = (model_name or "").strip().lower()
+    if not normalized:
+        return True
+    return not normalized.startswith(_NO_TEMPERATURE_PREFIXES)
+
+
+def _deployment_entry(*, deployment_id: str, model_name: str, version: str = "") -> Dict[str, Any]:
+    return {
+        "id": deployment_id,
+        "modelName": model_name,
+        "version": version,
+        "supportsTemperature": supports_temperature(model_name),
+    }
 
 
 def _parse_account_name(endpoint: str) -> str:
@@ -29,7 +47,7 @@ def _is_chat_deployment(model_name: str) -> bool:
 
 def _fallback_deployments(default_deployment: str) -> Dict[str, Any]:
     return {
-        "deployments": [{"id": default_deployment, "modelName": default_deployment, "version": ""}],
+        "deployments": [_deployment_entry(deployment_id=default_deployment, model_name=default_deployment)],
         "defaultDeployment": default_deployment,
         "source": "fallback",
     }
@@ -72,11 +90,11 @@ def list_openai_deployments() -> Dict[str, Any]:
             if not _is_chat_deployment(model_name):
                 continue
             deployments.append(
-                {
-                    "id": item.name,
-                    "modelName": model_name,
-                    "version": getattr(model, "version", "") or "",
-                }
+                _deployment_entry(
+                    deployment_id=item.name,
+                    model_name=model_name,
+                    version=getattr(model, "version", "") or "",
+                )
             )
         deployments.sort(key=lambda entry: entry["id"].lower())
         if not deployments:

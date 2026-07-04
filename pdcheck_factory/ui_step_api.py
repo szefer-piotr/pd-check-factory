@@ -142,19 +142,16 @@ class StepApiHandler(BaseHTTPRequestHandler):
         try:
             parsed = urlparse(self.path)
             path = parsed.path
-            if path.startswith("/api/step1/preview"):
-                qs = parse_qs(parsed.query)
-                study_id = (qs.get("studyId") or [""])[0]
-                full = (qs.get("full") or ["false"])[0].lower() in {"1", "true", "yes"}
-                data = self.service.get_step1_preview(study_id, full=full)
-                _json_response(self, HTTPStatus.OK, _response_payload(request_id=request_id, data=data))
-                return
             if path == "/api/v1/studies":
                 data = self.service.list_studies()
                 _json_response(self, HTTPStatus.OK, _response_payload(request_id=request_id, data=data))
                 return
             if path == "/api/v1/config/openai-deployments":
                 data = self.service.list_openai_deployments()
+                _json_response(self, HTTPStatus.OK, _response_payload(request_id=request_id, data=data))
+                return
+            if path == "/api/v1/pd-taxonomy":
+                data = self.service.get_pd_taxonomy()
                 _json_response(self, HTTPStatus.OK, _response_payload(request_id=request_id, data=data))
                 return
 
@@ -211,6 +208,10 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 data = self.service.get_extraction_live(study_id)
             elif tail == "import-versions":
                 data = self.service.get_import_versions(study_id)
+            elif tail == "summary":
+                data = self.service.get_study_summary(study_id)
+            elif tail == "runs":
+                data = self.service.get_study_runs(study_id)
             elif tail == "step7/review-sources":
                 data = self.service.get_step7_review_sources(study_id)
             elif tail == "step7/deviations":
@@ -276,13 +277,14 @@ class StepApiHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         request_id = str(uuid.uuid4())
         try:
-            if self.path == "/api/step1/upload":
-                data = self._legacy_upload()
-                _json_response(self, HTTPStatus.OK, _response_payload(request_id=request_id, data=data))
-                return
-            if self.path == "/api/step1/extract":
-                data = self._legacy_extract()
-                _json_response(self, HTTPStatus.OK, _response_payload(request_id=request_id, data=data))
+            if self.path == "/api/v1/studies":
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0:
+                    raise UiApiError("BAD_JSON", "Missing JSON body", 400)
+                payload = parse_json_body(self.rfile.read(length))
+                study_id = str(payload.get("studyId", "")).strip()
+                data = self.service.create_study(study_id)
+                _json_response(self, HTTPStatus.CREATED, _response_payload(request_id=request_id, data=data))
                 return
 
             v1 = self._match_v1(self.path)
@@ -302,8 +304,6 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 data = self.service.preprocess_protocol(study_id)
             elif tail == "preprocess/acrf":
                 data = self.service.preprocess_acrf(study_id)
-            elif tail == "entry-mode":
-                data = self._parse_entry_mode(study_id)
             elif tail == "active-deviations-source":
                 data = self._parse_active_deviations_source(study_id)
             elif tail.startswith("step7/deviations/") and tail.endswith("/refine"):
@@ -334,6 +334,12 @@ class StepApiHandler(BaseHTTPRequestHandler):
                     deviation_id,
                     review_source=self._review_source_from_json_body(),
                 )
+            elif tail == "runs/apply":
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0:
+                    raise UiApiError("BAD_JSON", "Missing JSON body", 400)
+                payload = parse_json_body(self.rfile.read(length))
+                data = self.service.apply_study_run(study_id, payload)
             elif tail.startswith("steps/") and tail.endswith("/run"):
                 step_id = tail[len("steps/") : -len("/run")]
                 length = int(self.headers.get("Content-Length", "0"))
@@ -382,12 +388,21 @@ class StepApiHandler(BaseHTTPRequestHandler):
             if v1 is None:
                 raise UiApiError("NOT_FOUND", "Not found", 404)
             study_id, tail = v1
-            if tail.startswith("step7/deviations/"):
+            if tail == "manifest":
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0:
+                    raise UiApiError("BAD_JSON", "Missing JSON body", 400)
+                payload = parse_json_body(self.rfile.read(length))
+                data = self.service.patch_study_manifest(study_id, payload)
+            elif tail.startswith("step7/deviations/"):
                 deviation_id = tail[len("step7/deviations/") :]
                 data = self._parse_step7_status_patch(study_id, deviation_id)
             elif tail.startswith("step7/rules/"):
                 rule_id = tail[len("step7/rules/") :]
                 data = self._parse_step7_rule_patch(study_id, rule_id)
+            elif tail.startswith("runs/") and tail.endswith("/activate"):
+                run_id = tail[len("runs/") : -len("/activate")]
+                data = self.service.activate_study_run(study_id, run_id)
             else:
                 raise UiApiError("NOT_FOUND", "Not found", 404)
             _json_response(self, HTTPStatus.OK, _response_payload(request_id=request_id, data=data))
@@ -448,46 +463,6 @@ class StepApiHandler(BaseHTTPRequestHandler):
                     error={"code": "INTERNAL_ERROR", "message": str(exc)},
                 ),
             )
-
-    def _legacy_upload(self) -> Dict[str, Any]:
-        form = cgi.FieldStorage(
-            fp=self.rfile,
-            headers=self.headers,
-            environ={
-                "REQUEST_METHOD": "POST",
-                "CONTENT_TYPE": self.headers.get("Content-Type", ""),
-            },
-        )
-        study_id = str(form.getvalue("studyId") or "")
-        protocol_item = form["protocolFile"] if "protocolFile" in form else None
-        acrf_item = form["acrfFile"] if "acrfFile" in form else None
-        if protocol_item is None and acrf_item is None:
-            raise UiApiError(
-                "VALIDATION_ERROR",
-                "At least one of protocolFile or acrfFile is required",
-                400,
-            )
-
-        protocol_bytes = protocol_item.file.read() if protocol_item is not None else None
-        acrf_bytes = acrf_item.file.read() if acrf_item is not None else None
-        protocol_name = getattr(protocol_item, "filename", None) if protocol_item is not None else None
-        acrf_name = getattr(acrf_item, "filename", None) if acrf_item is not None else None
-        return self.service.upload_step1_files(
-            study_id,
-            protocol_bytes,
-            acrf_bytes,
-            protocol_file_name=protocol_name,
-            acrf_file_name=acrf_name,
-        )
-
-    def _legacy_extract(self) -> Dict[str, Any]:
-        length = int(self.headers.get("Content-Length", "0"))
-        if length <= 0:
-            raise UiApiError("BAD_JSON", "Missing JSON body", 400)
-        payload = parse_json_body(self.rfile.read(length))
-        study_id = str(payload.get("studyId") or "")
-        extractor = str(payload.get("extractor", "")).strip() or None
-        return self.service.run_step1_extract(study_id, extractor=extractor)
 
     def _parse_step1_upload(self, study_id: str) -> Dict[str, Any]:
         content_type = self.headers.get("Content-Type", "")
@@ -569,6 +544,7 @@ class StepApiHandler(BaseHTTPRequestHandler):
             raise UiApiError("BAD_JSON", "Missing JSON body", 400)
         payload = parse_json_body(self.rfile.read(length))
         review_source = str(payload.get("reviewSource") or payload.get("review_source") or "").strip() or None
+        llm_deployment = str(payload.get("llmDeployment", "") or "") or None
         return self.service.refine_step7_deviation(
             study_id=study_id,
             deviation_id=deviation_id,
@@ -576,6 +552,7 @@ class StepApiHandler(BaseHTTPRequestHandler):
             run_revision_cycle=bool(payload.get("runRevisionCycle", True)),
             also_generate_pseudo=bool(payload.get("alsoPseudo", False)),
             review_source=review_source,
+            llm_deployment=llm_deployment,
         )
 
     def _parse_step7_deviation_create(self, study_id: str) -> Dict[str, Any]:

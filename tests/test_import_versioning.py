@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 
 from pdcheck_factory import import_grounding, paths, pipeline_v2
-from pdcheck_factory.ui_api.service import ENTRY_MODE_IMPORTED_PD_SPEC, UiApiError, UiStepService
+from pdcheck_factory.ui_api.service import ENTRY_MODE_IMPORTED_PD_SPEC, UiStepService
 
 
 class TestImportVersioning(unittest.TestCase):
@@ -55,10 +55,18 @@ class TestImportVersioning(unittest.TestCase):
             index_path = paths.local_protocol_paragraph_index_json(study_id, output_dir)
             index_path.parent.mkdir(parents=True, exist_ok=True)
             index_path.write_text('{"paragraphs": []}', encoding="utf-8")
-            with self.assertRaises(UiApiError) as blocked:
-                svc.run_step(study_id, "extract-rules")
-            self.assertEqual(blocked.exception.code, "STEP_BLOCKED")
-            self.assertIn("extract-inputs", blocked.exception.message)
+
+            def fake_rules(sid: str, out_dir: Path, **_kwargs: object) -> dict:
+                rules_path = paths.local_rules_parsed_json(sid, out_dir)
+                rules_path.parent.mkdir(parents=True, exist_ok=True)
+                rules_path.write_text('{"rules": []}', encoding="utf-8")
+                return {"rules": []}
+
+            from unittest.mock import patch
+
+            with patch.object(pipeline_v2, "step3_extract_rules", fake_rules):
+                result = svc.run_step(study_id, "extract-rules")
+            self.assertIn("Extracted", result["summary"])
 
 
 if __name__ == "__main__":

@@ -58,8 +58,8 @@ class PromptTemplateTests(unittest.TestCase):
 
     def test_deviations_v2_prompt_emphasizes_explicit_constraints(self) -> None:
         system_template = load_prompt("deviations_v2_system")
-        self.assertIn("Write `DEVIATION_TEXT` so it is directly runnable against data", system_template)
-        self.assertIn("Do not use placeholders such as", system_template)
+        self.assertIn("short, check-oriented description", system_template)
+        self.assertIn("target about 250 characters", system_template)
 
         user_template = load_prompt("deviations_v2_user")
         rendered = user_template.format(

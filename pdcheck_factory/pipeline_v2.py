@@ -10,8 +10,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 LlmProgressCallback = Callable[..., None]
 
-from pdcheck_factory import document_chat_agent, extraction_resolve, import_grounding, llm, paths, study_artifact_sync, text_parse
+from pdcheck_factory import document_chat_agent, deviation_classify, deviation_consolidate, extraction_resolve, import_grounding, llm, paths, study_artifact_sync, text_parse
+from pdcheck_factory.model_output_log import build_model_output_log
 from pdcheck_factory.pd_spec_export import write_final_pd_spec_xlsx
+from pdcheck_factory.pd_spec_validate import validate_final_deviations
 from pdcheck_factory.deviation_contract import pd_spec_field
 from pdcheck_factory.pd_spec_import import parse_pd_spec_xlsx
 from pdcheck_factory.json_util import load_schema, read_json, validate, write_json
@@ -236,11 +238,37 @@ def step1_acrf_summary_text(
     return merged
 
 
-def step3_extract_rules(study_id: str, output_dir: Path, *, additional_instructions: str = "") -> Dict[str, Any]:
+def step3_extract_rules(
+    study_id: str,
+    output_dir: Path,
+    *,
+    additional_instructions: str = "",
+    progress_callback: Optional[LlmProgressCallback] = None,
+    log_callback: Optional[Callable[[str], None]] = None,
+) -> Dict[str, Any]:
+    def _log(text: str) -> None:
+        if log_callback is not None:
+            log_callback(text)
+
+    def _progress(*, current: int, label: str = "") -> None:
+        if progress_callback is not None:
+            progress_callback(
+                phase="extract-rules",
+                current=current,
+                total=3,
+                unit="phases",
+                label=label,
+            )
+
     index_obj = read_json(paths.local_protocol_paragraph_index_json(study_id, output_dir))
+    paragraph_count = len(index_obj.get("paragraphs", []))
     numbered = _numbered_protocol_text(index_obj)
     valid_ids = {p["paragraph_id"] for p in index_obj.get("paragraphs", [])}
     extra = additional_instructions.strip() or "(none)"
+    _log(f"Preparing protocol text ({paragraph_count} paragraphs)…")
+    _progress(current=1, label="prepare")
+    _log("Calling LLM for rule extraction…")
+    _progress(current=2, label="llm")
     reply = llm.chat_text_repairs(
         system=load_prompt("rules_v2_system"),
         user=load_prompt("rules_v2_user").format(
@@ -254,6 +282,7 @@ def step3_extract_rules(study_id: str, output_dir: Path, *, additional_instructi
         label="v2-rules",
     )
     raw_rules = text_parse.parse_rules_v2_blocks(reply)
+    _log(f"Parsed {len(raw_rules)} raw rule blocks")
     rules: List[Dict[str, Any]] = []
     for i, r in enumerate(raw_rules, start=1):
         refs = _filter_refs(r.get("paragraph_refs", []), valid_ids)
@@ -268,6 +297,8 @@ def step3_extract_rules(study_id: str, output_dir: Path, *, additional_instructi
                 "coverage_note": r.get("coverage_note", ""),
             }
         )
+    _log(f"Kept {len(rules)} rules with valid paragraph refs")
+    _progress(current=3, label="parse")
     parsed = {
         "schema_version": "1.0.0",
         "study_id": study_id,
@@ -283,6 +314,7 @@ def step3_extract_rules(study_id: str, output_dir: Path, *, additional_instructi
     write_json(paths.local_rules_parsed_json(study_id, output_dir), parsed)
     study_artifact_sync.mirror_upload_path(study_id, output_dir, raw_out)
     study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_rules_parsed_json(study_id, output_dir))
+    _log("Wrote rules_parsed.json")
     return parsed
 
 
@@ -425,6 +457,67 @@ def step4_5_extract_deviations(
     write_json(paths.local_deviations_parsed_json(study_id, output_dir), parsed)
     study_artifact_sync.mirror_upload_path(study_id, output_dir, raw_out)
     study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_deviations_parsed_json(study_id, output_dir))
+    return _classify_and_consolidate_deviations(study_id, output_dir, parsed)
+
+
+def _classify_and_consolidate_deviations(
+    study_id: str,
+    output_dir: Path,
+    parsed: Dict[str, Any],
+) -> Dict[str, Any]:
+    rules_path = paths.local_rules_parsed_json(study_id, output_dir)
+    rules_by_id: Dict[str, Dict[str, Any]] = {}
+    if rules_path.is_file():
+        rules_obj = read_json(rules_path)
+        rules_by_id = {r["rule_id"]: r for r in rules_obj.get("rules", [])}
+
+    deviations = list(parsed.get("deviations", []))
+    deviations, class_audit = deviation_classify.classify_deviations(
+        study_id=study_id,
+        deviations=deviations,
+        rules_by_id=rules_by_id,
+    )
+    write_json(
+        paths.local_deviation_classification_audit_json(study_id, output_dir),
+        {
+            "schema_version": "1.0.0",
+            "study_id": study_id,
+            "generated_at": _iso_now(),
+            "items": class_audit,
+        },
+    )
+    deviations, consolidate_audit = deviation_consolidate.consolidate_deviations(
+        study_id=study_id,
+        deviations=deviations,
+    )
+    write_json(
+        paths.local_deviation_consolidation_audit_json(study_id, output_dir),
+        {
+            "schema_version": "1.0.0",
+            "study_id": study_id,
+            "generated_at": _iso_now(),
+            "items": consolidate_audit,
+        },
+    )
+    parsed = {
+        "schema_version": "1.0.0",
+        "study_id": study_id,
+        "generated_at": _iso_now(),
+        "deviations": deviations,
+    }
+    errs = validate(parsed, load_schema("deviations_parsed_v2.schema.json"))
+    if errs:
+        raise ValueError("; ".join(errs))
+    write_json(paths.local_deviations_parsed_json(study_id, output_dir), parsed)
+    study_artifact_sync.mirror_upload_path(
+        study_id, output_dir, paths.local_deviations_parsed_json(study_id, output_dir)
+    )
+    study_artifact_sync.mirror_upload_path(
+        study_id, output_dir, paths.local_deviation_classification_audit_json(study_id, output_dir)
+    )
+    study_artifact_sync.mirror_upload_path(
+        study_id, output_dir, paths.local_deviation_consolidation_audit_json(study_id, output_dir)
+    )
     return parsed
 
 
@@ -605,7 +698,11 @@ def step10_finalize(study_id: str, output_dir: Path) -> Dict[str, Any]:
                 "protocol_deviation_category": pd_spec_field(dev, "protocol_deviation_category"),
                 "protocol_deviation_sub_category": pd_spec_field(dev, "protocol_deviation_sub_category"),
                 "classification": pd_spec_field(dev, "classification"),
-                "data_source": pd_spec_field(dev, "data_source"),
+                "manual_or_programmable": pd_spec_field(dev, "manual_or_programmable")
+                or ("Programmable" if p.get("programmable") is True else "Manual" if p.get("programmable") is False else ""),
+                "data_source": pd_spec_field(dev, "data_source") or "Rave",
+                "programming_status": pd_spec_field(dev, "programming_status"),
+                "programmable": p.get("programmable"),
             }
         )
     out = {
@@ -617,10 +714,41 @@ def step10_finalize(study_id: str, output_dir: Path) -> Dict[str, Any]:
     errs = validate(out, load_schema("final_deviations_v2.schema.json"))
     if errs:
         raise ValueError("; ".join(errs))
+
+    paragraph_index: Dict[str, Any] = {}
+    index_path = paths.local_protocol_paragraph_index_json(study_id, output_dir)
+    if index_path.is_file():
+        paragraph_index = read_json(index_path)
+    validation = validate_final_deviations(out, paragraph_index=paragraph_index)
+    if not validation.ok:
+        raise ValueError(
+            "; ".join(issue.message for issue in validation.errors)
+        )
+
+    class_audit: List[Dict[str, Any]] = []
+    class_path = paths.local_deviation_classification_audit_json(study_id, output_dir)
+    if class_path.is_file():
+        class_audit = read_json(class_path).get("items", [])
+    consolidate_audit: List[Dict[str, Any]] = []
+    consolidate_path = paths.local_deviation_consolidation_audit_json(study_id, output_dir)
+    if consolidate_path.is_file():
+        consolidate_audit = read_json(consolidate_path).get("items", [])
+
+    model_log = build_model_output_log(
+        study_id=study_id,
+        deviations=[dev for dev in deviations_obj.get("deviations", []) if dev.get("status") == "accepted"],
+        rules_by_id=rule_by_id,
+        pseudo_by_dev=pseudo_by_dev,
+        classification_audit=class_audit,
+        consolidation_audit=consolidate_audit,
+    )
+    write_json(paths.local_model_output_log_json(study_id, output_dir), model_log)
+
     write_json(paths.local_final_deviations_json(study_id, output_dir), out)
     write_final_pd_spec_xlsx(out, paths.local_final_deviations_xlsx(study_id, output_dir))
     study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_final_deviations_json(study_id, output_dir))
     study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_final_deviations_xlsx(study_id, output_dir))
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_model_output_log_json(study_id, output_dir))
     return out
 
 

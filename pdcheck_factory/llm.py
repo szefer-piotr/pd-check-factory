@@ -23,6 +23,48 @@ STEP1_SECTION_PROMPT_MAX_CHARS = 160000
 ACRF_SECTION_PROMPT_MAX_CHARS = 120000
 
 _deployment_override: ContextVar[str | None] = ContextVar("llm_deployment_override", default=None)
+_pipeline_log_callback: ContextVar[Callable[[str], None] | None] = ContextVar(
+    "llm_pipeline_log_callback", default=None
+)
+_deployment_model_lookup: Dict[str, str] | None = None
+
+
+def _refresh_deployment_model_lookup() -> Dict[str, str]:
+    global _deployment_model_lookup
+    from pdcheck_factory import azure_openai_config
+
+    lookup: Dict[str, str] = {}
+    try:
+        payload = azure_openai_config.list_openai_deployments()
+        for entry in payload.get("deployments", []):
+            deployment_id = str(entry.get("id", "")).strip()
+            model_name = str(entry.get("modelName", "")).strip()
+            if deployment_id:
+                lookup[deployment_id] = model_name or deployment_id
+    except Exception:  # noqa: BLE001
+        pass
+    _deployment_model_lookup = lookup
+    return lookup
+
+
+def _model_name_for_deployment(deployment_id: str) -> str:
+    lookup = _deployment_model_lookup
+    if lookup is None:
+        lookup = _refresh_deployment_model_lookup()
+    return lookup.get(deployment_id, deployment_id)
+
+
+def _supports_temperature(model_name: str) -> bool:
+    from pdcheck_factory import azure_openai_config
+
+    return azure_openai_config.supports_temperature(model_name)
+
+
+def _chat_completion_kwargs(deployment: str) -> Dict[str, float]:
+    model_name = _model_name_for_deployment(deployment)
+    if _supports_temperature(model_name):
+        return {"temperature": 0.0}
+    return {}
 
 
 class _StrictModel(BaseModel):
@@ -94,6 +136,16 @@ def use_deployment(name: str | None) -> Iterator[None]:
         _deployment_override.reset(token)
 
 
+@contextmanager
+def use_pipeline_log(callback: Callable[[str], None] | None) -> Iterator[None]:
+    """Mirror LLM usage lines to a pipeline log callback (UI run state)."""
+    token = _pipeline_log_callback.set(callback)
+    try:
+        yield
+    finally:
+        _pipeline_log_callback.reset(token)
+
+
 STEP1_TEXT_SCHEMA_VERSION = "3.0.0"
 
 
@@ -103,12 +155,16 @@ def _log_chat_usage(resp: Any, deployment: str, label: str) -> None:
     completion_tokens = getattr(usage, "completion_tokens", None) if usage else None
     total_tokens = getattr(usage, "total_tokens", None) if usage else None
     model_name = getattr(resp, "model", None)
-    print(
+    message = (
         "[llm-text] "
         f"label={label!r} deployment={deployment!r} model={model_name!r} "
         f"prompt_tokens={prompt_tokens} completion_tokens={completion_tokens} "
         f"total_tokens={total_tokens}"
     )
+    print(message)
+    callback = _pipeline_log_callback.get()
+    if callback is not None:
+        callback(message)
 
 
 def chat_text_repairs(
@@ -132,7 +188,7 @@ def chat_text_repairs(
         resp = client.chat.completions.create(
             model=deployment,
             messages=messages,
-            temperature=0.0,
+            **_chat_completion_kwargs(deployment),
         )
         _log_chat_usage(resp, deployment, label)
         last = (resp.choices[0].message.content or "").strip()
@@ -171,7 +227,7 @@ def chat_json(
             model=deployment,
             messages=messages,
             response_format=response_model,
-            temperature=0.0,
+            **_chat_completion_kwargs(deployment),
         )
         usage = getattr(resp, "usage", None)
         prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None

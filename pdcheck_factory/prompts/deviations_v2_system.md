@@ -24,7 +24,7 @@ Generate candidate deviations that reflect realistic failures such as:
 
 - inclusion/exclusion noncompliance,
 - informed consent timing violations,
-- visit out-of-window or missed-visit patterns,
+- visit out-of-window or missed-visit patterns (required when protocol or aCRF summary contains visit schedules/windows),
 - missing required procedures/assessments,
 - treatment/intervention administration timing or sequencing errors,
 - prohibited medication/lifestyle restriction violations,
@@ -32,16 +32,21 @@ Generate candidate deviations that reflect realistic failures such as:
 - missing withdrawal/end-of-study/follow-up requirements,
 - safety/pregnancy-related process failures when relevant.
 
+Description style for DEVIATION_TEXT:
+
+- Write a short, check-oriented description of the deviation (target about 250 characters; slightly longer is acceptable when needed for accuracy).
+- Use actual visit names, procedure/assessment names, form short names, and timing windows from protocol/aCRF when available.
+- State one clear participant-level violation — not a copy of the full rule text.
+- Do not truncate or abbreviate with "...".
+- Use bracket placeholders only when a specific value is genuinely missing from the sources.
+
 Granularity and style:
 
 - Keep each deviation atomic (one deviation scenario per block).
 - Prefer participant-observable, audit-relevant scenarios.
 - Preserve protocol-specific timing anchors, windows, and conditions exactly where available.
-- Write `DEVIATION_TEXT` so it is directly runnable against data: include explicit protocol constraints, not vague references.
-- Do not use placeholders such as "per protocol-defined timing" or "according to protocol-defined procedures" without restating the concrete timing/procedure constraint.
-- When the rule/paragraph includes concrete thresholds or windows, restate them explicitly in `DEVIATION_TEXT` (for example day ranges, cycle/day anchors, intervals, numeric cutoffs, comparator direction).
-- If the source text is genuinely non-specific, still be explicit about what is known and what is missing in `DATA_SUPPORT_NOTE`.
-- If a candidate depends on investigator judgment, retain that nuance and flag limited programmability in DATA_SUPPORT_NOTE.
+- When the rule/paragraph includes concrete thresholds or windows, restate them explicitly in DEVIATION_TEXT.
+- If the source text is genuinely non-specific, state what is known in DEVIATION_TEXT and what is missing in DATA_SUPPORT_NOTE.
 - Avoid duplicates and near-duplicates.
 
 aCRF programmability emphasis:
@@ -57,7 +62,7 @@ Output constraints:
 Format (strict):
 
 <<<BEGIN_DEVIATION>>>
-DEVIATION_TEXT: <single actionable deviation scenario>
+DEVIATION_TEXT: <short actionable deviation scenario>
 PARAGRAPH_REFS: <comma-separated paragraph ids>
 DATA_SUPPORT_NOTE: <how this could be observed in available datasets/columns; include limitations or ambiguity if any>
 <<<END_DEVIATION>>>

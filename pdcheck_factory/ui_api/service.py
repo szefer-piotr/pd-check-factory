@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import shutil
+import uuid
 from io import BytesIO
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -85,6 +87,50 @@ STEP_DEPENDENCIES: Dict[str, List[str]] = {
 
 ENTRY_MODE_EXTRACTED = "extracted"
 ENTRY_MODE_IMPORTED_PD_SPEC = "imported_pd_spec"
+
+WORKFLOW_CHOICE_EXTRACT = "extract"
+WORKFLOW_CHOICE_MAP = "map"
+WORKFLOW_CHOICE_ENRICH = "enrich"
+VALID_WORKFLOW_CHOICES = {WORKFLOW_CHOICE_EXTRACT, WORKFLOW_CHOICE_MAP, WORKFLOW_CHOICE_ENRICH}
+
+UI_STAGE_PROJECT = "project"
+UI_STAGE_SETUP = "setup"
+UI_STAGE_SUMMARY = "summary"
+UI_STAGE_PROCESSING = "processing"
+UI_STAGE_REVIEW = "review"
+VALID_UI_STAGES = {
+    UI_STAGE_PROJECT,
+    UI_STAGE_SETUP,
+    UI_STAGE_SUMMARY,
+    UI_STAGE_PROCESSING,
+    UI_STAGE_REVIEW,
+}
+
+WORKFLOW_STEPS: Dict[str, List[str]] = {
+    WORKFLOW_CHOICE_EXTRACT: [
+        "extract-inputs",
+        "index-protocol",
+        "acrf-split-toc",
+        "acrf-summary-text",
+        "extract-rules",
+        "extract-deviations",
+        "review-and-finalize",
+    ],
+    WORKFLOW_CHOICE_MAP: [
+        "import-pd-spec-map",
+        "merge-pd-spec-imports",
+        "review-and-finalize",
+    ],
+    WORKFLOW_CHOICE_ENRICH: [
+        "extract-inputs",
+        "index-protocol",
+        "acrf-split-toc",
+        "acrf-summary-text",
+        "import-pd-spec-enrich",
+        "merge-pd-spec-imports",
+        "review-and-finalize",
+    ],
+}
 
 IMPORT_STEP_ORDER: List[str] = [
     "extract-inputs",
@@ -451,8 +497,20 @@ class UiStepService:
         pd_spec_import_mode: str | None = None,
         coding_phase_accepted: bool | None = None,
         review_display_source: str | None = None,
+        workflow_choice: str | None = None,
+        ui_stage: str | None = None,
+        clear_pd_spec_import_mode: bool = False,
     ) -> Dict[str, Any]:
         existing = self._read_upload_manifest_obj(study_id)
+        resolved_pd_spec_import_mode = (
+            None
+            if clear_pd_spec_import_mode
+            else (
+                pd_spec_import_mode
+                if pd_spec_import_mode is not None
+                else existing.get("pdSpecImportMode")
+            )
+        )
         manifest = {
             "schema_version": "1.0.0",
             "study_id": study_id,
@@ -466,15 +524,17 @@ class UiStepService:
             if active_deviations_source is not None
             else existing.get("activeDeviationsSource"),
             "pdSpecFileName": pd_spec_file_name or existing.get("pdSpecFileName"),
-            "pdSpecImportMode": pd_spec_import_mode
-            if pd_spec_import_mode is not None
-            else existing.get("pdSpecImportMode"),
+            "pdSpecImportMode": resolved_pd_spec_import_mode,
             "codingPhaseAccepted": coding_phase_accepted
             if coding_phase_accepted is not None
             else existing.get("codingPhaseAccepted", False),
             "reviewDisplaySource": review_display_source
             if review_display_source is not None
             else existing.get("reviewDisplaySource"),
+            "workflowChoice": workflow_choice
+            if workflow_choice is not None
+            else existing.get("workflowChoice"),
+            "uiStage": ui_stage if ui_stage is not None else existing.get("uiStage"),
         }
         if coding_phase_accepted:
             manifest["codingPhaseAcceptedAt"] = datetime.now(timezone.utc).isoformat()
@@ -732,6 +792,156 @@ class UiStepService:
             )
 
         return callback
+
+    def _run_manifest_path(self, study_id: str) -> Path:
+        return paths.local_ui_run_manifest(study_id, self.output_dir)
+
+    def _read_run_manifest(self, study_id: str) -> Dict[str, Any]:
+        path = self._run_manifest_path(study_id)
+        if path.is_file():
+            return read_json(path)
+        return {
+            "schema_version": "1.0.0",
+            "study_id": study_id,
+            "activeRunId": "",
+            "runs": [],
+        }
+
+    def _write_run_manifest(self, study_id: str, manifest: Dict[str, Any]) -> Dict[str, Any]:
+        path = self._run_manifest_path(study_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(path, manifest)
+        self._mirror_upload(study_id, path)
+        return manifest
+
+    @staticmethod
+    def _run_fingerprint(
+        *,
+        workflow: str,
+        uploads: Dict[str, Any],
+        settings: Dict[str, Any],
+    ) -> str:
+        parts = [
+            workflow,
+            str(uploads.get("protocolFileName") or ""),
+            str(uploads.get("acrfFileName") or ""),
+            str(uploads.get("pdSpecFileName") or ""),
+            str(settings.get("extractorChoice") or ""),
+            str(settings.get("extractionDeployment") or ""),
+            str(settings.get("acrfSummaryDeployment") or ""),
+            str(settings.get("extractionLlmInstructions") or ""),
+        ]
+        payload = "|".join(parts)
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def _active_run_entry(self, study_id: str) -> Dict[str, Any] | None:
+        manifest = self._read_run_manifest(study_id)
+        active_id = str(manifest.get("activeRunId") or "").strip()
+        if not active_id:
+            return None
+        for entry in manifest.get("runs", []):
+            if str(entry.get("runId")) == active_id:
+                return entry
+        return None
+
+    def get_study_runs(self, study_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        manifest = self._read_run_manifest(study_id)
+        return {
+            "studyId": study_id,
+            "activeRunId": manifest.get("activeRunId") or "",
+            "runs": list(manifest.get("runs", [])),
+        }
+
+    def apply_study_run(self, study_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        workflow = str(payload.get("workflow") or "").strip()
+        if workflow not in VALID_WORKFLOW_CHOICES:
+            raise UiApiError(
+                "VALIDATION_ERROR",
+                f"workflow must be one of: {', '.join(sorted(VALID_WORKFLOW_CHOICES))}",
+                400,
+            )
+        uploads = payload.get("uploads") or {}
+        settings = payload.get("settings") or {}
+        fingerprint = self._run_fingerprint(workflow=workflow, uploads=uploads, settings=settings)
+        now = datetime.now(timezone.utc).isoformat()
+        manifest = self._read_run_manifest(study_id)
+        runs: List[Dict[str, Any]] = list(manifest.get("runs", []))
+        existing = next((r for r in runs if str(r.get("fingerprint")) == fingerprint), None)
+        if existing:
+            existing["updatedAt"] = now
+            existing["workflow"] = workflow
+            existing["uploads"] = uploads
+            existing["settings"] = settings
+            run_id = str(existing["runId"])
+        else:
+            run_id = f"run-{uuid.uuid4().hex[:12]}"
+            runs.append(
+                {
+                    "runId": run_id,
+                    "fingerprint": fingerprint,
+                    "createdAt": now,
+                    "updatedAt": now,
+                    "workflow": workflow,
+                    "uploads": uploads,
+                    "settings": settings,
+                    "lastRunAt": None,
+                    "stepStatusesSnapshot": {},
+                }
+            )
+        manifest["activeRunId"] = run_id
+        manifest["runs"] = runs
+        self._write_run_manifest(study_id, manifest)
+        active = next(r for r in runs if str(r.get("runId")) == run_id)
+        return {
+            "studyId": study_id,
+            "runId": run_id,
+            "fingerprint": fingerprint,
+            "created": existing is None,
+            "settings": active.get("settings", {}),
+            "activeRunId": run_id,
+            "runs": runs,
+        }
+
+    def activate_study_run(self, study_id: str, run_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        run_id = str(run_id).strip()
+        if not run_id:
+            raise UiApiError("VALIDATION_ERROR", "runId is required", 400)
+        manifest = self._read_run_manifest(study_id)
+        runs: List[Dict[str, Any]] = list(manifest.get("runs", []))
+        active = next((r for r in runs if str(r.get("runId")) == run_id), None)
+        if active is None:
+            raise UiApiError("NOT_FOUND", f"Run '{run_id}' not found.", 404)
+        manifest["activeRunId"] = run_id
+        active["updatedAt"] = datetime.now(timezone.utc).isoformat()
+        self._write_run_manifest(study_id, manifest)
+        return {
+            "studyId": study_id,
+            "activeRunId": run_id,
+            "settings": active.get("settings", {}),
+            "run": active,
+        }
+
+    def _touch_active_run_after_step(self, study_id: str) -> None:
+        active = self._active_run_entry(study_id)
+        if not active:
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        active["lastRunAt"] = now
+        active["stepStatusesSnapshot"] = self._step_statuses(study_id)
+        active["updatedAt"] = now
+        manifest = self._read_run_manifest(study_id)
+        run_id = str(active.get("runId"))
+        runs = []
+        for entry in manifest.get("runs", []):
+            if str(entry.get("runId")) == run_id:
+                runs.append(active)
+            else:
+                runs.append(entry)
+        manifest["runs"] = runs
+        self._write_run_manifest(study_id, manifest)
 
     def get_step1_run_state(self, study_id: str) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
@@ -1333,17 +1543,17 @@ class UiStepService:
             "entry_source": entry_source,
             "programmable": programmable,
             "programmability_note": str(pseudo.get("programmability_note", "")),
+            "protocol_deviation_category": category,
+            "protocol_deviation_sub_category": sub_category,
         }
         if study_id and review_source:
             result.update(self._enrichment_api_fields(study_id, row, review_source=review_source))
         return result
 
-    def list_studies(self) -> Dict[str, Any]:
+    def _collect_study_ids_from_blob(self) -> set[str]:
         blob_service = blob_io.blob_service_from_env()
         container = blob_io.container_from_env()
-        raw_files_by_study: Dict[str, set[str]] = {}
         study_ids: set[str] = set()
-
         for prefix in ("raw/", "extractions/", "pipeline/", "review/"):
             names = blob_io.list_blob_names_with_prefix(
                 blob_service=blob_service,
@@ -1355,41 +1565,270 @@ class UiStepService:
                 if len(parts) < 2 or parts[0] != prefix.rstrip("/"):
                     continue
                 study_id = parts[1]
-                if not study_id:
-                    continue
-                study_ids.add(study_id)
-                if prefix == "raw/" and len(parts) == 3:
-                    raw_files_by_study.setdefault(study_id, set()).add(parts[2])
+                if study_id:
+                    study_ids.add(study_id)
+        return study_ids
 
+    def _study_exists(self, study_id: str) -> bool:
+        if self._ui_upload_manifest_path(study_id).is_file():
+            return True
+        try:
+            blob_service = blob_io.blob_service_from_env()
+            container = blob_io.container_from_env()
+            blob_path = paths.ui_upload_manifest_blob(study_id)
+            blob_io.download_blob_bytes(
+                blob_service=blob_service,
+                container_name=container,
+                blob_path=blob_path,
+            )
+            return True
+        except Exception:  # noqa: BLE001
+            pass
+        return study_id in self._collect_study_ids_from_blob()
+
+    def _explicit_workflow_choice(self, manifest: Dict[str, Any]) -> str | None:
+        explicit = str(manifest.get("workflowChoice") or "").strip()
+        if explicit in VALID_WORKFLOW_CHOICES:
+            return explicit
+        return None
+
+    def _infer_workflow_choice(self, manifest: Dict[str, Any]) -> str | None:
+        explicit = self._explicit_workflow_choice(manifest)
+        if explicit:
+            return explicit
+        entry_mode = str(manifest.get("entryMode") or ENTRY_MODE_EXTRACTED).strip()
+        import_mode = str(manifest.get("pdSpecImportMode") or "").strip()
+        if entry_mode == ENTRY_MODE_IMPORTED_PD_SPEC:
+            if import_mode == "enrich":
+                return WORKFLOW_CHOICE_ENRICH
+            if import_mode == "map":
+                return WORKFLOW_CHOICE_MAP
+        if entry_mode == ENTRY_MODE_EXTRACTED:
+            return WORKFLOW_CHOICE_EXTRACT
+        return None
+
+    def _workflow_label(self, workflow: str | None) -> str:
+        labels = {
+            WORKFLOW_CHOICE_EXTRACT: "Extract PD from protocol + aCRF",
+            WORKFLOW_CHOICE_MAP: "Map uploaded PD Specifications",
+            WORKFLOW_CHOICE_ENRICH: "Enrich PD Specifications",
+        }
+        return labels.get(workflow or "", "Not selected")
+
+    def _uploads_complete_for_workflow(
+        self, workflow: str | None, upload_status: Dict[str, Any]
+    ) -> bool:
+        protocol = bool(upload_status.get("protocol", {}).get("uploaded"))
+        acrf = bool(upload_status.get("acrf", {}).get("uploaded"))
+        pd_spec = bool(upload_status.get("pdSpec", {}).get("uploaded"))
+        if workflow == WORKFLOW_CHOICE_EXTRACT:
+            return protocol and acrf
+        if workflow in {WORKFLOW_CHOICE_MAP, WORKFLOW_CHOICE_ENRICH}:
+            return protocol and acrf and pd_spec
+        return False
+
+    def _workflow_steps_started(
+        self, workflow: str | None, statuses: Dict[str, str]
+    ) -> bool:
+        if not workflow:
+            return False
+        step_ids = WORKFLOW_STEPS.get(workflow, [])
+        return any(statuses.get(step_id) in {"done", "skipped"} for step_id in step_ids)
+
+    def _workflow_steps_complete(
+        self, workflow: str | None, statuses: Dict[str, str]
+    ) -> bool:
+        if not workflow:
+            return False
+        step_ids = WORKFLOW_STEPS.get(workflow, [])
+        if not step_ids:
+            return False
+        return all(statuses.get(step_id) in {"done", "skipped"} for step_id in step_ids)
+
+    def derive_stage(
+        self,
+        *,
+        workflow: str | None,
+        upload_status: Dict[str, Any],
+        statuses: Dict[str, str],
+    ) -> str:
+        if not workflow:
+            return UI_STAGE_PROJECT
+        if not self._uploads_complete_for_workflow(workflow, upload_status):
+            return UI_STAGE_SETUP
+        if not self._workflow_steps_started(workflow, statuses):
+            return UI_STAGE_SETUP
+        if not self._workflow_steps_complete(workflow, statuses):
+            return UI_STAGE_PROCESSING
+        return UI_STAGE_REVIEW
+
+    def _deviation_summary(self, study_id: str) -> Dict[str, int] | None:
+        try:
+            state = self._load_state(study_id)
+            deviations = list(state.get("deviations", []))
+            if not deviations:
+                return None
+            accepted = sum(1 for row in deviations if str(row.get("status")) == "accepted")
+            rejected = sum(1 for row in deviations if str(row.get("status")) == "rejected")
+            to_review = sum(
+                1
+                for row in deviations
+                if str(row.get("status", "pending")) in {"pending", "to_review"}
+            )
+            return {
+                "total": len(deviations),
+                "accepted": accepted,
+                "toReview": to_review,
+                "rejected": rejected,
+            }
+        except Exception:  # noqa: BLE001
+            return None
+
+    def create_study(self, study_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        self._assert_safe_study_id(study_id)
+        if self._study_exists(study_id):
+            raise UiApiError(
+                "DUPLICATE_STUDY",
+                f"Study '{study_id}' already exists.",
+                409,
+            )
+        manifest = self._write_upload_manifest(
+            study_id,
+            entry_mode=ENTRY_MODE_EXTRACTED,
+            workflow_choice=None,
+            ui_stage=UI_STAGE_PROJECT,
+        )
+        return {
+            "studyId": study_id,
+            "manifestBlobPath": paths.ui_upload_manifest_blob(study_id),
+            "manifest": manifest,
+        }
+
+    def patch_study_manifest(self, study_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        workflow_choice = payload.get("workflowChoice")
+        ui_stage = payload.get("uiStage")
+
+        entry_mode: str | None = None
+        pd_spec_import_mode: str | None = None
+        clear_pd_spec_import_mode = False
+
+        if workflow_choice is not None:
+            choice = str(workflow_choice).strip()
+            if choice not in VALID_WORKFLOW_CHOICES:
+                raise UiApiError(
+                    "VALIDATION_ERROR",
+                    f"workflowChoice must be one of: {', '.join(sorted(VALID_WORKFLOW_CHOICES))}",
+                    400,
+                )
+            if choice == WORKFLOW_CHOICE_EXTRACT:
+                entry_mode = ENTRY_MODE_EXTRACTED
+                clear_pd_spec_import_mode = True
+            elif choice == WORKFLOW_CHOICE_MAP:
+                entry_mode = ENTRY_MODE_IMPORTED_PD_SPEC
+                pd_spec_import_mode = "map"
+            elif choice == WORKFLOW_CHOICE_ENRICH:
+                entry_mode = ENTRY_MODE_IMPORTED_PD_SPEC
+                pd_spec_import_mode = "enrich"
+
+        if ui_stage is not None:
+            stage = str(ui_stage).strip()
+            if stage not in VALID_UI_STAGES:
+                raise UiApiError(
+                    "VALIDATION_ERROR",
+                    f"uiStage must be one of: {', '.join(sorted(VALID_UI_STAGES))}",
+                    400,
+                )
+
+        manifest = self._write_upload_manifest(
+            study_id,
+            entry_mode=entry_mode,
+            pd_spec_import_mode=pd_spec_import_mode,
+            workflow_choice=str(workflow_choice).strip() if workflow_choice is not None else None,
+            ui_stage=str(ui_stage).strip() if ui_stage is not None else None,
+            clear_pd_spec_import_mode=clear_pd_spec_import_mode,
+        )
+        summary = self.get_study_summary(study_id)
+        return {
+            "studyId": study_id,
+            "manifest": manifest,
+            "stage": summary["stage"],
+            "workflow": summary["workflow"],
+        }
+
+    def get_study_summary(self, study_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        manifest = self._read_upload_manifest_obj(study_id)
+        upload_status = self.get_step1_upload_status(study_id)
+        run_state = self.get_step1_run_state(study_id)
+        status_payload = self.get_status(study_id)
+        statuses = {item["stepId"]: item["status"] for item in status_payload["steps"]}
+        workflow = self._explicit_workflow_choice(manifest)
+        inferred_workflow = self._infer_workflow_choice(manifest)
+        stage = self.derive_stage(
+            workflow=workflow,
+            upload_status=upload_status,
+            statuses=statuses,
+        )
+        deviation_summary = self._deviation_summary(study_id)
+        return {
+            "studyId": study_id,
+            "workflow": workflow,
+            "inferredWorkflow": inferred_workflow,
+            "workflowLabel": self._workflow_label(workflow or inferred_workflow),
+            "stage": stage,
+            "entryMode": manifest.get("entryMode") or ENTRY_MODE_EXTRACTED,
+            "workflowChoice": manifest.get("workflowChoice"),
+            "pdSpecImportMode": manifest.get("pdSpecImportMode"),
+            "lastModified": manifest.get("uploadedAt"),
+            "uiStage": manifest.get("uiStage") or stage,
+            "uploads": {
+                "protocol": upload_status["protocol"],
+                "acrf": upload_status["acrf"],
+                "pdSpec": upload_status["pdSpec"],
+            },
+            "bothUploaded": upload_status["bothUploaded"],
+            "allThreeUploaded": upload_status["allThreeUploaded"],
+            "preprocess": {
+                "protocol": upload_status["protocolPreprocessed"],
+                "acrf": upload_status["acrfPreprocessed"],
+            },
+            "processingComplete": upload_status["processingComplete"],
+            "runState": run_state,
+            "steps": status_payload["steps"],
+            "stepStatuses": statuses,
+            "nextStepId": status_payload["nextStepId"],
+            "importVersions": status_payload.get("importVersions"),
+            "codingPhaseAccepted": status_payload.get("codingPhaseAccepted", False),
+            "deviationSummary": deviation_summary,
+        }
+
+    def list_studies(self) -> Dict[str, Any]:
+        study_ids = self._collect_study_ids_from_blob()
         studies = []
         for study_id in sorted(study_ids):
-            raw_files = raw_files_by_study.get(study_id, set())
-            has_protocol = "protocol.pdf" in raw_files
-            has_acrf = "acrf.pdf" in raw_files
+            manifest = self._read_upload_manifest_obj(study_id)
+            workflow = self._explicit_workflow_choice(manifest)
+            inferred_workflow = self._infer_workflow_choice(manifest)
+            upload_status = {
+                "protocol": {"uploaded": self._blob_has_upload(study_id, "protocol")},
+                "acrf": {"uploaded": self._blob_has_upload(study_id, "acrf")},
+                "pdSpec": {"uploaded": self._blob_has_pd_spec_workbook(study_id)},
+            }
             statuses = self._step_statuses(study_id)
-            filenames = self._read_upload_filenames(study_id)
+            stage = self.derive_stage(
+                workflow=workflow,
+                upload_status=upload_status,
+                statuses=statuses,
+            )
             studies.append(
                 {
                     "studyId": study_id,
-                    "protocolBlob": paths.raw_protocol_blob(study_id),
-                    "acrfBlob": paths.raw_acrf_blob(study_id),
-                    "protocolFileName": filenames["protocolFileName"] if has_protocol else None,
-                    "acrfFileName": filenames["acrfFileName"] if has_acrf else None,
-                    "bothUploaded": has_protocol and has_acrf,
-                    "stepStatuses": statuses,
-                    "entryMode": self._get_entry_mode(study_id),
-                    "activeDeviationsSource": self._read_upload_manifest_obj(study_id).get(
-                        "activeDeviationsSource"
-                    ),
-                    "importVersions": pipeline_v2.list_import_versions(study_id, self.output_dir),
-                    "nextStepId": next(
-                        (
-                            step_id
-                            for step_id in self._effective_step_order(study_id)
-                            if statuses.get(step_id) not in {"done", "skipped"}
-                        ),
-                        None,
-                    ),
+                    "workflow": workflow or inferred_workflow,
+                    "workflowLabel": self._workflow_label(workflow or inferred_workflow),
+                    "stage": stage,
+                    "lastModified": manifest.get("uploadedAt"),
                 }
             )
         return {"studies": studies}
@@ -1398,6 +1837,15 @@ class UiStepService:
         from pdcheck_factory import azure_openai_config
 
         return azure_openai_config.list_openai_deployments()
+
+    def get_pd_taxonomy(self) -> Dict[str, Any]:
+        from pdcheck_factory.pd_taxonomy import all_sub_category_options, category_options, load_taxonomy
+
+        return {
+            "categories": load_taxonomy(),
+            "categoryOptions": category_options(),
+            "subCategoryOptions": all_sub_category_options(),
+        }
 
     def delete_study(self, study_id: str) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
@@ -1559,6 +2007,8 @@ class UiStepService:
         odl_only = mode == extraction_resolve.UI_EXTRACTOR_OPEN
 
         started_at = datetime.now(timezone.utc).isoformat()
+        active_run = self._active_run_entry(study_id)
+        active_run_id = str(active_run.get("runId")) if active_run else ""
         self._write_pipeline_run_state(
             study_id,
             status="running",
@@ -1569,29 +2019,33 @@ class UiStepService:
             startedAt=started_at,
             finishedAt="",
             logs=[],
+            activeRunId=active_run_id,
         )
         self._append_pipeline_log(study_id, f"Starting extraction (extractor={mode})")
 
         def _extract_log(message: str) -> None:
             self._append_pipeline_log(study_id, message)
 
+        from pdcheck_factory import llm
+
         try:
-            run_extract(
-                study_id=study_id,
-                protocol_blob=None,
-                acrf_blob=None,
-                output_dir=self.output_dir,
-                model_id=None,
-                sas_ttl=int(os.getenv("DI_SAS_TTL_MINUTES", "15")),
-                upload=True,
-                skip_acrf=False,
-                skip_protocol=False,
-                upload_only=False,
-                run_opendataloader_ocr=run_odl,
-                opendataloader_only=odl_only,
-                debug_blob=False,
-                log_callback=_extract_log,
-            )
+            with llm.use_pipeline_log(_extract_log):
+                run_extract(
+                    study_id=study_id,
+                    protocol_blob=None,
+                    acrf_blob=None,
+                    output_dir=self.output_dir,
+                    model_id=None,
+                    sas_ttl=int(os.getenv("DI_SAS_TTL_MINUTES", "15")),
+                    upload=True,
+                    skip_acrf=False,
+                    skip_protocol=False,
+                    upload_only=False,
+                    run_opendataloader_ocr=run_odl,
+                    opendataloader_only=odl_only,
+                    debug_blob=False,
+                    log_callback=_extract_log,
+                )
             extraction_resolve.write_ui_extractor_choice(study_id, self.output_dir, mode)
             self._mirror_upload(study_id, extraction_resolve.local_ui_extractor_choice_json(study_id, self.output_dir))
             extractions_root = paths.local_study_root(study_id, self.output_dir) / "extractions"
@@ -1604,7 +2058,9 @@ class UiStepService:
                 currentSubStepId="extract-inputs",
                 message="Extraction completed",
                 finishedAt=datetime.now(timezone.utc).isoformat(),
+                activeRunId=active_run_id,
             )
+            self._touch_active_run_after_step(study_id)
         except Exception as exc:  # noqa: BLE001
             self._append_pipeline_log(study_id, f"Extraction failed: {exc}", level="error")
             self._write_pipeline_run_state(
@@ -2154,6 +2610,8 @@ class UiStepService:
             "merge-pd-spec-imports": "import_merge",
             "review-and-finalize": "finalize",
         }
+        active_run = self._active_run_entry(study_id)
+        active_run_id = str(active_run.get("runId")) if active_run else ""
         self._write_pipeline_run_state(
             study_id,
             status="running",
@@ -2164,13 +2622,17 @@ class UiStepService:
             startedAt=datetime.now(timezone.utc).isoformat(),
             finishedAt="",
             llmProgress=None,
+            activeRunId=active_run_id,
         )
         self._append_pipeline_log(study_id, f"Starting step {step_id}")
 
         from pdcheck_factory import llm
 
+        def _pipeline_log(message: str) -> None:
+            self._append_pipeline_log(study_id, message)
+
         try:
-            with llm.use_deployment(llm_deployment):
+            with llm.use_deployment(llm_deployment), llm.use_pipeline_log(_pipeline_log):
                 summary = self._execute_run_step(study_id, step_id, extra=extra, force=force)
         except Exception as exc:  # noqa: BLE001
             self._append_pipeline_log(study_id, f"Step {step_id} failed: {exc}", level="error")
@@ -2193,7 +2655,9 @@ class UiStepService:
             message=summary,
             finishedAt=datetime.now(timezone.utc).isoformat(),
             llmProgress=None,
+            activeRunId=active_run_id,
         )
+        self._touch_active_run_after_step(study_id)
 
         return {
             "studyId": study_id,
@@ -2232,8 +2696,15 @@ class UiStepService:
             )
             summary = f"Merged aCRF summary text with {len(result.get('datasets', []))} datasets."
         elif step_id == "extract-rules":
+            def _rules_log(message: str) -> None:
+                self._append_pipeline_log(study_id, message)
+
             result = pipeline_v2.step3_extract_rules(
-                study_id, self.output_dir, additional_instructions=extra
+                study_id,
+                self.output_dir,
+                additional_instructions=extra,
+                progress_callback=progress_callback,
+                log_callback=_rules_log,
             )
             summary = f"Extracted {len(result.get('rules', []))} rules."
         elif step_id == "extract-deviations":
@@ -3019,6 +3490,7 @@ class UiStepService:
         run_revision_cycle: bool = True,
         also_generate_pseudo: bool = False,
         review_source: str | None = None,
+        llm_deployment: str | None = None,
     ) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         source = self._resolve_review_source(study_id, review_source)
@@ -3041,16 +3513,19 @@ class UiStepService:
             {"role": str(m.get("role", "")), "text": str(m.get("text", ""))}
             for m in prior_messages[-10:]
         ]
+        from pdcheck_factory import llm
+
         try:
-            revised_row, audit = pipeline_v2.refine_single_deviation_with_comment(
-                study_id=study_id,
-                output_dir=self.output_dir,
-                row=row,
-                dm_comment=comment,
-                run_revision_cycle=run_revision_cycle,
-                chat_history=chat_history,
-                also_generate_pseudo=also_generate_pseudo,
-            )
+            with llm.use_deployment(llm_deployment):
+                revised_row, audit = pipeline_v2.refine_single_deviation_with_comment(
+                    study_id=study_id,
+                    output_dir=self.output_dir,
+                    row=row,
+                    dm_comment=comment,
+                    run_revision_cycle=run_revision_cycle,
+                    chat_history=chat_history,
+                    also_generate_pseudo=also_generate_pseudo,
+                )
             assistant_text = str(audit.get("assistant_message", "")).strip()
             if not assistant_text:
                 assistant_text = "Processed your message."

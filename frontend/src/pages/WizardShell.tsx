@@ -24,13 +24,12 @@ import { ProjectLibraryPage } from "./wizard/ProjectLibraryPage";
 import { ProjectPage } from "./wizard/ProjectPage";
 import { ReviewPage } from "./wizard/ReviewPage";
 import { SetupPage } from "./wizard/SetupPage";
-import { SummaryPage } from "./wizard/SummaryPage";
 import { WelcomePage } from "./wizard/WelcomePage";
 
 const STAGE_TO_ROUTE: Record<WizardStage, WizardStageId> = {
   project: "project",
   setup: "setup",
-  summary: "summary",
+  summary: "setup",
   processing: "processing",
   review: "review"
 };
@@ -51,11 +50,26 @@ export function WizardShell(): JSX.Element {
   const [deleteStudyError, setDeleteStudyError] = useState("");
   const [isRunActive, setIsRunActive] = useState(false);
 
-  const { settings, updateSettings } = useStudySettings(studyId);
-  const effectiveSettings = useMemo(
-    () => applyDefaultDeployments(settings, defaultDeployment),
-    [settings, defaultDeployment]
+  const {
+    draftSettings,
+    appliedSettings,
+    updateDraftSettings,
+    applySettings,
+    loadAppliedSettings,
+    hasAppliedSettings
+  } = useStudySettings(studyId);
+
+  const effectiveDraftSettings = useMemo(
+    () => applyDefaultDeployments(draftSettings, defaultDeployment),
+    [draftSettings, defaultDeployment]
   );
+
+  const effectiveAppliedSettings = useMemo(() => {
+    if (!appliedSettings) {
+      return null;
+    }
+    return applyDefaultDeployments(appliedSettings, defaultDeployment);
+  }, [appliedSettings, defaultDeployment]);
 
   const pollMs = isRunActive ? 3000 : 0;
   const { summary, isLoading: summaryLoading, refresh: refreshSummary } = useStudySummary(studyId, {
@@ -119,7 +133,9 @@ export function WizardShell(): JSX.Element {
     navigateToWizardStage(stageId);
     setStage(stageId);
     if (studyId.trim() && stageId !== "welcome" && stageId !== "library") {
-      void patchStudyManifest(studyId.trim(), { uiStage: stageId as WizardStage }).catch(() => undefined);
+      const uiStage: WizardStage =
+        stageId === "setup" ? "setup" : (stageId as WizardStage);
+      void patchStudyManifest(studyId.trim(), { uiStage }).catch(() => undefined);
     }
   }
 
@@ -175,20 +191,22 @@ export function WizardShell(): JSX.Element {
       return Boolean(studyId.trim() && workflow);
     }
     if (stage === "setup") {
-      return uploadsReadyForWorkflow(
-        workflow,
-        summary?.bothUploaded ?? false,
-        summary?.allThreeUploaded ?? false
+      return (
+        uploadsReadyForWorkflow(
+          workflow,
+          summary?.bothUploaded ?? false,
+          summary?.allThreeUploaded ?? false
+        ) && hasAppliedSettings
       );
     }
     if (stage === "processing") {
       return isWorkflowComplete(workflow, summary?.stepStatuses ?? backendStatuses);
     }
     return true;
-  }, [stage, studyId, workflow, summary]);
+  }, [stage, studyId, workflow, summary, hasAppliedSettings, backendStatuses]);
 
   function handleBack(): void {
-    const order: WizardStageId[] = ["welcome", "library", "project", "setup", "summary", "processing", "review"];
+    const order: WizardStageId[] = ["welcome", "library", "project", "setup", "processing", "review"];
     const index = order.indexOf(stage);
     if (index > 0) {
       goTo(order[index - 1]);
@@ -204,10 +222,6 @@ export function WizardShell(): JSX.Element {
       return;
     }
     if (stage === "setup") {
-      goTo("summary");
-      return;
-    }
-    if (stage === "summary") {
       goTo("processing");
       return;
     }
@@ -219,6 +233,8 @@ export function WizardShell(): JSX.Element {
 
   const showStepper = stage !== "welcome" && stage !== "library";
   const stepperIndex = STEPPER_STAGES.findIndex((item) => item.id === stage);
+
+  const processingSettings = effectiveAppliedSettings ?? effectiveDraftSettings;
 
   return (
     <Page>
@@ -297,20 +313,15 @@ export function WizardShell(): JSX.Element {
             backendStatuses={backendStatuses}
             onStatusesChange={setBackendStatuses}
             onStudiesReload={() => void refreshSummary()}
-            settings={effectiveSettings}
-            onSettingsChange={updateSettings}
+            draftSettings={effectiveDraftSettings}
+            appliedSettings={effectiveAppliedSettings}
+            onDraftSettingsChange={updateDraftSettings}
+            onApplySettings={applySettings}
+            onLoadAppliedSettings={loadAppliedSettings}
             llmDeployments={llmDeployments}
             deploymentsLoading={deploymentsLoading}
-          />
-        ) : null}
-
-        {stage === "summary" ? (
-          <SummaryPage
-            studyId={studyId}
-            workflow={workflow}
             summary={summary}
-            settings={effectiveSettings}
-            isLoading={summaryLoading}
+            isSummaryLoading={summaryLoading}
           />
         ) : null}
 
@@ -319,7 +330,7 @@ export function WizardShell(): JSX.Element {
             studyId={studyId}
             workflow={workflow}
             stepStatuses={backendStatuses}
-            settings={effectiveSettings}
+            settings={processingSettings}
             defaultDeployment={defaultDeployment}
             onStatusesChange={setBackendStatuses}
             onRefreshSummary={refreshSummary}
@@ -335,8 +346,8 @@ export function WizardShell(): JSX.Element {
             onStepStatusesChange={setBackendStatuses}
             llmDeployments={llmDeployments}
             deploymentsLoading={deploymentsLoading}
-            chatDeployment={effectiveSettings.chatDeployment}
-            onChatDeploymentChange={(value) => updateSettings({ chatDeployment: value })}
+            chatDeployment={processingSettings.chatDeployment}
+            onChatDeploymentChange={(value) => updateDraftSettings({ chatDeployment: value })}
           />
         ) : null}
       </Section>
@@ -346,11 +357,7 @@ export function WizardShell(): JSX.Element {
           <button className="button button-secondary" type="button" onClick={handleBack}>
             Back
           </button>
-          {stage === "summary" ? (
-            <button className="button button-primary" type="button" onClick={() => goTo("processing")}>
-              Start extraction
-            </button>
-          ) : stage === "processing" ? (
+          {stage === "processing" ? (
             <button
               className="button button-primary"
               type="button"
