@@ -278,6 +278,10 @@ def local_deviations_coding_export_xlsx(study_id: str, output_dir: Path) -> Path
     return local_review_dir(study_id, output_dir) / "deviations_coding_export.xlsx"
 
 
+def local_deviations_coding_export_csv(study_id: str, output_dir: Path) -> Path:
+    return local_review_dir(study_id, output_dir) / "deviations_coding_export.csv"
+
+
 def local_deviation_classification_audit_json(study_id: str, output_dir: Path) -> Path:
     return local_review_dir(study_id, output_dir) / "deviation_classification_audit.json"
 

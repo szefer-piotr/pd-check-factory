@@ -187,6 +187,10 @@ export interface StudiesResponse {
 export interface CreateStudyResponse {
   studyId: string;
   manifestBlobPath: string;
+  overwritten?: boolean;
+  deletedBlobCount?: number;
+  totalBlobCount?: number;
+  localOutputRemoved?: boolean;
 }
 
 export interface PatchStudyManifestResponse {
@@ -582,6 +586,26 @@ export interface SyncStudyResponse {
   stepStatuses: Record<string, StepStatus>;
 }
 
+export interface LoadStudyResponse {
+  studyId: string;
+  sync: SyncStudyResponse["sync"];
+  summary: StudySummary;
+  stepStatuses: Record<string, StepStatus>;
+}
+
+export interface DeleteAllStudiesResponse {
+  deletedStudyCount: number;
+  deletedBlobCount: number;
+  totalBlobCount: number;
+  studies: Array<{
+    studyId: string;
+    deletedBlobCount: number;
+    totalBlobCount: number;
+    localOutputRemoved: boolean;
+  }>;
+  message: string;
+}
+
 export async function syncStudy(
   studyId: string,
   options?: { timeoutMs?: number; signal?: AbortSignal }
@@ -614,16 +638,51 @@ export async function syncStudy(
   }
 }
 
+export async function loadStudy(
+  studyId: string,
+  options?: { timeoutMs?: number; signal?: AbortSignal }
+): Promise<LoadStudyResponse> {
+  const controller = new AbortController();
+  const timeoutMs = options?.timeoutMs ?? 300_000;
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  if (options?.signal) {
+    if (options.signal.aborted) {
+      controller.abort();
+    } else {
+      options.signal.addEventListener("abort", () => controller.abort(), { once: true });
+    }
+  }
+  try {
+    const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/load`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "{}",
+      signal: controller.signal
+    });
+    return parseApiResponse<LoadStudyResponse>(response);
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw new Error("Study load timed out. Retry when the connection is stable.");
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+}
+
 export async function fetchStudies(): Promise<StudiesResponse> {
   const response = await fetch(`${API_BASE}/api/v1/studies`);
   return parseApiResponse<StudiesResponse>(response);
 }
 
-export async function createStudy(studyId: string): Promise<CreateStudyResponse> {
+export async function createStudy(
+  studyId: string,
+  options?: { overwrite?: boolean }
+): Promise<CreateStudyResponse> {
   const response = await fetch(`${API_BASE}/api/v1/studies`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ studyId })
+    body: JSON.stringify({ studyId, overwrite: options?.overwrite === true })
   });
   return parseApiResponse<CreateStudyResponse>(response);
 }
@@ -664,7 +723,7 @@ export async function activateStudyRun(studyId: string, runId: string): Promise<
 
 export async function patchStudyManifest(
   studyId: string,
-  patch: { workflowChoice?: WorkflowChoice; uiStage?: WizardStage }
+  patch: { workflowChoice?: WorkflowChoice; uiStage?: WizardStage; pipelineUiStep?: string }
 ): Promise<PatchStudyManifestResponse> {
   const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/manifest`, {
     method: "PATCH",
@@ -689,6 +748,29 @@ export async function deleteStudy(studyId: string): Promise<DeleteStudyResponse>
     method: "DELETE"
   });
   return parseApiResponse<DeleteStudyResponse>(response);
+}
+
+export async function deleteAllStudies(): Promise<DeleteAllStudiesResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/studies`, {
+    method: "DELETE"
+  });
+  return parseApiResponse<DeleteAllStudiesResponse>(response);
+}
+
+export interface ResetStudyResponse {
+  studyId: string;
+  deletedBlobCount: number;
+  totalBlobCount: number;
+  localOutputRemoved: boolean;
+  message: string;
+  stepStatuses: Record<string, StepStatus>;
+}
+
+export async function resetStudy(studyId: string): Promise<ResetStudyResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/reset`, {
+    method: "POST"
+  });
+  return parseApiResponse<ResetStudyResponse>(response);
 }
 
 export async function uploadStep1Files(studyId: string, protocolFile: File, acrfFile: File): Promise<Step1UploadResponse> {
@@ -1028,6 +1110,31 @@ export async function exportStep7DeviationsWorkbook(
   const fileName = parseContentDispositionFileName(
     response.headers.get("Content-Disposition"),
     `${studyId}_deviations_review.xlsx`
+  );
+  return { blob, fileName };
+}
+
+export async function exportStep7DeviationsCodingCsv(
+  studyId: string,
+  reviewSource?: Step7ReviewSource
+): Promise<Step7ExportWorkbookResult> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/export/coding.csv${step7ReviewQuery(reviewSource)}`
+  );
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`;
+    try {
+      const parsed = (await response.json()) as ApiEnvelope<unknown>;
+      message = parsed.error?.message ?? message;
+    } catch {
+      // ignore non-JSON error bodies
+    }
+    throw new Error(message);
+  }
+  const blob = await response.blob();
+  const fileName = parseContentDispositionFileName(
+    response.headers.get("Content-Disposition"),
+    `${studyId}_company_pds.csv`
   );
   return { blob, fileName };
 }

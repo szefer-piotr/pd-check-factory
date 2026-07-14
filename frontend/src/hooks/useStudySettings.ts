@@ -10,7 +10,7 @@ export interface StudySettings {
 }
 
 export const DEFAULT_SETTINGS: StudySettings = {
-  extractorChoice: "both",
+  extractorChoice: "document_intelligence",
   extractionLlmInstructions: "",
   extractionDeployment: "",
   acrfSummaryDeployment: "",

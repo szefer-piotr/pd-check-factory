@@ -217,13 +217,8 @@ def test_list_studies_discovers_raw_blob_pairs(tmp_path: Path, monkeypatch: pyte
     monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
     monkeypatch.setattr(
         blob_io,
-        "list_blob_names_with_prefix",
-        lambda **_kwargs: [
-            "raw/STUDY-A/protocol.pdf",
-            "raw/STUDY-A/acrf.pdf",
-            "raw/STUDY-B/protocol.pdf",
-            "raw/STUDY-C/acrf.pdf",
-        ],
+        "list_study_ids_from_container",
+        lambda **_kwargs: ["STUDY-A", "STUDY-B", "STUDY-C"],
     )
 
     payload = service.list_studies()
@@ -258,15 +253,16 @@ def test_delete_study_removes_all_blob_prefixes_and_local_output(
 
     deleted_paths: list[str] = []
 
-    def fake_delete(**kwargs: object) -> int:
-        paths_arg = kwargs["blob_paths"]
-        deleted_paths.extend(paths_arg)
-        return len(paths_arg)
+    def fake_purge(**kwargs: object) -> int:
+        prefix = str(kwargs["prefix"])
+        names = fake_list(prefix=prefix)
+        deleted_paths.extend(names)
+        return len(names)
 
     monkeypatch.setattr(blob_io, "blob_service_from_env", lambda: object())
     monkeypatch.setattr(blob_io, "container_from_env", lambda: "container")
     monkeypatch.setattr(blob_io, "list_blob_names_with_prefix", fake_list)
-    monkeypatch.setattr(blob_io, "delete_blobs", fake_delete)
+    monkeypatch.setattr(blob_io, "purge_blobs_with_prefix", fake_purge)
 
     local_root = paths.local_study_root(study_id, tmp_path)
     _touch(local_root / "marker.txt", "local")
@@ -293,6 +289,64 @@ def test_delete_study_rejects_unsafe_study_id(tmp_path: Path) -> None:
     with pytest.raises(UiApiError) as exc:
         service.delete_study("../evil")
     assert exc.value.code == "VALIDATION_ERROR"
+
+
+def test_delete_all_studies_wipes_blob_and_local(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_ids = ["STUDY-A", "STUDY-B"]
+
+    monkeypatch.setattr(service, "_collect_study_ids_from_blob", lambda: set(study_ids))
+
+    wipe_calls: list[str] = []
+
+    def fake_wipe(study_id: str) -> dict[str, object]:
+        wipe_calls.append(study_id)
+        local_root = paths.local_study_root(study_id, tmp_path)
+        local_root.mkdir(parents=True, exist_ok=True)
+        return {
+            "deletedBlobCount": 2,
+            "totalBlobCount": 2,
+            "blobPrefixes": [f"raw/{study_id}/"],
+            "localOutputRemoved": True,
+        }
+
+    monkeypatch.setattr(service, "_wipe_study_artifacts", fake_wipe)
+
+    result = service.delete_all_studies()
+
+    assert result["deletedStudyCount"] == 2
+    assert result["deletedBlobCount"] == 4
+    assert sorted(wipe_calls) == study_ids
+
+
+def test_load_study_downloads_from_blob(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pdcheck_factory import study_artifact_sync
+
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "LOAD-STUDY"
+
+    monkeypatch.setattr(service, "_collect_study_ids_from_blob", lambda: {study_id})
+    monkeypatch.setattr(
+        study_artifact_sync,
+        "download_study_from_blob",
+        lambda *_a, **_k: study_artifact_sync.SyncReport(downloaded=5, skipped=0, errors=0),
+    )
+
+    out = service.load_study(study_id)
+
+    assert out["studyId"] == study_id
+    assert out["sync"]["downloaded"] == 5
+    assert out["summary"]["studyId"] == study_id
+    assert "stepStatuses" in out
+
+
+def test_load_study_rejects_missing_blob_study(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    monkeypatch.setattr(service, "_collect_study_ids_from_blob", lambda: set())
+
+    with pytest.raises(UiApiError) as exc:
+        service.load_study("MISSING")
+    assert exc.value.code == "NOT_FOUND"
 
 
 def test_step7_deviations_chat_and_refine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -737,7 +791,7 @@ def test_run_step1_extract_document_intelligence_flags(tmp_path: Path, monkeypat
     assert read_json(choice_path)["extractor"] == "document_intelligence"
 
 
-def test_run_step1_extract_default_both(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_step1_extract_default_document_intelligence(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = UiStepService(output_dir=tmp_path)
     study_id = "EX-S"
     captured: dict = {}
@@ -754,10 +808,13 @@ def test_run_step1_extract_default_both(tmp_path: Path, monkeypatch: pytest.Monk
 
     monkeypatch.setattr(cli_mod, "run_extract", fake_run_extract)
     out = service.run_step1_extract(study_id, extractor=None)
-    assert captured.get("run_opendataloader_ocr") is True
+    assert captured.get("run_opendataloader_ocr") is False
     assert captured.get("opendataloader_only") is False
-    assert out["extractor"] == "both"
-    assert read_json(extraction_resolve.local_ui_extractor_choice_json(study_id, tmp_path))["extractor"] == "both"
+    assert out["extractor"] == "document_intelligence"
+    assert (
+        read_json(extraction_resolve.local_ui_extractor_choice_json(study_id, tmp_path))["extractor"]
+        == "document_intelligence"
+    )
 
 
 def test_upload_step1_files_persists_original_filenames(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1436,6 +1493,40 @@ def test_create_study_rejects_duplicate(tmp_path: Path, monkeypatch: pytest.Monk
     with pytest.raises(UiApiError) as exc:
         service.create_study("EXISTING")
     assert exc.value.code == "DUPLICATE_STUDY"
+
+
+def test_create_study_overwrites_existing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "OVERWRITE-ME"
+    monkeypatch.setattr(service, "_study_exists", lambda sid: sid == study_id)
+    monkeypatch.setattr(blob_io, "upload_blob_bytes", lambda **_kwargs: None)
+
+    wiped: list[str] = []
+
+    def fake_wipe(sid: str) -> dict[str, object]:
+        wiped.append(sid)
+        local_root = paths.local_study_root(study_id, tmp_path)
+        if local_root.exists():
+            import shutil
+
+            shutil.rmtree(local_root)
+        return {
+            "deletedBlobCount": 5,
+            "totalBlobCount": 5,
+            "blobPrefixes": [f"raw/{study_id}/"],
+            "localOutputRemoved": True,
+        }
+
+    monkeypatch.setattr(service, "_wipe_study_artifacts", fake_wipe)
+
+    result = service.create_study(study_id, overwrite=True)
+
+    assert result["overwritten"] is True
+    assert result["deletedBlobCount"] == 5
+    assert wiped == [study_id]
+    manifest = read_json(paths.local_ui_upload_manifest(study_id, tmp_path))
+    assert manifest["uiStage"] == UI_STAGE_PROJECT
+    assert manifest.get("workflowChoice") is None
 
 
 def test_create_study_rejects_unsafe_id(tmp_path: Path) -> None:

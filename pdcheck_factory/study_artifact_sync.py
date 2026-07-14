@@ -217,7 +217,15 @@ def sync_study(
         if bp:
             blob_keys.add(bp)
 
-    for blob_name in sorted(blob_keys):
+    blob_names = sorted(blob_keys)
+    total = len(blob_names)
+    logger.info(
+        "sync_study: study=%s starting bidirectional sync of %d tracked artifact(s)",
+        study_id,
+        total,
+    )
+
+    for index, blob_name in enumerate(blob_names, start=1):
         local_p = blob_path_to_local_path(study_id, output_dir, blob_name)
         if local_p is None:
             report.errors += 1
@@ -236,6 +244,14 @@ def sync_study(
                     local_path=local_p,
                 )
                 report.uploaded += 1
+                if index == 1 or index == total or index % 10 == 0:
+                    logger.info(
+                        "sync_study: study=%s progress %d/%d uploaded %s",
+                        study_id,
+                        index,
+                        total,
+                        blob_name,
+                    )
             elif blob_item is not None and not local_exists:
                 if not blob_io.blob_exists(
                     blob_service=bs,
@@ -296,5 +312,113 @@ def sync_study(
             msg = f"{blob_name}: {exc}"
             report.error_messages.append(msg)
             logger.warning("sync_study: %s", msg)
+
+    logger.info(
+        "sync_study: study=%s finished — uploaded=%d downloaded=%d skipped=%d errors=%d",
+        study_id,
+        report.uploaded,
+        report.downloaded,
+        report.skipped,
+        report.errors,
+    )
+
+    return report
+
+
+def download_study_from_blob(
+    study_id: str,
+    output_dir: Path,
+    *,
+    blob_service: Optional[BlobServiceClient] = None,
+    container_name: Optional[str] = None,
+) -> SyncReport:
+    """
+    Pull all tracked study artifacts from blob to local (blob always wins).
+
+    Used when opening an existing study from the container so pipeline checkpoints
+    and review state are available locally.
+    """
+    report = SyncReport()
+    bs = blob_service or blob_io.blob_service_from_env()
+    container = container_name or blob_io.container_from_env()
+
+    blob_by_name = _collect_blob_items(blob_service=bs, container_name=container, study_id=study_id)
+    manifest_blob = paths.ui_upload_manifest_blob(study_id)
+    if manifest_blob not in blob_by_name and blob_io.blob_exists(
+        blob_service=bs,
+        container_name=container,
+        blob_path=manifest_blob,
+    ):
+        for item in blob_io.list_blobs_with_properties(
+            blob_service=bs,
+            container_name=container,
+            prefix=manifest_blob,
+        ):
+            blob_by_name[item.name] = item
+
+    blob_names = sorted(blob_by_name.keys())
+    total = len(blob_names)
+    logger.info(
+        "download_study_from_blob: study=%s starting download of %d blob artifact(s)",
+        study_id,
+        total,
+    )
+
+    for index, blob_name in enumerate(blob_names, start=1):
+        local_p = blob_path_to_local_path(study_id, output_dir, blob_name)
+        if local_p is None:
+            report.errors += 1
+            report.error_messages.append(f"No local mapping for blob {blob_name!r}")
+            continue
+        try:
+            if not blob_io.blob_exists(
+                blob_service=bs,
+                container_name=container,
+                blob_path=blob_name,
+            ):
+                report.skipped += 1
+                continue
+            local_p.parent.mkdir(parents=True, exist_ok=True)
+            blob_io.download_file(
+                blob_service=bs,
+                container_name=container,
+                blob_path=blob_name,
+                local_path=local_p,
+            )
+            report.downloaded += 1
+            if index == 1 or index == total or index % 10 == 0:
+                logger.info(
+                    "download_study_from_blob: study=%s progress %d/%d (%s)",
+                    study_id,
+                    index,
+                    total,
+                    blob_name,
+                )
+        except (ResourceNotFoundError, HttpResponseError) as exc:
+            if _is_missing_blob_error(exc):
+                report.skipped += 1
+                logger.debug("download_study_from_blob: skipped missing blob %s", blob_name)
+                continue
+            report.errors += 1
+            msg = f"{blob_name}: {exc}"
+            report.error_messages.append(msg)
+            logger.warning("download_study_from_blob: %s", msg)
+        except Exception as exc:  # noqa: BLE001
+            if _is_missing_blob_error(exc):
+                report.skipped += 1
+                logger.debug("download_study_from_blob: skipped missing blob %s", blob_name)
+                continue
+            report.errors += 1
+            msg = f"{blob_name}: {exc}"
+            report.error_messages.append(msg)
+            logger.warning("download_study_from_blob: %s", msg)
+
+    logger.info(
+        "download_study_from_blob: study=%s finished — downloaded=%d skipped=%d errors=%d",
+        study_id,
+        report.downloaded,
+        report.skipped,
+        report.errors,
+    )
 
     return report

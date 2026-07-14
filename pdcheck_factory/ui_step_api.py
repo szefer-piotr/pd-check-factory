@@ -218,6 +218,18 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 data = self.service.get_step7_deviations(
                     study_id, review_source=self._review_source_from_query()
                 )
+            elif tail == "step7/deviations/export/coding.csv":
+                export_payload = self.service.export_step7_deviations_coding_csv(
+                    study_id, review_source=self._review_source_from_query()
+                )
+                _file_response(
+                    self,
+                    status=HTTPStatus.OK,
+                    body=export_payload["content"],
+                    content_type="text/csv; charset=utf-8",
+                    content_disposition=f'attachment; filename="{export_payload["fileName"]}"',
+                )
+                return
             elif tail == "step7/deviations/export/coding":
                 export_payload = self.service.export_step7_deviations_coding_xlsx(
                     study_id, review_source=self._review_source_from_query()
@@ -283,7 +295,8 @@ class StepApiHandler(BaseHTTPRequestHandler):
                     raise UiApiError("BAD_JSON", "Missing JSON body", 400)
                 payload = parse_json_body(self.rfile.read(length))
                 study_id = str(payload.get("studyId", "")).strip()
-                data = self.service.create_study(study_id)
+                overwrite = payload.get("overwrite") is True
+                data = self.service.create_study(study_id, overwrite=overwrite)
                 _json_response(self, HTTPStatus.CREATED, _response_payload(request_id=request_id, data=data))
                 return
 
@@ -294,6 +307,10 @@ class StepApiHandler(BaseHTTPRequestHandler):
             study_id, tail = v1
             if tail == "sync":
                 data = self.service.sync_study(study_id)
+            elif tail == "load":
+                data = self.service.load_study(study_id)
+            elif tail == "reset":
+                data = self.service.reset_study(study_id)
             elif tail == "step1/upload":
                 data = self._parse_step1_upload(study_id)
             elif tail == "step1/extract":
@@ -428,6 +445,11 @@ class StepApiHandler(BaseHTTPRequestHandler):
     def do_DELETE(self) -> None:  # noqa: N802
         request_id = str(uuid.uuid4())
         try:
+            if self.path == "/api/v1/studies":
+                data = self.service.delete_all_studies()
+                _json_response(self, HTTPStatus.OK, _response_payload(request_id=request_id, data=data))
+                return
+
             v1 = self._match_v1(self.path)
             if v1 is None:
                 raise UiApiError("NOT_FOUND", "Not found", 404)
@@ -682,7 +704,8 @@ class StepApiHandler(BaseHTTPRequestHandler):
 
 
 def run_step_api(*, host: str, port: int, output_dir: Path) -> None:
-    load_dotenv()
+    project_root = Path(__file__).resolve().parents[1]
+    load_dotenv(project_root / ".env")
     StepApiHandler.service = UiStepService(output_dir=output_dir)
     server = ThreadingHTTPServer((host, port), StepApiHandler)
     print(f"Step API listening on http://{host}:{port}")

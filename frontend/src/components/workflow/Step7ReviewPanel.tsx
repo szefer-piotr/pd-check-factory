@@ -39,6 +39,8 @@ interface Step7ReviewPanelProps {
   chatDeployment: string;
   onChatDeploymentChange: (value: string) => void;
   hideSourceSelector?: boolean;
+  /** Extract pipeline UI: list, accept-all, and deviation drawer only. */
+  minimal?: boolean;
 }
 
 const EMPTY_DEVIATION_FORM: Step7DeviationPayload = {
@@ -80,7 +82,8 @@ export function Step7ReviewPanel({
   deploymentsLoading,
   chatDeployment,
   onChatDeploymentChange,
-  hideSourceSelector = false
+  hideSourceSelector = false,
+  minimal = false
 }: Step7ReviewPanelProps): JSX.Element {
   const [rows, setRows] = useState<Step7DeviationRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -430,6 +433,26 @@ export function Step7ReviewPanel({
       ) : null}
       {isLoading ? <p className="step7-muted">Loading deviations...</p> : null}
 
+      {minimal ? (
+        <div className="step7-toolbar step7-toolbar-minimal">
+          <button
+            className="button button-optional"
+            type="button"
+            onClick={() => void handleAcceptAll()}
+            disabled={isBulkAccepting || isLoading || acceptAllCount === 0 || !studyId.trim()}
+          >
+            {isBulkAccepting ? "Accepting..." : `Accept all (${acceptAllCount})`}
+          </button>
+          <button
+            className="button button-optional"
+            type="button"
+            onClick={() => void handleGenerateAllPseudoLogic()}
+            disabled={isBulkGenerating || isBulkAccepting || acceptedCount === 0 || !studyId.trim()}
+          >
+            {isBulkGenerating ? "Generating..." : `Generate all pseudo (${acceptedCount})`}
+          </button>
+        </div>
+      ) : (
       <div className="step7-toolbar">
         <button
           className="button button-primary"
@@ -538,6 +561,7 @@ export function Step7ReviewPanel({
           ) : null}
         </div>
       </div>
+      )}
 
       {isBulkGenerating && bulkLlmProgress && bulkLlmProgress.total > 0 ? (
         <LlmProgressBar progress={bulkLlmProgress} />

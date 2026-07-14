@@ -263,11 +263,15 @@ A new single-page React dashboard scaffold is available under `frontend/`.
 # terminal 1: start step API for upload/extract
 pdcheck ui step-api --host 127.0.0.1 --port 8787 --output-dir output
 
-# terminal 2: run React UI
+# terminal 2: run React UI (linear pipeline)
 cd frontend
 npm install
 npm run dev
 ```
+
+Open `http://127.0.0.1:5173/#/study`. The UI walks through: Study → Config → Upload → Extract PDFs (Document Intelligence) → pipeline steps → Review (deviation chat) → Export CSV.
+
+Use **Reset study** in the top bar to wipe blob and local artifacts for the current study while keeping the study ID.
 
 ### Quality commands
 
@@ -279,12 +283,14 @@ npm run build
 
 ### Step API endpoints (React integration)
 
+- `POST /api/v1/studies` — create study
+- `POST /api/v1/studies/{studyId}/reset` — wipe artifacts, keep study id
 - `POST /api/v1/studies/{studyId}/step1/upload`
-- `POST /api/v1/studies/{studyId}/step1/extract`
-- `GET /api/v1/studies/{studyId}/step1/preview`
+- `POST /api/v1/studies/{studyId}/step1/extract` (default extractor: `document_intelligence`)
+- `GET /api/v1/studies/{studyId}/step1/run-state` — pipeline logs + LLM progress
 - `GET /api/v1/studies/{studyId}/steps/status`
 - `POST /api/v1/studies/{studyId}/steps/{stepId}/run`
-- `GET /api/v1/studies/{studyId}/steps/{stepId}/preview`
+- `GET /api/v1/studies/{studyId}/step7/deviations/export/coding.csv` — company PD spec CSV (accepted rows)
 
 ### Troubleshooting (`Failed to fetch`)
 

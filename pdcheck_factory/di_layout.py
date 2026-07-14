@@ -6,7 +6,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, Tuple
+from typing import Any, Callable, Dict, Tuple
 
 from azure.ai.documentintelligence import DocumentIntelligenceClient
 from azure.core.credentials import AzureKeyCredential
@@ -76,6 +76,7 @@ def run_layout_for_blob(
     sas_ttl_minutes: int = 15,
     upload_to_blob: bool = True,
     debug_blob: bool = False,
+    log_callback: Callable[[str], None] | None = None,
 ) -> Tuple[Path, Path, Path]:
     """
     Run prebuilt-layout on a PDF in Blob; write raw JSON, markdown, plain text under local_layout_base
@@ -83,19 +84,25 @@ def run_layout_for_blob(
     """
     model_id = model_id or os.getenv("DI_MODEL_ID", "prebuilt-layout")
 
+    def _log(message: str) -> None:
+        if log_callback is not None:
+            log_callback(message)
+        else:
+            print(message)
+
     if debug_blob:
         desc = blob_io.describe_blob(
             blob_service=blob_service,
             container_name=container_name,
             blob_path=source_blob_path,
         )
-        print(
+        _log(
             f"[debug-blob] DI input blob {source_blob_path!r} "
             f"in container {container_name!r}: "
             f"{desc or 'MISSING'}"
         )
 
-    print(f"[{doc_role}] Generating SAS URL for Document Intelligence...")
+    _log(f"DI [{doc_role}]: generating SAS URL for Document Intelligence…")
     sas_url = blob_io.generate_read_sas_url(
         storage_connection_string=storage_connection_string,
         container_name=container_name,
@@ -103,13 +110,14 @@ def run_layout_for_blob(
         ttl_minutes=sas_ttl_minutes,
     )
 
-    print(f"[{doc_role}] Submitting DI Layout (model_id={model_id})...")
+    _log(f"DI [{doc_role}]: submitting Layout analysis (model={model_id})…")
     client = DocumentIntelligenceClient(di_endpoint, AzureKeyCredential(di_key))
     poller = client.begin_analyze_document(
         model_id,
         body={"urlSource": sas_url},
         output_content_format="markdown",
     )
+    _log(f"DI [{doc_role}]: waiting for analysis result…")
     result = poller.result()
 
     raw_dict = as_serializable_dict(result)
@@ -123,14 +131,14 @@ def run_layout_for_blob(
     md_out_path = local_layout_base / "rendered" / "source.md"
     txt_out_path = local_layout_base / "rendered" / "source.txt"
 
-    print(f"[{doc_role}] Saving local artifacts under {local_layout_base}...")
+    _log(f"DI [{doc_role}]: saving local artifacts…")
     save_json(raw_out_path, raw_dict)
     save_text(md_out_path, markdown_content or "")
     save_text(txt_out_path, plain_text)
 
     if upload_to_blob:
         blob_prefix = f"extractions/{study_id}/{doc_role}/layout"
-        print(f"[{doc_role}] Uploading to blob prefix {blob_prefix}/...")
+        _log(f"DI [{doc_role}]: uploading layout artifacts to blob…")
         blob_io.upload_blob_bytes(
             blob_service=blob_service,
             container_name=container_name,
@@ -156,7 +164,7 @@ def run_layout_for_blob(
             debug=debug_blob,
         )
 
-    print(f"[{doc_role}] Done. Markdown length: {len(markdown_content or '')} chars.")
+    _log(f"DI [{doc_role}]: complete — markdown {len(markdown_content or '')} chars.")
     return raw_out_path, md_out_path, txt_out_path
 
 

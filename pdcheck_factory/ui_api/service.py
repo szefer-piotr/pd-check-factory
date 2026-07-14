@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -31,6 +32,8 @@ from pdcheck_factory.deviation_contract import (
     split_pd_spec_row,
 )
 from pdcheck_factory.pd_spec_import import parse_pd_spec_xlsx, programmable_from_manual_or_programmable
+
+logger = logging.getLogger(__name__)
 
 
 class UiApiError(Exception):
@@ -499,6 +502,7 @@ class UiStepService:
         review_display_source: str | None = None,
         workflow_choice: str | None = None,
         ui_stage: str | None = None,
+        pipeline_ui_step: str | None = None,
         clear_pd_spec_import_mode: bool = False,
     ) -> Dict[str, Any]:
         existing = self._read_upload_manifest_obj(study_id)
@@ -535,6 +539,9 @@ class UiStepService:
             if workflow_choice is not None
             else existing.get("workflowChoice"),
             "uiStage": ui_stage if ui_stage is not None else existing.get("uiStage"),
+            "pipelineUiStep": pipeline_ui_step
+            if pipeline_ui_step is not None
+            else existing.get("pipelineUiStep"),
         }
         if coding_phase_accepted:
             manifest["codingPhaseAcceptedAt"] = datetime.now(timezone.utc).isoformat()
@@ -1553,21 +1560,12 @@ class UiStepService:
     def _collect_study_ids_from_blob(self) -> set[str]:
         blob_service = blob_io.blob_service_from_env()
         container = blob_io.container_from_env()
-        study_ids: set[str] = set()
-        for prefix in ("raw/", "extractions/", "pipeline/", "review/"):
-            names = blob_io.list_blob_names_with_prefix(
+        return set(
+            blob_io.list_study_ids_from_container(
                 blob_service=blob_service,
                 container_name=container,
-                prefix=prefix,
             )
-            for name in names:
-                parts = name.strip("/").split("/")
-                if len(parts) < 2 or parts[0] != prefix.rstrip("/"):
-                    continue
-                study_id = parts[1]
-                if study_id:
-                    study_ids.add(study_id)
-        return study_ids
+        )
 
     def _study_exists(self, study_id: str) -> bool:
         if self._ui_upload_manifest_path(study_id).is_file():
@@ -1684,26 +1682,54 @@ class UiStepService:
         except Exception:  # noqa: BLE001
             return None
 
-    def create_study(self, study_id: str) -> Dict[str, Any]:
+    def create_study(self, study_id: str, *, overwrite: bool = False) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         self._assert_safe_study_id(study_id)
-        if self._study_exists(study_id):
+        existed = self._study_exists(study_id)
+        if existed and not overwrite:
             raise UiApiError(
                 "DUPLICATE_STUDY",
                 f"Study '{study_id}' already exists.",
                 409,
             )
+
+        wipe: Dict[str, Any] | None = None
+        if existed and overwrite:
+            wipe = self._wipe_study_artifacts(study_id)
+            self._write_pipeline_run_state(
+                study_id,
+                status="idle",
+                currentStage="",
+                currentSubStepId="",
+                message="Study overwritten — ready to start over.",
+                error="",
+                startedAt="",
+                finishedAt="",
+                logs=[],
+                llmProgress=None,
+            )
+
         manifest = self._write_upload_manifest(
             study_id,
             entry_mode=ENTRY_MODE_EXTRACTED,
             workflow_choice=None,
             ui_stage=UI_STAGE_PROJECT,
+            pipeline_ui_step="study",
+            clear_pd_spec_import_mode=True,
+            coding_phase_accepted=False,
+            review_display_source="generated",
         )
-        return {
+        result: Dict[str, Any] = {
             "studyId": study_id,
             "manifestBlobPath": paths.ui_upload_manifest_blob(study_id),
             "manifest": manifest,
+            "overwritten": bool(existed and overwrite),
         }
+        if wipe is not None:
+            result["deletedBlobCount"] = wipe["deletedBlobCount"]
+            result["totalBlobCount"] = wipe["totalBlobCount"]
+            result["localOutputRemoved"] = wipe["localOutputRemoved"]
+        return result
 
     def patch_study_manifest(self, study_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
@@ -1741,12 +1767,18 @@ class UiStepService:
                     400,
                 )
 
+        pipeline_ui_step = payload.get("pipelineUiStep")
+        pipeline_ui_step_value: str | None = None
+        if pipeline_ui_step is not None:
+            pipeline_ui_step_value = str(pipeline_ui_step).strip() or None
+
         manifest = self._write_upload_manifest(
             study_id,
             entry_mode=entry_mode,
             pd_spec_import_mode=pd_spec_import_mode,
             workflow_choice=str(workflow_choice).strip() if workflow_choice is not None else None,
             ui_stage=str(ui_stage).strip() if ui_stage is not None else None,
+            pipeline_ui_step=pipeline_ui_step_value,
             clear_pd_spec_import_mode=clear_pd_spec_import_mode,
         )
         summary = self.get_study_summary(study_id)
@@ -1804,24 +1836,21 @@ class UiStepService:
             "deviationSummary": deviation_summary,
         }
 
+    def _read_upload_manifest_local_only(self, study_id: str) -> Dict[str, Any]:
+        manifest_path = self._ui_upload_manifest_path(study_id)
+        if manifest_path.is_file():
+            return read_json(manifest_path)
+        return {}
+
     def list_studies(self) -> Dict[str, Any]:
         study_ids = self._collect_study_ids_from_blob()
         studies = []
         for study_id in sorted(study_ids):
-            manifest = self._read_upload_manifest_obj(study_id)
+            manifest = self._read_upload_manifest_local_only(study_id)
             workflow = self._explicit_workflow_choice(manifest)
             inferred_workflow = self._infer_workflow_choice(manifest)
-            upload_status = {
-                "protocol": {"uploaded": self._blob_has_upload(study_id, "protocol")},
-                "acrf": {"uploaded": self._blob_has_upload(study_id, "acrf")},
-                "pdSpec": {"uploaded": self._blob_has_pd_spec_workbook(study_id)},
-            }
-            statuses = self._step_statuses(study_id)
-            stage = self.derive_stage(
-                workflow=workflow,
-                upload_status=upload_status,
-                statuses=statuses,
-            )
+            ui_stage = str(manifest.get("uiStage") or "").strip()
+            stage = ui_stage if ui_stage in VALID_UI_STAGES else UI_STAGE_PROJECT
             studies.append(
                 {
                     "studyId": study_id,
@@ -1847,31 +1876,28 @@ class UiStepService:
             "subCategoryOptions": all_sub_category_options(),
         }
 
-    def delete_study(self, study_id: str) -> Dict[str, Any]:
+    def _wipe_study_artifacts(self, study_id: str) -> Dict[str, Any]:
+        """Delete all blob objects and local output for a study."""
         study_id = self._require_study_id(study_id)
         self._assert_safe_study_id(study_id)
 
         blob_service = blob_io.blob_service_from_env()
         container = blob_io.container_from_env()
-        blob_names: List[str] = []
         prefixes_scanned: List[str] = []
+        total_blob_count = 0
+        deleted_blob_count = 0
         for prefix in paths.study_blob_list_prefixes(study_id):
+            prefixes_scanned.append(prefix)
             names = blob_io.list_blob_names_with_prefix(
                 blob_service=blob_service,
                 container_name=container,
                 prefix=prefix,
             )
-            if names:
-                prefixes_scanned.append(prefix)
-            blob_names.extend(names)
-
-        unique_blob_names = sorted(set(blob_names))
-        deleted_blob_count = 0
-        if unique_blob_names:
-            deleted_blob_count = blob_io.delete_blobs(
+            total_blob_count += len(names)
+            deleted_blob_count += blob_io.purge_blobs_with_prefix(
                 blob_service=blob_service,
                 container_name=container,
-                blob_paths=unique_blob_names,
+                prefix=prefix,
             )
 
         local_root = paths.local_study_root(study_id, self.output_dir)
@@ -1881,16 +1907,134 @@ class UiStepService:
             local_output_removed = True
 
         return {
-            "studyId": study_id,
             "deletedBlobCount": deleted_blob_count,
-            "totalBlobCount": len(unique_blob_names),
+            "totalBlobCount": total_blob_count,
             "blobPrefixes": prefixes_scanned,
             "localOutputRemoved": local_output_removed,
+        }
+
+    def delete_study(self, study_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        wipe = self._wipe_study_artifacts(study_id)
+        return {
+            "studyId": study_id,
+            "deletedBlobCount": wipe["deletedBlobCount"],
+            "totalBlobCount": wipe["totalBlobCount"],
+            "blobPrefixes": wipe["blobPrefixes"],
+            "localOutputRemoved": wipe["localOutputRemoved"],
             "message": (
-                f"Deleted {deleted_blob_count} blob object(s) for study {study_id!r}."
-                if unique_blob_names
+                f"Deleted {wipe['deletedBlobCount']} blob object(s) for study {study_id!r}."
+                if wipe["totalBlobCount"]
                 else f"No blob objects found for study {study_id!r}."
             ),
+        }
+
+    def delete_all_studies(self) -> Dict[str, Any]:
+        """Delete every study discovered in blob storage and local output."""
+        study_ids: set[str] = set()
+        try:
+            study_ids.update(self._collect_study_ids_from_blob())
+        except Exception:  # noqa: BLE001
+            pass
+        if self.output_dir.is_dir():
+            for entry in self.output_dir.iterdir():
+                if entry.is_dir():
+                    try:
+                        self._assert_safe_study_id(entry.name)
+                        study_ids.add(entry.name)
+                    except UiApiError:
+                        continue
+
+        deleted_studies: List[Dict[str, Any]] = []
+        total_blob_count = 0
+        total_deleted_blobs = 0
+        for study_id in sorted(study_ids):
+            wipe = self._wipe_study_artifacts(study_id)
+            total_blob_count += int(wipe["totalBlobCount"])
+            total_deleted_blobs += int(wipe["deletedBlobCount"])
+            deleted_studies.append(
+                {
+                    "studyId": study_id,
+                    "deletedBlobCount": wipe["deletedBlobCount"],
+                    "totalBlobCount": wipe["totalBlobCount"],
+                    "localOutputRemoved": wipe["localOutputRemoved"],
+                }
+            )
+
+        return {
+            "deletedStudyCount": len(deleted_studies),
+            "deletedBlobCount": total_deleted_blobs,
+            "totalBlobCount": total_blob_count,
+            "studies": deleted_studies,
+            "message": (
+                f"Deleted {len(deleted_studies)} study/studies "
+                f"({total_deleted_blobs} blob object(s)) from the container."
+            ),
+        }
+
+    def load_study(self, study_id: str) -> Dict[str, Any]:
+        """Download the full study from blob, including pipeline checkpoints."""
+        study_id = self._require_study_id(study_id)
+        self._assert_safe_study_id(study_id)
+        logger.info("load_study: study=%s validating presence in blob storage", study_id)
+        if study_id not in self._collect_study_ids_from_blob():
+            raise UiApiError(
+                "NOT_FOUND",
+                f"Study '{study_id}' was not found in blob storage.",
+                404,
+            )
+        logger.info("load_study: study=%s downloading artifacts from blob", study_id)
+        report = study_artifact_sync.download_study_from_blob(study_id, self.output_dir)
+        summary = self.get_study_summary(study_id)
+        logger.info(
+            "load_study: study=%s complete — downloaded=%d skipped=%d errors=%d",
+            study_id,
+            report.downloaded,
+            report.skipped,
+            report.errors,
+        )
+        return {
+            "studyId": study_id,
+            "sync": report.to_dict(),
+            "summary": summary,
+            "stepStatuses": summary["stepStatuses"],
+        }
+
+    def reset_study(self, study_id: str) -> Dict[str, Any]:
+        """Wipe study artifacts but keep the study id with a fresh extract manifest."""
+        study_id = self._require_study_id(study_id)
+        self._assert_safe_study_id(study_id)
+        wipe = self._wipe_study_artifacts(study_id)
+        manifest = self._write_upload_manifest(
+            study_id,
+            entry_mode=ENTRY_MODE_EXTRACTED,
+            workflow_choice=WORKFLOW_CHOICE_EXTRACT,
+            ui_stage=UI_STAGE_SETUP,
+            pipeline_ui_step="study",
+            clear_pd_spec_import_mode=True,
+            coding_phase_accepted=False,
+            review_display_source="generated",
+        )
+        self._write_pipeline_run_state(
+            study_id,
+            status="idle",
+            currentStage="",
+            currentSubStepId="",
+            message="Study reset — ready to start over.",
+            error="",
+            startedAt="",
+            finishedAt="",
+            logs=[],
+            llmProgress=None,
+        )
+        return {
+            "studyId": study_id,
+            "deletedBlobCount": wipe["deletedBlobCount"],
+            "totalBlobCount": wipe["totalBlobCount"],
+            "localOutputRemoved": wipe["localOutputRemoved"],
+            "manifest": manifest,
+            "stepStatuses": self._step_statuses(study_id),
+            "message": f"Reset study {study_id!r}; artifacts cleared.",
         }
 
     def upload_step1_files(
@@ -1993,7 +2137,7 @@ class UiStepService:
 
         raw = (extractor or "").strip().lower()
         if not raw:
-            mode = extraction_resolve.UI_EXTRACTOR_BOTH
+            mode = extraction_resolve.UI_EXTRACTOR_DI
         elif raw in extraction_resolve.VALID_UI_EXTRACTORS:
             mode = raw
         else:
@@ -3393,6 +3537,39 @@ class UiStepService:
             "fileName": file_name,
             "filePath": str(out_path),
             "rowCount": len(rows),
+            "exportedAt": exported_at,
+            "content": content,
+        }
+
+    def export_step7_deviations_coding_csv(
+        self, study_id: str, *, review_source: str | None = None
+    ) -> Dict[str, Any]:
+        from pdcheck_factory import coding_workbook_export
+
+        study_id = self._require_study_id(study_id)
+        payload = self.get_step7_deviations(study_id, review_source=review_source)
+        rows = list(payload.get("rows", []))
+        exported_at = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        timestamp_slug = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        file_name = f"{study_id}_company_pds_{timestamp_slug}.csv"
+
+        out_path = paths.local_deviations_coding_export_csv(study_id, self.output_dir)
+        row_count = coding_workbook_export.write_coding_workbook_csv(
+            rows,
+            out_path,
+            study_id=study_id,
+            accepted_only=True,
+        )
+        content = coding_workbook_export.coding_workbook_csv_bytes(
+            rows,
+            study_id=study_id,
+            accepted_only=True,
+        )
+        return {
+            "studyId": study_id,
+            "fileName": file_name,
+            "filePath": str(out_path),
+            "rowCount": row_count,
             "exportedAt": exported_at,
             "content": content,
         }

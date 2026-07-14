@@ -1,5 +1,5 @@
-import { WizardShell } from "./pages/WizardShell";
+import { PipelineApp } from "./PipelineApp";
 
 export default function App(): JSX.Element {
-  return <WizardShell />;
+  return <PipelineApp />;
 }

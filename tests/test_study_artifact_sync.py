@@ -46,3 +46,39 @@ def test_sync_study_skips_missing_blob_download(tmp_path: Path, monkeypatch: pyt
     assert report.skipped == 1
     assert report.errors == 0
     assert report.downloaded == 0
+
+
+def test_download_study_from_blob_pulls_tracked_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    study_id = "LOAD-01"
+    blob_name = f"pipeline/{study_id}/ui_upload_manifest.json"
+    blob_item = blob_io.BlobItem(
+        name=blob_name,
+        last_modified=datetime.now(timezone.utc),
+        size=42,
+    )
+    downloaded: list[str] = []
+
+    monkeypatch.setattr(
+        study_artifact_sync,
+        "_collect_blob_items",
+        lambda **_kwargs: {blob_item.name: blob_item},
+    )
+    monkeypatch.setattr(study_artifact_sync.blob_io, "blob_exists", lambda **_kwargs: True)
+
+    def fake_download(**kwargs):
+        local_path = kwargs["local_path"]
+        local_path.parent.mkdir(parents=True, exist_ok=True)
+        local_path.write_text('{"study_id":"LOAD-01"}', encoding="utf-8")
+        downloaded.append(kwargs["blob_path"])
+
+    monkeypatch.setattr(study_artifact_sync.blob_io, "download_file", fake_download)
+
+    report = study_artifact_sync.download_study_from_blob(
+        study_id,
+        tmp_path,
+        blob_service=object(),
+        container_name="test-container",
+    )
+    assert report.downloaded == 1
+    assert report.errors == 0
+    assert downloaded == [blob_name]

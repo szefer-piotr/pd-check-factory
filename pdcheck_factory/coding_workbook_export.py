@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+from io import StringIO
 from pathlib import Path
 from typing import Any, Dict, Mapping, Sequence
 
@@ -76,3 +78,60 @@ def write_coding_workbook_xlsx(
     del exported_at
     export_rows = [_row_for_export(row, study_id=study_id) for row in rows]
     write_pd_spec_xlsx(export_rows, out_path)
+
+
+def filter_accepted_rows(rows: Sequence[Mapping[str, Any]]) -> list[Dict[str, Any]]:
+    return [dict(row) for row in rows if str(row.get("status", "")).strip().lower() == "accepted"]
+
+
+def rows_to_company_pd_spec_matrix(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    study_id: str,
+    accepted_only: bool = True,
+) -> tuple[list[str], list[list[str]]]:
+    """Return headers and data rows for company PD spec export."""
+    selected = filter_accepted_rows(rows) if accepted_only else [dict(row) for row in rows]
+    headers = list(PD_SPEC_HEADERS)
+    matrix = [map_step7_row_to_pd_spec_row(row, study_id=study_id) for row in selected]
+    return headers, matrix
+
+
+def write_coding_workbook_csv(
+    rows: Sequence[Mapping[str, Any]],
+    out_path: Path,
+    *,
+    study_id: str,
+    accepted_only: bool = True,
+) -> int:
+    """Write accepted Step 7 rows to company PD Specifications CSV."""
+    headers, matrix = rows_to_company_pd_spec_matrix(
+        rows,
+        study_id=study_id,
+        accepted_only=accepted_only,
+    )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    with out_path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(headers)
+        writer.writerows(matrix)
+    return len(matrix)
+
+
+def coding_workbook_csv_bytes(
+    rows: Sequence[Mapping[str, Any]],
+    *,
+    study_id: str,
+    accepted_only: bool = True,
+) -> bytes:
+    """Return company PD Specifications CSV as UTF-8 bytes."""
+    buffer = StringIO()
+    headers, matrix = rows_to_company_pd_spec_matrix(
+        rows,
+        study_id=study_id,
+        accepted_only=accepted_only,
+    )
+    writer = csv.writer(buffer)
+    writer.writerow(headers)
+    writer.writerows(matrix)
+    return buffer.getvalue().encode("utf-8")

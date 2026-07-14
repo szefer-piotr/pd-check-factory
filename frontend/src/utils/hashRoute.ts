@@ -1,24 +1,24 @@
-/** Legacy hash helpers — deep links now route to the guided wizard. */
+import { navigateToPipelineStep } from "../pipeline/pipelineRoute";
 
-export interface HashRoute {
-  stepId: string;
-  params: URLSearchParams;
+/** Legacy deep-link helper — routes to the linear pipeline UI. */
+export function navigateToStep(step: string, _options?: Record<string, string>): void {
+  if (step.includes("upload")) {
+    navigateToPipelineStep("upload");
+    return;
+  }
+  if (step.includes("acrf")) {
+    navigateToPipelineStep("acrf-summary");
+    return;
+  }
+  navigateToPipelineStep("review");
 }
 
-export function parseHash(hash: string): HashRoute {
-  const raw = hash.replace(/^#\/?/, "");
-  const queryIndex = raw.indexOf("?");
-  const stepId = (queryIndex >= 0 ? raw.slice(0, queryIndex) : raw).trim();
-  const params = new URLSearchParams(queryIndex >= 0 ? raw.slice(queryIndex + 1) : "");
-  return { stepId, params };
-}
-
-export function buildHash(_stepId: string, params?: Record<string, string> | URLSearchParams): string {
-  const search =
-    params instanceof URLSearchParams ? params.toString() : new URLSearchParams(params ?? {}).toString();
-  return `/processing${search ? `?${search}` : ""}`;
-}
-
-export function navigateToStep(_stepId: string, params?: Record<string, string> | URLSearchParams): void {
-  window.location.hash = buildHash("processing", params);
+export function buildHash(step: string, _options?: Record<string, string>): string {
+  if (step.includes("upload")) {
+    return "#/upload";
+  }
+  if (step.includes("acrf")) {
+    return "#/acrf-summary";
+  }
+  return "#/review";
 }

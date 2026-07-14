@@ -191,14 +191,88 @@ def list_blob_names_with_prefix(
     blob_service: BlobServiceClient,
     container_name: str,
     prefix: str,
+    include_soft_deleted: bool = False,
 ) -> List[str]:
     """List blob names in the container whose paths start with ``prefix``."""
     container_client = blob_service.get_container_client(container_name)
     prefix = prefix.lstrip("/")
-    names: List[str] = []
-    for blob in container_client.list_blobs(name_starts_with=prefix):
-        names.append(blob.name)
+    names: set[str] = set()
+    list_kwargs: dict[str, object] = {"name_starts_with": prefix}
+    if include_soft_deleted:
+        list_kwargs["include"] = ["deleted"]
+    for blob in container_client.list_blobs(**list_kwargs):
+        names.add(blob.name)
     return sorted(names)
+
+
+STUDY_BLOB_ROOT_PREFIXES = ("raw/", "extractions/", "pipeline/", "review/")
+
+
+def _study_id_from_blob_name(name: str, root: str) -> str | None:
+    parts = name.strip("/").split("/")
+    if len(parts) < 2 or parts[0] != root:
+        return None
+    study_id = parts[1].strip()
+    return study_id or None
+
+
+def list_study_ids_from_container(
+    *,
+    blob_service: BlobServiceClient,
+    container_name: str,
+    root_prefixes: tuple[str, ...] = STUDY_BLOB_ROOT_PREFIXES,
+    include_soft_deleted: bool = False,
+) -> List[str]:
+    """Return sorted unique study folder names discovered under known blob roots."""
+    study_ids: set[str] = set()
+    container_client = blob_service.get_container_client(container_name)
+    walk_kwargs: dict[str, object] = {"delimiter": "/"}
+    if include_soft_deleted:
+        walk_kwargs["include"] = ["deleted"]
+
+    for prefix in root_prefixes:
+        root = prefix.rstrip("/")
+        for item in container_client.walk_blobs(name_starts_with=prefix, **walk_kwargs):
+            prefix_name = getattr(item, "prefix", None)
+            if prefix_name:
+                study_id = _study_id_from_blob_name(str(prefix_name).rstrip("/"), root)
+                if study_id:
+                    study_ids.add(study_id)
+                continue
+            name = getattr(item, "name", None)
+            if name:
+                study_id = _study_id_from_blob_name(str(name), root)
+                if study_id:
+                    study_ids.add(study_id)
+    return sorted(study_ids)
+
+
+def purge_blobs_with_prefix(
+    *,
+    blob_service: BlobServiceClient,
+    container_name: str,
+    prefix: str,
+) -> int:
+    """Remove active and soft-deleted blobs under ``prefix``.
+
+    Active blobs are deleted (soft-deleted when the account retention policy
+    requires it). Already soft-deleted blobs are permanently removed by a
+    second delete call — no undelete/restore step.
+    """
+    container_client = blob_service.get_container_client(container_name)
+    prefix = prefix.lstrip("/")
+    names: set[str] = set()
+    for blob in container_client.list_blobs(name_starts_with=prefix, include=["deleted"]):
+        names.add(blob.name)
+    purged = 0
+    for name in sorted(names):
+        blob_client = container_client.get_blob_client(name)
+        try:
+            blob_client.delete_blob(delete_snapshots="include")
+            purged += 1
+        except (ResourceNotFoundError, HttpResponseError):
+            continue
+    return purged
 
 
 @dataclass(frozen=True)
@@ -308,8 +382,19 @@ def delete_blobs(
     blob_service: BlobServiceClient,
     container_name: str,
     blob_paths: List[str],
+    permanent: bool = False,
 ) -> int:
     """Delete blobs by exact paths. Returns number successfully deleted."""
+    if permanent:
+        deleted = 0
+        for path in blob_paths:
+            deleted += purge_blobs_with_prefix(
+                blob_service=blob_service,
+                container_name=container_name,
+                prefix=path,
+            )
+        return deleted
+
     container_client = blob_service.get_container_client(container_name)
     deleted = 0
     for path in blob_paths:

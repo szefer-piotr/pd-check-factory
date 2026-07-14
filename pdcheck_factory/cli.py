@@ -637,6 +637,7 @@ def run_extract(
             sas_ttl_minutes=sas_ttl,
             upload_to_blob=upload,
             debug_blob=debug_blob,
+            log_callback=log_callback,
         )
         _log("DI: protocol complete")
         if run_opendataloader_ocr:
@@ -691,6 +692,7 @@ def run_extract(
         sas_ttl_minutes=sas_ttl,
         upload_to_blob=upload,
         debug_blob=debug_blob,
+        log_callback=log_callback,
     )
     _log("DI: aCRF complete")
     if run_opendataloader_ocr:
