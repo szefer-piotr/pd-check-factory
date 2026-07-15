@@ -1,0 +1,59 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pdcheck/schemas/acrf_field_dictionary.schema.json",
+  "title": "ACRF field dictionary",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "study_id", "generated_at", "datasets", "field_index"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "study_id": { "type": "string", "minLength": 1 },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "datasets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["dataset_name", "fields"],
+        "properties": {
+          "dataset_name": { "type": "string", "minLength": 1 },
+          "form_name": { "type": "string" },
+          "fields": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["column_name", "label", "type"],
+              "properties": {
+                "column_name": { "type": "string", "minLength": 1 },
+                "label": { "type": "string" },
+                "type": {
+                  "type": "string",
+                  "enum": ["categorical", "numeric", "date", "time", "datetime", "text", "boolean", "unknown"]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "field_index": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["dataset_name", "column_name", "label", "type"],
+        "properties": {
+          "dataset_name": { "type": "string", "minLength": 1 },
+          "column_name": { "type": "string", "minLength": 1 },
+          "label": { "type": "string" },
+          "type": { "type": "string" }
+        }
+      }
+    },
+    "normalization_warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}

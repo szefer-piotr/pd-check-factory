@@ -6,8 +6,12 @@ const STEP_LABELS: Record<(typeof PROCESSING_BACKEND_STEP_IDS)[number], string> 
   "index-protocol": "Index protocol",
   "acrf-split-toc": "Split aCRF sections",
   "acrf-summary-text": "Merge aCRF summary",
+  "acrf-field-dictionary": "Build field dictionary",
   "extract-rules": "Extract rules",
-  "extract-deviations": "Extract deviations"
+  "extract-deviations": "Extract deviations",
+  "normalize-checks": "Normalize checks",
+  "deduplicate-checks": "Deduplicate checks",
+  "classify-programmability": "Classify programmability"
 };
 
 interface ProcessingStepStatusBarProps {

@@ -10,7 +10,24 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 LlmProgressCallback = Callable[..., None]
 
-from pdcheck_factory import document_chat_agent, deviation_classify, deviation_consolidate, extraction_resolve, import_grounding, llm, paths, study_artifact_sync, text_parse
+from pdcheck_factory import (
+    acrf_field_dictionary,
+    check_dedup,
+    check_field_validate,
+    check_normalize,
+    check_validate,
+    document_chat_agent,
+    deviation_classify,
+    deviation_consolidate,
+    extraction_resolve,
+    import_grounding,
+    llm,
+    paths,
+    pipeline_metrics,
+    programmability_classify,
+    study_artifact_sync,
+    text_parse,
+)
 from pdcheck_factory.model_output_log import build_model_output_log
 from pdcheck_factory.pd_spec_export import write_final_pd_spec_xlsx
 from pdcheck_factory.pd_spec_validate import validate_final_deviations
@@ -186,6 +203,78 @@ def _generate_single_pseudo_logic(
         return _coerce_pseudo_logic_text(reply)
 
 
+def _load_programmability_classification(study_id: str, output_dir: Path) -> Dict[str, Dict[str, Any]]:
+    classified_path = paths.local_programmability_classified_json(study_id, output_dir)
+    if classified_path.is_file():
+        return programmability_classify.programmability_by_deviation_id(read_json(classified_path))
+    return {}
+
+
+def _manual_review_instructions(deviation_text: str) -> str:
+    text = (deviation_text or "").strip()
+    if not text:
+        return "Confirm whether this deviation occurred for the participant."
+    return f"Confirm whether the following deviation occurred: {text}"
+
+
+def _build_pseudo_logic_item(
+    *,
+    study_id: str,
+    output_dir: Path,
+    deviation: Dict[str, Any],
+    rule: Dict[str, Any],
+    classification: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    dictionary_obj = _acrf_field_dictionary(study_id, output_dir)
+    acrf_summary = _acrf_field_dictionary_text(study_id, output_dir)[:50000]
+    programmability = str((classification or {}).get("programmability", "manual")).strip().lower()
+    manual_or_programmable = str(
+        (classification or {}).get("manual_or_programmable", "Manual")
+    ).strip() or "Manual"
+    reason = str((classification or {}).get("reason", "")).strip()
+    required_data = list((classification or {}).get("required_data", []) or [])
+
+    if programmability == "manual" or manual_or_programmable == "Manual":
+        item = {
+            "deviation_id": deviation.get("deviation_id", ""),
+            "rule_id": deviation.get("rule_id", ""),
+            "rule_title": rule.get("title", ""),
+            "pseudo_logic": None,
+            "manual_review_instructions": _manual_review_instructions(str(deviation.get("text", ""))),
+            "manual_or_programmable": "Manual",
+            "programmable": False,
+            "programmability_note": reason,
+            "required_data": required_data,
+            "status": "pending",
+            "dm_comment": "",
+        }
+        return check_field_validate.apply_field_validation_to_item(item, dictionary_obj=dictionary_obj)
+
+    pseudo_logic = _generate_single_pseudo_logic(
+        study_id=study_id,
+        rule_id=str(deviation.get("rule_id", "")),
+        deviation_id=str(deviation.get("deviation_id", "")),
+        deviation_text=str(deviation.get("text", "")),
+        paragraph_refs=list(deviation.get("paragraph_refs", [])),
+        acrf_summary=acrf_summary,
+    )
+    item = {
+        "deviation_id": deviation.get("deviation_id", ""),
+        "rule_id": deviation.get("rule_id", ""),
+        "rule_title": rule.get("title", ""),
+        "pseudo_logic": pseudo_logic,
+        "manual_or_programmable": manual_or_programmable,
+        "programmable": programmability == "programmable",
+        "programmability_note": reason,
+        "required_data": required_data,
+        "status": "pending",
+        "dm_comment": "",
+    }
+    if manual_or_programmable == "Partially programmable":
+        item["manual_review_instructions"] = _manual_review_instructions(str(deviation.get("text", "")))
+    return check_field_validate.apply_field_validation_to_item(item, dictionary_obj=dictionary_obj)
+
+
 def _filter_refs(refs: List[str], valid: set[str]) -> List[str]:
     return [r for r in refs if r in valid]
 
@@ -236,6 +325,18 @@ def step1_acrf_summary_text(
     write_json(out, merged)
     study_artifact_sync.mirror_upload_path(study_id, output_dir, out)
     return merged
+
+
+def step_acrf_field_dictionary(study_id: str, output_dir: Path) -> Dict[str, Any]:
+    summary = read_json(paths.local_acrf_summary_text_merged(study_id, output_dir))
+    dictionary = acrf_field_dictionary.build_field_dictionary(study_id=study_id, summary_obj=summary)
+    errs = validate(dictionary, load_schema("acrf_field_dictionary.schema.json"))
+    if errs:
+        raise ValueError("; ".join(errs))
+    out = paths.local_acrf_field_dictionary_json(study_id, output_dir)
+    write_json(out, dictionary)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, out)
+    return dictionary
 
 
 def step3_extract_rules(
@@ -323,6 +424,18 @@ def _acrf_summary_text(study_id: str, output_dir: Path) -> str:
     return json.dumps(summary, ensure_ascii=False, indent=2)
 
 
+def _acrf_field_dictionary(study_id: str, output_dir: Path) -> Dict[str, Any]:
+    dictionary_path = paths.local_acrf_field_dictionary_json(study_id, output_dir)
+    if dictionary_path.is_file():
+        return read_json(dictionary_path)
+    summary = read_json(paths.local_acrf_summary_text_merged(study_id, output_dir))
+    return acrf_field_dictionary.build_field_dictionary(study_id=study_id, summary_obj=summary)
+
+
+def _acrf_field_dictionary_text(study_id: str, output_dir: Path) -> str:
+    return acrf_field_dictionary.compact_dictionary_for_prompt(_acrf_field_dictionary(study_id, output_dir))
+
+
 def _protocol_paragraph_text(study_id: str, output_dir: Path) -> str:
     index_obj = read_json(paths.local_protocol_paragraph_index_json(study_id, output_dir))
     return _numbered_protocol_text(index_obj)
@@ -350,7 +463,7 @@ def step4_5_extract_deviations(
     index_obj = read_json(paths.local_protocol_paragraph_index_json(study_id, output_dir))
     valid_ids = {p["paragraph_id"] for p in index_obj.get("paragraphs", [])}
     protocol_paragraphs = _numbered_protocol_text(index_obj)[:180000]
-    acrf_summary = _acrf_summary_text(study_id, output_dir)[:50000]
+    acrf_summary = _acrf_field_dictionary_text(study_id, output_dir)[:50000]
     extra = additional_instructions.strip() or "(none)"
     system = load_prompt("deviations_v2_system")
     user_t = load_prompt("deviations_v2_user")
@@ -457,7 +570,80 @@ def step4_5_extract_deviations(
     write_json(paths.local_deviations_parsed_json(study_id, output_dir), parsed)
     study_artifact_sync.mirror_upload_path(study_id, output_dir, raw_out)
     study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_deviations_parsed_json(study_id, output_dir))
-    return _classify_and_consolidate_deviations(study_id, output_dir, parsed)
+    return parsed
+
+
+def step_normalize_checks(
+    study_id: str,
+    output_dir: Path,
+    *,
+    progress_callback: Optional[LlmProgressCallback] = None,
+) -> Dict[str, Any]:
+    deviations_obj = read_json(paths.local_deviations_parsed_json(study_id, output_dir))
+    normalized = check_normalize.normalize_deviations(
+        study_id=study_id,
+        deviations=list(deviations_obj.get("deviations", [])),
+        progress_callback=progress_callback,
+    )
+    errs = validate(normalized, load_schema("deviations_normalized_v2.schema.json"))
+    if errs:
+        raise ValueError("; ".join(errs))
+    out = paths.local_deviations_normalized_json(study_id, output_dir)
+    write_json(out, normalized)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, out)
+    return normalized
+
+
+def step_deduplicate_checks(
+    study_id: str,
+    output_dir: Path,
+) -> Dict[str, Any]:
+    rules_obj = read_json(paths.local_rules_parsed_json(study_id, output_dir))
+    deviations_obj = read_json(paths.local_deviations_parsed_json(study_id, output_dir))
+    normalized_obj = read_json(paths.local_deviations_normalized_json(study_id, output_dir))
+    rules_out, deviations_out, audit = check_dedup.deduplicate_checks(
+        study_id=study_id,
+        rules_obj=rules_obj,
+        deviations_obj=deviations_obj,
+        normalized_obj=normalized_obj,
+        acrf_context=_acrf_field_dictionary_text(study_id, output_dir)[:50000],
+    )
+    rule_errs = validate(rules_out, load_schema("rules_parsed_v2.schema.json"))
+    if rule_errs:
+        raise ValueError("; ".join(rule_errs))
+    deviation_errs = validate(deviations_out, load_schema("deviations_parsed_v2.schema.json"))
+    if deviation_errs:
+        raise ValueError("; ".join(deviation_errs))
+    write_json(paths.local_rules_parsed_json(study_id, output_dir), rules_out)
+    write_json(paths.local_deviations_parsed_json(study_id, output_dir), deviations_out)
+    write_json(paths.local_check_dedup_audit_json(study_id, output_dir), audit)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_rules_parsed_json(study_id, output_dir))
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_deviations_parsed_json(study_id, output_dir))
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, paths.local_check_dedup_audit_json(study_id, output_dir))
+    return deviations_out
+
+
+def step_classify_programmability(
+    study_id: str,
+    output_dir: Path,
+    *,
+    progress_callback: Optional[LlmProgressCallback] = None,
+) -> Dict[str, Any]:
+    deviations_obj = read_json(paths.local_deviations_parsed_json(study_id, output_dir))
+    dictionary_obj = _acrf_field_dictionary(study_id, output_dir)
+    classified = programmability_classify.classify_deviation_programmability(
+        study_id=study_id,
+        deviations=list(deviations_obj.get("deviations", [])),
+        dictionary_obj=dictionary_obj,
+        progress_callback=progress_callback,
+    )
+    errs = validate(classified, load_schema("programmability_classified_v2.schema.json"))
+    if errs:
+        raise ValueError("; ".join(errs))
+    out = paths.local_programmability_classified_json(study_id, output_dir)
+    write_json(out, classified)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, out)
+    return classified
 
 
 def _classify_and_consolidate_deviations(
@@ -530,7 +716,7 @@ def step8_generate_pseudo_logic(
     deviations_obj = read_json(paths.local_deviations_validated_json(study_id, output_dir))
     rules_obj = read_json(paths.local_rules_parsed_json(study_id, output_dir))
     rule_by_id = {r["rule_id"]: r for r in rules_obj.get("rules", [])}
-    acrf_summary = _acrf_summary_text(study_id, output_dir)[:50000]
+    programmability_by_dev = _load_programmability_classification(study_id, output_dir)
     items: List[Dict[str, Any]] = []
     raw_chunks: List[str] = []
     accepted_deviations = [
@@ -539,47 +725,23 @@ def step8_generate_pseudo_logic(
     total_accepted = len(accepted_deviations)
     for index, dev in enumerate(accepted_deviations):
         rule = rule_by_id.get(dev.get("rule_id"), {})
-        pseudo = _generate_single_pseudo_logic(
+        classification = programmability_by_dev.get(str(dev.get("deviation_id", "")))
+        if not classification:
+            classification = programmability_classify.classify_single_deviation(
+                study_id=study_id,
+                deviation=dev,
+                dictionary_obj=_acrf_field_dictionary(study_id, output_dir),
+            )
+        item = _build_pseudo_logic_item(
             study_id=study_id,
-            rule_id=str(dev.get("rule_id", "")),
-            deviation_id=str(dev.get("deviation_id", "")),
-            deviation_text=dev.get("text", ""),
-            paragraph_refs=list(dev.get("paragraph_refs", [])),
-            acrf_summary=acrf_summary,
+            output_dir=output_dir,
+            deviation=dev,
+            rule=rule,
+            classification=classification,
         )
-        raw_chunks.append(pseudo)
-        prog_reply = llm.chat_text_repairs(
-            system=(
-                "You are a data programmability assessor.\n"
-                "Return exactly two lines:\n"
-                "PROGRAMMABLE: yes|no\n"
-                "RATIONALE: short reason grounded in provided deviation, pseudo logic, and aCRF summary."
-            ),
-            user=(
-                f"study_id: {study_id}\n"
-                f"rule_id: {dev.get('rule_id', '')}\n"
-                f"deviation_id: {dev.get('deviation_id', '')}\n"
-                f"deviation_text: {dev.get('text', '')}\n\n"
-                f"pseudo_logic:\n{pseudo}\n\n"
-                f"acrf_summary:\n{acrf_summary}\n"
-            ),
-            validate_reply=_validate_programmability_reply,
-            max_repairs=1,
-            label=f"v2-programmability-{dev.get('deviation_id', '')}",
-        )
-        programmable, rationale = text_parse.parse_programmability(prog_reply)
-        items.append(
-            {
-                "deviation_id": dev["deviation_id"],
-                "rule_id": dev["rule_id"],
-                "rule_title": rule.get("title", ""),
-                "pseudo_logic": pseudo,
-                "programmable": programmable,
-                "programmability_note": rationale,
-                "status": "pending",
-                "dm_comment": "",
-            }
-        )
+        if item.get("pseudo_logic"):
+            raw_chunks.append(str(item["pseudo_logic"]))
+        items.append(item)
         if progress_callback and total_accepted > 0:
             progress_callback(
                 phase="pseudo-logic",
@@ -594,6 +756,14 @@ def step8_generate_pseudo_logic(
         "generated_at": _iso_now(),
         "items": items,
     }
+    validation = check_validate.validate_check_artifacts(
+        deviations_obj=deviations_obj,
+        rules_obj=rules_obj,
+        pseudo_obj=out,
+        dictionary_obj=_acrf_field_dictionary(study_id, output_dir),
+    )
+    if not validation.ok:
+        raise ValueError("; ".join(issue.message for issue in validation.errors))
     errs = validate(out, load_schema("pseudo_logic_v2.schema.json"))
     if errs:
         raise ValueError("; ".join(errs))
@@ -620,45 +790,21 @@ def generate_pseudo_logic_for_deviation(
         rules_obj = read_json(paths.local_rules_parsed_json(study_id, output_dir))
         rule_by_id = {r["rule_id"]: r for r in rules_obj.get("rules", [])}
     rule = rule_by_id.get(str(deviation.get("rule_id", "")), {})
-    acrf_summary = _acrf_summary_text(study_id, output_dir)[:50000]
-    pseudo_logic = _generate_single_pseudo_logic(
+    programmability_by_dev = _load_programmability_classification(study_id, output_dir)
+    classification = programmability_by_dev.get(str(deviation.get("deviation_id", "")))
+    if not classification:
+        classification = programmability_classify.classify_single_deviation(
+            study_id=study_id,
+            deviation=deviation,
+            dictionary_obj=_acrf_field_dictionary(study_id, output_dir),
+        )
+    return _build_pseudo_logic_item(
         study_id=study_id,
-        rule_id=str(deviation.get("rule_id", "")),
-        deviation_id=str(deviation.get("deviation_id", "")),
-        deviation_text=str(deviation.get("text", "")),
-        paragraph_refs=list(deviation.get("paragraph_refs", [])),
-        acrf_summary=acrf_summary,
+        output_dir=output_dir,
+        deviation=deviation,
+        rule=rule,
+        classification=classification,
     )
-    prog_reply = llm.chat_text_repairs(
-        system=(
-            "You are a data programmability assessor.\n"
-            "Return exactly two lines:\n"
-            "PROGRAMMABLE: yes|no\n"
-            "RATIONALE: short reason grounded in provided deviation, pseudo logic, and aCRF summary."
-        ),
-        user=(
-            f"study_id: {study_id}\n"
-            f"rule_id: {deviation.get('rule_id', '')}\n"
-            f"deviation_id: {deviation.get('deviation_id', '')}\n"
-            f"deviation_text: {deviation.get('text', '')}\n\n"
-            f"pseudo_logic:\n{pseudo_logic}\n\n"
-            f"acrf_summary:\n{acrf_summary}\n"
-        ),
-        validate_reply=_validate_programmability_reply,
-        max_repairs=1,
-        label=f"v2-programmability-{deviation.get('deviation_id', '')}",
-    )
-    programmable, rationale = text_parse.parse_programmability(prog_reply)
-    return {
-        "deviation_id": deviation.get("deviation_id", ""),
-        "rule_id": deviation.get("rule_id", ""),
-        "rule_title": rule.get("title", ""),
-        "pseudo_logic": pseudo_logic,
-        "programmable": programmable,
-        "programmability_note": rationale,
-        "status": "pending",
-        "dm_comment": "",
-    }
 
 
 def step10_finalize(study_id: str, output_dir: Path) -> Dict[str, Any]:
@@ -687,24 +833,45 @@ def step10_finalize(study_id: str, output_dir: Path) -> Dict[str, Any]:
             cat = pd_spec_field(dev, "protocol_deviation_category").strip()
             sub = pd_spec_field(dev, "protocol_deviation_sub_category").strip()
             rule_title = f"{cat} / {sub}".strip(" /")
-        items.append(
-            {
-                "rule_id": dev["rule_id"],
-                "deviation_id": dev["deviation_id"],
-                "rule_title": rule_title,
-                "deviation_text": dev["text"],
-                "paragraph_refs": dev["paragraph_refs"],
-                "pseudo_logic": p["pseudo_logic"],
-                "protocol_deviation_category": pd_spec_field(dev, "protocol_deviation_category"),
-                "protocol_deviation_sub_category": pd_spec_field(dev, "protocol_deviation_sub_category"),
-                "classification": pd_spec_field(dev, "classification"),
-                "manual_or_programmable": pd_spec_field(dev, "manual_or_programmable")
-                or ("Programmable" if p.get("programmable") is True else "Manual" if p.get("programmable") is False else ""),
-                "data_source": pd_spec_field(dev, "data_source") or "Rave",
-                "programming_status": pd_spec_field(dev, "programming_status"),
-                "programmable": p.get("programmable"),
-            }
+        manual_or_programmable = (
+            pd_spec_field(dev, "manual_or_programmable")
+            or str(p.get("manual_or_programmable", "")).strip()
+            or (
+                "Programmable"
+                if p.get("programmable") is True
+                else "Manual"
+                if p.get("programmable") is False
+                else ""
+            )
         )
+        pseudo_logic = p.get("pseudo_logic")
+        if manual_or_programmable == "Manual":
+            pseudo_logic = None
+        elif not str(pseudo_logic or "").strip():
+            pseudo_logic = None
+        row = {
+            "rule_id": dev["rule_id"],
+            "deviation_id": dev["deviation_id"],
+            "rule_title": rule_title,
+            "deviation_text": dev["text"],
+            "paragraph_refs": dev["paragraph_refs"],
+            "pseudo_logic": pseudo_logic,
+            "protocol_deviation_category": pd_spec_field(dev, "protocol_deviation_category"),
+            "protocol_deviation_sub_category": pd_spec_field(dev, "protocol_deviation_sub_category"),
+            "classification": pd_spec_field(dev, "classification"),
+            "manual_or_programmable": manual_or_programmable,
+            "data_source": pd_spec_field(dev, "data_source") or "Rave",
+            "programming_status": pd_spec_field(dev, "programming_status"),
+            "programmable": p.get("programmable"),
+        }
+        if manual_or_programmable == "Manual":
+            row["manual_review_instructions"] = str(
+                p.get("manual_review_instructions")
+                or _manual_review_instructions(str(dev.get("text", "")))
+            )
+        elif manual_or_programmable == "Partially programmable":
+            row["manual_review_instructions"] = str(p.get("manual_review_instructions", ""))
+        items.append(row)
     out = {
         "schema_version": "1.0.0",
         "study_id": study_id,
@@ -719,11 +886,47 @@ def step10_finalize(study_id: str, output_dir: Path) -> Dict[str, Any]:
     index_path = paths.local_protocol_paragraph_index_json(study_id, output_dir)
     if index_path.is_file():
         paragraph_index = read_json(index_path)
+    rules_obj = read_json(rules_path) if rules_path.is_file() else {"rules": []}
+    dictionary_obj = _acrf_field_dictionary(study_id, output_dir)
+    dedup_audit: Dict[str, Any] = {}
+    dedup_path = paths.local_check_dedup_audit_json(study_id, output_dir)
+    if dedup_path.is_file():
+        dedup_audit = read_json(dedup_path)
+    programmability_obj: Dict[str, Any] = {}
+    programmability_path = paths.local_programmability_classified_json(study_id, output_dir)
+    if programmability_path.is_file():
+        programmability_obj = read_json(programmability_path)
+    validation = check_validate.validate_check_artifacts(
+        deviations_obj=deviations_obj,
+        rules_obj=rules_obj,
+        pseudo_obj=pseudo_obj,
+        dictionary_obj=dictionary_obj,
+        final_obj=out,
+        paragraph_index=paragraph_index,
+    )
+    if not validation.ok:
+        raise ValueError("; ".join(issue.message for issue in validation.errors))
     validation = validate_final_deviations(out, paragraph_index=paragraph_index)
     if not validation.ok:
         raise ValueError(
             "; ".join(issue.message for issue in validation.errors)
         )
+
+    metrics = pipeline_metrics.build_pipeline_metrics(
+        study_id=study_id,
+        deviations_obj=deviations_obj,
+        rules_obj=rules_obj,
+        pseudo_obj=pseudo_obj,
+        dictionary_obj=dictionary_obj,
+        dedup_audit=dedup_audit,
+        programmability_obj=programmability_obj,
+        final_obj=out,
+        paragraph_index=paragraph_index,
+    )
+    write_json(paths.local_pipeline_quality_metrics_json(study_id, output_dir), metrics)
+    study_artifact_sync.mirror_upload_path(
+        study_id, output_dir, paths.local_pipeline_quality_metrics_json(study_id, output_dir)
+    )
 
     class_audit: List[Dict[str, Any]] = []
     class_path = paths.local_deviation_classification_audit_json(study_id, output_dir)
@@ -942,68 +1145,43 @@ def generate_pseudo_logic_for_imported_deviation(
     deviation: Dict[str, Any],
 ) -> Dict[str, Any]:
     """Generate pseudo logic for one imported PD spec deviation."""
-    acrf_summary = _acrf_summary_text(study_id, output_dir)[:50000]
-    system = load_prompt("pseudo_logic_v2_system")
-    user = load_prompt("pseudo_logic_import_v2_user").format(
-        study_id=study_id,
-        rule_id=str(deviation.get("rule_id", "")),
-        deviation_id=str(deviation.get("deviation_id", "")),
-        deviation_text=str(deviation.get("text", "")),
-        paragraph_refs=", ".join(deviation.get("paragraph_refs", [])),
-        protocol_deviation_category=pd_spec_field(deviation, "protocol_deviation_category"),
-        protocol_deviation_sub_category=pd_spec_field(deviation, "protocol_deviation_sub_category"),
-        classification=pd_spec_field(deviation, "classification"),
-        data_support_note=str(deviation.get("data_support_note", "")),
-        acrf_summary=acrf_summary,
-    )
-    try:
-        pseudo_logic = llm.generate_pseudo_logic_structured(
-            system=system,
-            user=user,
-            max_repairs=2,
-        )
-    except ValueError:
-        reply = llm.chat_text_repairs(
-            system=system,
-            user=user,
-            validate_reply=lambda t: None if (t or "").strip() else "Empty pseudo logic response.",
-            max_repairs=1,
-            label=f"v2-pseudo-import-{deviation.get('deviation_id', '')}",
-        )
-        pseudo_logic = _coerce_pseudo_logic_text(reply)
-
-    prog_reply = llm.chat_text_repairs(
-        system=(
-            "You are a data programmability assessor.\n"
-            "Return exactly two lines:\n"
-            "PROGRAMMABLE: yes|no\n"
-            "RATIONALE: short reason grounded in provided deviation, pseudo logic, and aCRF summary."
-        ),
-        user=(
-            f"study_id: {study_id}\n"
-            f"deviation_id: {deviation.get('deviation_id', '')}\n"
-            f"deviation_text: {deviation.get('text', '')}\n\n"
-            f"pseudo_logic:\n{pseudo_logic}\n\n"
-            f"acrf_summary:\n{acrf_summary}\n"
-        ),
-        validate_reply=_validate_programmability_reply,
-        max_repairs=1,
-        label=f"v2-programmability-import-{deviation.get('deviation_id', '')}",
-    )
-    programmable, rationale = text_parse.parse_programmability(prog_reply)
     category = pd_spec_field(deviation, "protocol_deviation_category")
     sub = pd_spec_field(deviation, "protocol_deviation_sub_category")
     rule_title = f"{category} / {sub}".strip(" /")
-    return {
-        "deviation_id": deviation.get("deviation_id", ""),
-        "rule_id": deviation.get("rule_id", ""),
-        "rule_title": rule_title,
-        "pseudo_logic": pseudo_logic,
-        "programmable": programmable,
-        "programmability_note": rationale,
-        "status": "pending",
-        "dm_comment": "",
-    }
+    rule = {"title": rule_title}
+    manual_label = pd_spec_field(deviation, "manual_or_programmable").strip()
+    if manual_label == "Manual":
+        classification = {
+            "programmability": "manual",
+            "manual_or_programmable": "Manual",
+            "reason": "Imported as manual check.",
+            "required_data": [],
+        }
+    elif manual_label == "Partially programmable":
+        classification = {
+            "programmability": "partially_programmable",
+            "manual_or_programmable": "Partially programmable",
+            "reason": "Imported as partially programmable check.",
+            "required_data": [],
+        }
+    else:
+        classification = None
+    if classification is None:
+        programmability_by_dev = _load_programmability_classification(study_id, output_dir)
+        classification = programmability_by_dev.get(str(deviation.get("deviation_id", "")))
+        if not classification:
+            classification = programmability_classify.classify_single_deviation(
+                study_id=study_id,
+                deviation=deviation,
+                dictionary_obj=_acrf_field_dictionary(study_id, output_dir),
+            )
+    return _build_pseudo_logic_item(
+        study_id=study_id,
+        output_dir=output_dir,
+        deviation=deviation,
+        rule=rule,
+        classification=classification,
+    )
 
 
 def _next_import_version(study_id: str, output_dir: Path) -> str:
@@ -1345,23 +1523,30 @@ def apply_active_deviations_source(
 
 
 def run_steps(study_id: str, output_dir: Path, from_step: int, to_step: int) -> None:
-    if from_step < 1 or to_step > 10 or from_step > to_step:
-        raise ValueError("Invalid step range. Use 1..10 with from_step <= to_step.")
+    if from_step < 1 or to_step > 14 or from_step > to_step:
+        raise ValueError("Invalid step range. Use 1..14 with from_step <= to_step.")
     for step in range(from_step, to_step + 1):
         print(f"[v2] Running step {step}")
         if step == 1:
             step1_acrf_summary_text(study_id, output_dir)
         elif step == 2:
-            step2_protocol_paragraph_index(study_id, output_dir)
+            step_acrf_field_dictionary(study_id, output_dir)
         elif step == 3:
+            step2_protocol_paragraph_index(study_id, output_dir)
+        elif step == 4:
             step3_extract_rules(study_id, output_dir)
-        elif step == 4 or step == 5:
+        elif step == 5:
             step4_5_extract_deviations(study_id, output_dir)
+        elif step == 6:
+            step_normalize_checks(study_id, output_dir)
+        elif step == 7:
+            step_deduplicate_checks(study_id, output_dir)
             initialize_review_states(study_id, output_dir)
-        elif step in (6, 7, 9):
-            # UI-driven review steps; no automatic batch mutation here.
-            continue
         elif step == 8:
+            step_classify_programmability(study_id, output_dir)
+        elif step in (9, 10, 11, 13):
+            continue
+        elif step == 12:
             step8_generate_pseudo_logic(study_id, output_dir)
-        elif step == 10:
+        elif step == 14:
             step10_finalize(study_id, output_dir)

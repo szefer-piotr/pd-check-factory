@@ -4,6 +4,8 @@ const PHASE_LABELS: Record<string, string> = {
   "acrf-summary": "Merging aCRF summary",
   "extract-rules": "Extracting rules",
   "extract-deviations": "Generating deviations",
+  "normalize-checks": "Normalizing checks",
+  "classify-programmability": "Classifying programmability",
   "pseudo-logic": "Generating pseudo logic",
   "pd-enrich": "Enriching PD specifications"
 };

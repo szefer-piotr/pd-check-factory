@@ -99,6 +99,8 @@ def test_import_grounding_allowed_in_extracted_mode(tmp_path: Path, monkeypatch:
     summary_path = paths.local_acrf_summary_text_merged(study_id, tmp_path)
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text('{"datasets": []}', encoding="utf-8")
+    dictionary_path = paths.local_acrf_field_dictionary_json(study_id, tmp_path)
+    dictionary_path.write_text('{"datasets": [], "field_index": {}}', encoding="utf-8")
 
     from pdcheck_factory import pipeline_v2
 

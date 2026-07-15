@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://pd-check-factory/schemas/final_deviations_v2.schema.json",
+  "$id": "https://pdcheck-factory/schemas/final_deviations_v2.schema.json",
   "title": "Final deviations V2",
   "type": "object",
   "required": ["schema_version", "study_id", "generated_at", "items"],
@@ -12,7 +12,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["rule_id", "deviation_id", "deviation_text", "paragraph_refs", "pseudo_logic"],
+        "required": ["rule_id", "deviation_id", "deviation_text", "paragraph_refs"],
         "properties": {
           "rule_id": { "type": "string", "minLength": 1 },
           "deviation_id": { "type": "string", "minLength": 1 },
@@ -23,16 +23,38 @@
             "minItems": 1,
             "items": { "type": "string", "pattern": "^p[0-9]+$" }
           },
-          "pseudo_logic": { "type": "string", "minLength": 1 },
+          "pseudo_logic": { "type": ["string", "null"] },
+          "manual_review_instructions": { "type": "string" },
           "protocol_deviation_category": { "type": "string" },
           "protocol_deviation_sub_category": { "type": "string" },
           "classification": { "type": "string" },
-          "manual_or_programmable": { "type": "string" },
+          "manual_or_programmable": {
+            "type": "string",
+            "enum": ["Manual", "Programmable", "Partially programmable"]
+          },
           "data_source": { "type": "string" },
           "programming_status": { "type": "string" },
           "programmable": { "type": ["boolean", "null"] }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": ["manual_or_programmable", "manual_review_instructions"],
+            "properties": {
+              "manual_or_programmable": { "const": "Manual" },
+              "pseudo_logic": { "type": "null" }
+            }
+          },
+          {
+            "required": ["manual_or_programmable", "pseudo_logic"],
+            "properties": {
+              "manual_or_programmable": {
+                "enum": ["Programmable", "Partially programmable"]
+              },
+              "pseudo_logic": { "type": "string", "minLength": 1 }
+            }
+          }
+        ]
       }
     }
   },

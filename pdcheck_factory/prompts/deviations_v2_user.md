@@ -4,7 +4,7 @@ rule_title: {rule_title}
 rule_text: {rule_text}
 rule_paragraph_refs: {rule_paragraph_refs}
 
-Merged aCRF summary (use this to ground programmable data detection feasibility):
+Merged validated ACRF field dictionary (use only column names from field_index):
 {acrf_summary}
 
 Protocol paragraphs (cite only paragraph ids from this context):

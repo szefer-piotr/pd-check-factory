@@ -71,9 +71,11 @@ def test_run_step_reports_llm_progress_for_extract_deviations(
     pindex = paths.local_protocol_paragraph_index_json(study_id, tmp_path)
     rules = paths.local_rules_parsed_json(study_id, tmp_path)
     acrf_summary = paths.local_acrf_summary_text_merged(study_id, tmp_path)
+    acrf_dictionary = paths.local_acrf_field_dictionary_json(study_id, tmp_path)
     _touch(pindex, '{"paragraphs": []}')
     _touch(rules, '{"rules": [{"rule_id": "rule-001"}]}')
     _touch(acrf_summary, "summary")
+    _touch(acrf_dictionary, '{"datasets": [], "field_index": {}}')
 
     service.run_step(study_id, "extract-deviations")
 
@@ -125,7 +127,20 @@ def test_status_progression_and_dependency_guard(tmp_path: Path, monkeypatch: py
     status = service.get_status(study_id)
     assert {row["stepId"]: row["status"] for row in status["steps"]}["extract-inputs"] == "done"
 
-    called = {"index": False, "split": False, "acrf": False, "rules": False, "dev": False, "init": False, "pseudo": False, "final": False}
+    called = {
+        "index": False,
+        "split": False,
+        "acrf": False,
+        "dictionary": False,
+        "rules": False,
+        "dev": False,
+        "normalize": False,
+        "dedup": False,
+        "programmability": False,
+        "init": False,
+        "pseudo": False,
+        "final": False,
+    }
 
     def fake_index(sid: str, output_dir: Path):
         called["index"] = True
@@ -145,6 +160,12 @@ def test_status_progression_and_dependency_guard(tmp_path: Path, monkeypatch: py
         _touch(out, '{"datasets": []}')
         return {"datasets": []}
 
+    def fake_dictionary(sid: str, output_dir: Path):
+        called["dictionary"] = True
+        out = output_dir / sid / "pipeline" / "acrf_summary" / "acrf_field_dictionary.json"
+        _touch(out, '{"datasets": [], "field_index": {}}')
+        return {"datasets": [], "field_index": {}}
+
     def fake_split_toc(source_md: Path, destination_dir: Path, write_manifest: bool):
         called["split"] = True
         _touch(destination_dir / "001_demo.md", "# demo")
@@ -158,6 +179,27 @@ def test_status_progression_and_dependency_guard(tmp_path: Path, monkeypatch: py
         out = output_dir / sid / "pipeline" / "deviations" / "deviations_parsed.json"
         _touch(out, '{"deviations": []}')
         return {"deviations": []}
+
+    def fake_normalize(sid: str, output_dir: Path, *args, **kwargs):
+        called["normalize"] = True
+        out = output_dir / sid / "pipeline" / "deviations" / "deviations_normalized.json"
+        _touch(out, '{"items": []}')
+        return {"items": []}
+
+    def fake_dedup(sid: str, output_dir: Path):
+        called["dedup"] = True
+        out = output_dir / sid / "pipeline" / "deviations" / "check_dedup_audit.json"
+        _touch(out, '{"duplicates_removed": 0}')
+        parsed = output_dir / sid / "pipeline" / "deviations" / "deviations_parsed.json"
+        if not parsed.exists():
+            _touch(parsed, '{"deviations": []}')
+        return {"deviations": []}
+
+    def fake_programmability(sid: str, output_dir: Path, *args, **kwargs):
+        called["programmability"] = True
+        out = output_dir / sid / "pipeline" / "deviations" / "programmability_classified.json"
+        _touch(out, '{"items": []}')
+        return {"items": []}
 
     def fake_init(sid: str, output_dir: Path):
         called["init"] = True
@@ -183,8 +225,12 @@ def test_status_progression_and_dependency_guard(tmp_path: Path, monkeypatch: py
 
     monkeypatch.setattr(pipeline_v2, "step2_protocol_paragraph_index", fake_index)
     monkeypatch.setattr(pipeline_v2, "step1_acrf_summary_text", fake_acrf_summary)
+    monkeypatch.setattr(pipeline_v2, "step_acrf_field_dictionary", fake_dictionary)
     monkeypatch.setattr(pipeline_v2, "step3_extract_rules", fake_rules)
     monkeypatch.setattr(pipeline_v2, "step4_5_extract_deviations", fake_dev)
+    monkeypatch.setattr(pipeline_v2, "step_normalize_checks", fake_normalize)
+    monkeypatch.setattr(pipeline_v2, "step_deduplicate_checks", fake_dedup)
+    monkeypatch.setattr(pipeline_v2, "step_classify_programmability", fake_programmability)
     monkeypatch.setattr(pipeline_v2, "initialize_review_states", fake_init)
     monkeypatch.setattr(pipeline_v2, "step8_generate_pseudo_logic", fake_pseudo)
     monkeypatch.setattr(pipeline_v2, "step10_finalize", fake_final)
@@ -198,8 +244,12 @@ def test_status_progression_and_dependency_guard(tmp_path: Path, monkeypatch: py
         "index-protocol",
         "acrf-split-toc",
         "acrf-summary-text",
+        "acrf-field-dictionary",
         "extract-rules",
         "extract-deviations",
+        "normalize-checks",
+        "deduplicate-checks",
+        "classify-programmability",
         "review-and-finalize",
     ]
     for step_id in extract_pipeline_steps:
@@ -1114,10 +1164,18 @@ def _seed_processing_artifacts(service: UiStepService, study_id: str, tmp_path: 
     _touch(sections / "section_01.md", "# Section")
     summary = paths.local_acrf_summary_text_merged(study_id, tmp_path)
     _touch(summary, '{"datasets": []}')
+    dictionary = paths.local_acrf_field_dictionary_json(study_id, tmp_path)
+    _touch(dictionary, '{"datasets": [], "field_index": {}}')
     rules = paths.local_rules_parsed_json(study_id, tmp_path)
     _touch(rules, '{"rules": []}')
     dev = paths.local_deviations_parsed_json(study_id, tmp_path)
     _touch(dev, '{"deviations": []}')
+    normalized = paths.local_deviations_normalized_json(study_id, tmp_path)
+    _touch(normalized, '{"items": []}')
+    dedup = paths.local_check_dedup_audit_json(study_id, tmp_path)
+    _touch(dedup, '{"duplicates_removed": 0}')
+    programmability = paths.local_programmability_classified_json(study_id, tmp_path)
+    _touch(programmability, '{"items": []}')
     review = paths.local_deviations_review_state(study_id, tmp_path)
     _touch(review, '{"deviations": []}')
 
@@ -1611,8 +1669,12 @@ def test_derive_stage_processing_and_review(tmp_path: Path) -> None:
         "index-protocol",
         "acrf-split-toc",
         "acrf-summary-text",
+        "acrf-field-dictionary",
         "extract-rules",
         "extract-deviations",
+        "normalize-checks",
+        "deduplicate-checks",
+        "classify-programmability",
         "review-and-finalize",
     ):
         statuses_done[step_id] = "done"

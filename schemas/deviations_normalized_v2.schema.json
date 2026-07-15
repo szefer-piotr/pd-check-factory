@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pdcheck/schemas/deviations_normalized_v2.schema.json",
+  "title": "Normalized deviations V2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "study_id", "generated_at", "items"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "study_id": { "type": "string", "minLength": 1 },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "deviation_id",
+          "rule_id",
+          "subject",
+          "event",
+          "procedure",
+          "condition",
+          "window",
+          "paragraph_refs"
+        ],
+        "properties": {
+          "deviation_id": { "type": "string", "minLength": 1 },
+          "rule_id": { "type": "string", "minLength": 1 },
+          "subject": { "type": "string" },
+          "event": { "type": "string" },
+          "procedure": { "type": "string" },
+          "condition": { "type": "string" },
+          "window": { "type": "string" },
+          "paragraph_refs": {
+            "type": "array",
+            "items": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

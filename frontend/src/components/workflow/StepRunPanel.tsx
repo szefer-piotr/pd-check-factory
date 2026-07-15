@@ -13,7 +13,12 @@ interface StepRunPanelProps {
   onLlmInstructionsChange?: (value: string) => void;
 }
 
-const LLM_NOTE_STEPS = new Set(["extract-rules", "extract-deviations"]);
+const LLM_NOTE_STEPS = new Set([
+  "extract-rules",
+  "extract-deviations",
+  "normalize-checks",
+  "classify-programmability"
+]);
 
 export function StepRunPanel({
   stepTitle,

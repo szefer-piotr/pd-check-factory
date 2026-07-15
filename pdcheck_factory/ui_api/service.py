@@ -49,6 +49,7 @@ PROCESSING_CORE_STEP_IDS: List[str] = [
     "index-protocol",
     "acrf-split-toc",
     "acrf-summary-text",
+    "acrf-field-dictionary",
 ]
 
 PROCESSING_BACKEND_STEP_IDS: List[str] = [
@@ -56,8 +57,12 @@ PROCESSING_BACKEND_STEP_IDS: List[str] = [
     "index-protocol",
     "acrf-split-toc",
     "acrf-summary-text",
+    "acrf-field-dictionary",
     "extract-rules",
     "extract-deviations",
+    "normalize-checks",
+    "deduplicate-checks",
+    "classify-programmability",
 ]
 
 STEP_ORDER: List[str] = [
@@ -65,8 +70,12 @@ STEP_ORDER: List[str] = [
     "index-protocol",
     "acrf-split-toc",
     "acrf-summary-text",
+    "acrf-field-dictionary",
     "extract-rules",
     "extract-deviations",
+    "normalize-checks",
+    "deduplicate-checks",
+    "classify-programmability",
     "import-pd-spec-ground",
     "import-pd-spec-map",
     "import-pd-spec-enrich",
@@ -79,11 +88,15 @@ STEP_DEPENDENCIES: Dict[str, List[str]] = {
     "index-protocol": ["extract-inputs"],
     "acrf-split-toc": ["extract-inputs"],
     "acrf-summary-text": ["acrf-split-toc"],
+    "acrf-field-dictionary": ["acrf-summary-text"],
     "extract-rules": ["index-protocol"],
-    "extract-deviations": ["extract-rules", "acrf-summary-text"],
-    "import-pd-spec-ground": ["index-protocol", "acrf-summary-text"],
+    "extract-deviations": ["extract-rules", "acrf-field-dictionary"],
+    "normalize-checks": ["extract-deviations"],
+    "deduplicate-checks": ["normalize-checks"],
+    "classify-programmability": ["deduplicate-checks"],
+    "import-pd-spec-ground": ["index-protocol", "acrf-field-dictionary"],
     "import-pd-spec-map": [],
-    "import-pd-spec-enrich": ["index-protocol", "acrf-summary-text"],
+    "import-pd-spec-enrich": ["index-protocol", "acrf-field-dictionary"],
     "merge-pd-spec-imports": ["import-pd-spec-ground"],
     "review-and-finalize": [],
 }
@@ -115,8 +128,12 @@ WORKFLOW_STEPS: Dict[str, List[str]] = {
         "index-protocol",
         "acrf-split-toc",
         "acrf-summary-text",
+        "acrf-field-dictionary",
         "extract-rules",
         "extract-deviations",
+        "normalize-checks",
+        "deduplicate-checks",
+        "classify-programmability",
         "review-and-finalize",
     ],
     WORKFLOW_CHOICE_MAP: [
@@ -129,6 +146,7 @@ WORKFLOW_STEPS: Dict[str, List[str]] = {
         "index-protocol",
         "acrf-split-toc",
         "acrf-summary-text",
+        "acrf-field-dictionary",
         "import-pd-spec-enrich",
         "merge-pd-spec-imports",
         "review-and-finalize",
@@ -140,6 +158,7 @@ IMPORT_STEP_ORDER: List[str] = [
     "index-protocol",
     "acrf-split-toc",
     "acrf-summary-text",
+    "acrf-field-dictionary",
     "import-pd-spec-ground",
     "import-pd-spec-map",
     "import-pd-spec-enrich",
@@ -152,9 +171,10 @@ IMPORT_STEP_DEPENDENCIES: Dict[str, List[str]] = {
     "index-protocol": ["extract-inputs"],
     "acrf-split-toc": ["extract-inputs"],
     "acrf-summary-text": ["acrf-split-toc"],
-    "import-pd-spec-ground": ["index-protocol", "acrf-summary-text"],
+    "acrf-field-dictionary": ["acrf-summary-text"],
+    "import-pd-spec-ground": ["index-protocol", "acrf-field-dictionary"],
     "import-pd-spec-map": [],
-    "import-pd-spec-enrich": ["index-protocol", "acrf-summary-text"],
+    "import-pd-spec-enrich": ["index-protocol", "acrf-field-dictionary"],
     "merge-pd-spec-imports": ["import-pd-spec-ground"],
     "review-and-finalize": ["import-pd-spec-ground"],
 }
@@ -250,9 +270,19 @@ class UiStepService:
     def _effective_step_dependencies(self, study_id: str) -> Dict[str, List[str]]:
         return dict(STEP_DEPENDENCIES)
 
+    def _deviations_partial(self, study_id: str) -> bool:
+        p = self._study_paths(study_id)
+        if not p.deviations_parsed.exists():
+            return False
+        try:
+            parsed_obj = read_json(p.deviations_parsed)
+            return parsed_obj.get("partial") is True
+        except (json.JSONDecodeError, OSError, ValueError, TypeError):
+            return False
+
     def _assert_step_dependencies(self, statuses: Dict[str, str], step_id: str, study_id: str) -> None:
         if step_id == "review-and-finalize":
-            extract_done = statuses.get("extract-deviations") in {"done", "skipped"}
+            extract_done = statuses.get("classify-programmability") in {"done", "skipped"}
             import_done = any(
                 statuses.get(step) in {"done", "skipped"}
                 for step in (
@@ -264,7 +294,7 @@ class UiStepService:
             if not (extract_done or import_done):
                 raise UiApiError(
                     "STEP_BLOCKED",
-                    "Step 'review-and-finalize' is blocked. Complete deviation extraction or PD spec import first.",
+                    "Step 'review-and-finalize' is blocked. Complete programmability classification or PD spec import first.",
                     409,
                 )
             return
@@ -314,18 +344,21 @@ class UiStepService:
             return p.acrf_sections_toc_dir.exists() and any(p.acrf_sections_toc_dir.glob("*.md"))
         if step_id == "acrf-summary-text":
             return p.acrf_summary_text_merged.exists()
+        if step_id == "acrf-field-dictionary":
+            return paths.local_acrf_field_dictionary_json(study_id, self.output_dir).exists()
         if step_id == "extract-rules":
             return p.rules_parsed.exists()
         if step_id == "extract-deviations":
-            if not p.deviations_parsed.exists():
-                return False
-            try:
-                parsed_obj = read_json(p.deviations_parsed)
-                if parsed_obj.get("partial") is True:
-                    return False
-            except (json.JSONDecodeError, OSError, ValueError, TypeError):
-                return False
-            return p.deviations_review_state.exists()
+            return p.deviations_parsed.exists() and not self._deviations_partial(study_id)
+        if step_id == "normalize-checks":
+            return paths.local_deviations_normalized_json(study_id, self.output_dir).exists()
+        if step_id == "deduplicate-checks":
+            return (
+                paths.local_check_dedup_audit_json(study_id, self.output_dir).exists()
+                and p.deviations_review_state.exists()
+            )
+        if step_id == "classify-programmability":
+            return paths.local_programmability_classified_json(study_id, self.output_dir).exists()
         if step_id == "import-pd-spec-ground":
             return self._has_import_snapshot(study_id)
         if step_id == "import-pd-spec-map":
@@ -367,6 +400,9 @@ class UiStepService:
             p.deviations_validated,
             paths.local_deviations_raw_txt(study_id, self.output_dir),
             paths.local_deviations_review_generated_json(study_id, self.output_dir),
+            paths.local_deviations_normalized_json(study_id, self.output_dir),
+            paths.local_check_dedup_audit_json(study_id, self.output_dir),
+            paths.local_programmability_classified_json(study_id, self.output_dir),
         ):
             if artifact.is_file():
                 artifact.unlink()
@@ -2746,8 +2782,12 @@ class UiStepService:
             "index-protocol": "index",
             "acrf-split-toc": "acrf_split",
             "acrf-summary-text": "acrf_merge",
+            "acrf-field-dictionary": "acrf_dictionary",
             "extract-rules": "rules",
             "extract-deviations": "deviations",
+            "normalize-checks": "normalize",
+            "deduplicate-checks": "dedup",
+            "classify-programmability": "programmability",
             "import-pd-spec-ground": "import_ground",
             "import-pd-spec-map": "import_map",
             "import-pd-spec-enrich": "import_enrich",
@@ -2839,6 +2879,12 @@ class UiStepService:
                 progress_callback=progress_callback,
             )
             summary = f"Merged aCRF summary text with {len(result.get('datasets', []))} datasets."
+        elif step_id == "acrf-field-dictionary":
+            result = pipeline_v2.step_acrf_field_dictionary(study_id, self.output_dir)
+            summary = (
+                f"Built validated ACRF field dictionary with "
+                f"{len(result.get('datasets', []))} datasets."
+            )
         elif step_id == "extract-rules":
             def _rules_log(message: str) -> None:
                 self._append_pipeline_log(study_id, message)
@@ -2861,8 +2907,28 @@ class UiStepService:
                 progress_callback=progress_callback,
                 force=force,
             )
+            summary = f"Extracted {len(result.get('deviations', []))} raw deviation candidates."
+        elif step_id == "normalize-checks":
+            result = pipeline_v2.step_normalize_checks(
+                study_id,
+                self.output_dir,
+                progress_callback=progress_callback,
+            )
+            summary = f"Normalized {len(result.get('items', []))} deviation candidates."
+        elif step_id == "deduplicate-checks":
+            result = pipeline_v2.step_deduplicate_checks(study_id, self.output_dir)
             pipeline_v2.initialize_review_states(study_id, self.output_dir)
-            summary = f"Extracted {len(result.get('deviations', []))} deviations and initialized review state."
+            summary = (
+                f"Deduplicated and classified {len(result.get('deviations', []))} deviations "
+                "and initialized review state."
+            )
+        elif step_id == "classify-programmability":
+            result = pipeline_v2.step_classify_programmability(
+                study_id,
+                self.output_dir,
+                progress_callback=progress_callback,
+            )
+            summary = f"Classified programmability for {len(result.get('items', []))} deviations."
         elif step_id == "import-pd-spec-ground":
             workbook_bytes = self._read_pd_spec_workbook_bytes(study_id)
             if not workbook_bytes:

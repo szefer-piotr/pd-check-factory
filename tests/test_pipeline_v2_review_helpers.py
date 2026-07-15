@@ -105,6 +105,28 @@ class PipelineV2ReviewHelpersTests(unittest.TestCase):
                 },
             )
 
+            write_json(
+                output_dir
+                / study_id
+                / "pipeline"
+                / "acrf_summary"
+                / "acrf_field_dictionary.json",
+                {
+                    "schema_version": "1.0.0",
+                    "study_id": study_id,
+                    "generated_at": "2026-01-01T00:00:00+00:00",
+                    "datasets": [],
+                    "field_index": {
+                        "SV.VISIT": {
+                            "dataset_name": "SV",
+                            "column_name": "VISIT",
+                            "label": "Visit",
+                            "type": "categorical",
+                        }
+                    },
+                },
+            )
+
             deviation = {
                 "deviation_id": "dev-0100",
                 "rule_id": "rule-010",
@@ -120,11 +142,24 @@ class PipelineV2ReviewHelpersTests(unittest.TestCase):
                 label = kwargs.get("label", "")
                 if str(label).startswith("v2-pseudo-"):
                     return "<<<BEGIN_PSEUDO>>>\nPSEUDO_LOGIC: SELECT 1\n<<<END_PSEUDO>>>"
+                if str(label).startswith("v2-programmability-classify"):
+                    return (
+                        "<<<BEGIN_PROGRAMMABILITY>>>\n"
+                        "PROGRAMMABILITY: programmable\n"
+                        "REQUIRED_DATA: SV.VISIT\n"
+                        "AVAILABLE_DATA: SV.VISIT\n"
+                        "MISSING_DATA: \n"
+                        "REASON: Date field and window are present.\n"
+                        "<<<END_PROGRAMMABILITY>>>"
+                    )
                 return "PROGRAMMABLE: yes\nRATIONALE: Date field and window are present."
 
             with patch(
                 "pdcheck_factory.pipeline_v2.llm.generate_pseudo_logic_structured",
                 side_effect=_fake_generate_pseudo_logic_structured,
+            ), patch(
+                "pdcheck_factory.programmability_classify.llm.chat_text_repairs",
+                side_effect=_fake_chat_text_repairs,
             ), patch(
                 "pdcheck_factory.pipeline_v2.llm.chat_text_repairs",
                 side_effect=_fake_chat_text_repairs,

@@ -8,11 +8,15 @@ export const STEP_DEPENDENCIES: Record<string, string[]> = {
   "index-protocol": ["extract-inputs"],
   "acrf-split-toc": ["extract-inputs"],
   "acrf-summary-text": ["acrf-split-toc"],
+  "acrf-field-dictionary": ["acrf-summary-text"],
   "extract-rules": ["index-protocol"],
-  "extract-deviations": ["extract-rules", "acrf-summary-text"],
-  "import-pd-spec-ground": ["index-protocol", "acrf-summary-text"],
+  "extract-deviations": ["extract-rules", "acrf-field-dictionary"],
+  "normalize-checks": ["extract-deviations"],
+  "deduplicate-checks": ["normalize-checks"],
+  "classify-programmability": ["deduplicate-checks"],
+  "import-pd-spec-ground": ["index-protocol", "acrf-field-dictionary"],
   "import-pd-spec-map": [],
-  "import-pd-spec-enrich": ["index-protocol", "acrf-summary-text"],
+  "import-pd-spec-enrich": ["index-protocol", "acrf-field-dictionary"],
   "merge-pd-spec-imports": ["import-pd-spec-ground"],
   "review-and-finalize": []
 };
@@ -84,7 +88,7 @@ export function getPipelineActionAccess(input: PipelineActionAccessInput): Recor
   const pipelinePreviouslyRun =
     processingDone ||
     hasPartialProgress ||
-    stepDone(backendStatuses, "extract-deviations") ||
+    stepDone(backendStatuses, "classify-programmability") ||
     stepDone(backendStatuses, "extract-rules");
 
   const mapBase = pdSpecUploaded && !isBusy;
@@ -102,8 +106,8 @@ export function getPipelineActionAccess(input: PipelineActionAccessInput): Recor
     enrichBlock = "Upload the PD Specifications workbook (.xlsx).";
   } else if (!stepDone(backendStatuses, "index-protocol")) {
     enrichBlock = "Complete protocol indexing first (run pipeline or wait for background preparation).";
-  } else if (!stepDone(backendStatuses, "acrf-summary-text")) {
-    enrichBlock = "Complete aCRF summary first (run pipeline or wait for background preparation).";
+  } else if (!stepDone(backendStatuses, "acrf-field-dictionary")) {
+    enrichBlock = "Complete aCRF field dictionary first (run pipeline or wait for background preparation).";
   } else if (isBusy) {
     enrichBlock = "Wait for the current operation to finish.";
   }

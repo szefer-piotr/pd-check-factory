@@ -33,7 +33,7 @@ export function deriveNavStatuses(
 ): Record<string, StepStatus> {
   const codingAccepted = options?.codingPhaseAccepted === true;
   const reviewReachable =
-    backendStatuses["extract-deviations"] === "done" ||
+    backendStatuses["classify-programmability"] === "done" ||
     backendStatuses["import-pd-spec-ground"] === "done" ||
     backendStatuses["import-pd-spec-map"] === "done" ||
     backendStatuses["import-pd-spec-enrich"] === "done";

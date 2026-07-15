@@ -181,6 +181,29 @@ def validate_final_deviations(
                 )
             )
 
+        manual_or_programmable = str(item.get("manual_or_programmable", "") or "").strip()
+        pseudo_logic = item.get("pseudo_logic")
+        if manual_or_programmable == "Manual" and pseudo_logic not in (None, ""):
+            report.errors.append(
+                ValidationIssue(
+                    level="error",
+                    code="manual_with_logic",
+                    message="Manual check must not include programming logic.",
+                    deviation_id=dev_id,
+                )
+            )
+        if manual_or_programmable in {"Programmable", "Partially programmable"} and not str(
+            pseudo_logic or ""
+        ).strip():
+            report.errors.append(
+                ValidationIssue(
+                    level="error",
+                    code="programmable_without_logic",
+                    message="Programmable check is missing pseudo_logic.",
+                    deviation_id=dev_id,
+                )
+            )
+
         row = map_deviation_to_pd_spec_row(item)
         header_by_index = {idx: header for idx, header in enumerate(PD_SPEC_HEADERS)}
         for idx, header in header_by_index.items():

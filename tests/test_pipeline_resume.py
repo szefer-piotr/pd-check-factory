@@ -17,6 +17,7 @@ def _seed_deviation_deps(study_id: str, output_dir: Path, *, rule_count: int = 1
     pindex = paths.local_protocol_paragraph_index_json(study_id, output_dir)
     rules = paths.local_rules_parsed_json(study_id, output_dir)
     acrf_summary = paths.local_acrf_summary_text_merged(study_id, output_dir)
+    acrf_dictionary = paths.local_acrf_field_dictionary_json(study_id, output_dir)
     _touch(pindex, json.dumps({"paragraphs": [{"paragraph_id": "p1", "text": "Protocol paragraph"}]}))
     _touch(
         rules,
@@ -35,6 +36,10 @@ def _seed_deviation_deps(study_id: str, output_dir: Path, *, rule_count: int = 1
         ),
     )
     _touch(acrf_summary, json.dumps({"datasets": []}))
+    _touch(
+        acrf_dictionary,
+        json.dumps({"schema_version": "1.0.0", "datasets": [], "field_index": {}}),
+    )
 
 
 def test_get_extraction_live_returns_full_text(tmp_path: Path) -> None:

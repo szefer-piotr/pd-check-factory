@@ -137,10 +137,17 @@ export function deploymentForStep(
   defaultDeployment: string
 ): string | undefined {
   const fallback = defaultDeployment.trim();
-  if (stepId === "acrf-summary-text") {
+  if (stepId === "acrf-summary-text" || stepId === "acrf-field-dictionary") {
     return settings.acrfSummaryDeployment.trim() || fallback || undefined;
   }
-  if (stepId === "extract-rules" || stepId === "extract-deviations" || stepId === "import-pd-spec-enrich") {
+  if (
+    stepId === "extract-rules" ||
+    stepId === "extract-deviations" ||
+    stepId === "normalize-checks" ||
+    stepId === "deduplicate-checks" ||
+    stepId === "classify-programmability" ||
+    stepId === "import-pd-spec-enrich"
+  ) {
     return settings.extractionDeployment.trim() || fallback || undefined;
   }
   return undefined;

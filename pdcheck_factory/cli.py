@@ -15,8 +15,6 @@ from dotenv import load_dotenv
 
 from pdcheck_factory import blob_io, di_layout, opendataloader_ocr, paths, pipeline_v2
 from pdcheck_factory import llm as llm_mod
-from pdcheck_factory import step2_merge
-from pdcheck_factory import step2_review
 from pdcheck_factory.json_util import load_schema, read_json, validate, write_json
 from pdcheck_factory.ui_step_api import run_step_api
 from pdcheck_factory.protocol_markdown import (
@@ -898,121 +896,10 @@ def run_protocol_segment(
     return out
 
 
-def run_protocol_sections_extract(
-    *,
-    study_id: str,
-    output_dir: Path,
-    upload: bool,
-    all_sections: bool,
-    section_id: List[str],
-    match_regex: Optional[str],
-    skip_section_id: List[str],
-    skip_regex: Optional[str],
-    include_acrf: bool,
-    use_acrf_summary: bool = True,
-    overwrite: bool = True,
-) -> None:
-    """Run Step 1 LLM per selected section; write pipeline/.../protocol_sections/step1/*.json."""
-    _load_env()
-    man_path = paths.local_protocol_sections_manifest(study_id, output_dir)
-    if not man_path.exists():
-        raise typer.BadParameter(
-            f"Missing {man_path}. Run `pdcheck protocol segment --study-id {study_id}` first."
-        )
-    manifest = load_manifest(man_path)
-    try:
-        ids = select_section_ids(
-            manifest,
-            all_sections=all_sections,
-            section_ids=section_id,
-            match_regex=match_regex,
-            skip_section_ids=skip_section_id,
-            skip_regex=skip_regex,
-        )
-    except ValueError as ex:
-        raise typer.BadParameter(str(ex)) from ex
-
-    if overwrite:
-        run_clear_stage(
-            study_id=study_id,
-            stage="step1",
-            output_dir=output_dir,
-            clear_blob=False,
-        )
-
-    acrf, acrf_summary_context = _load_acrf_contexts(
-        study_id=study_id,
-        output_dir=output_dir,
-        include_acrf=include_acrf,
-        use_acrf_summary=use_acrf_summary,
-        caller="step1",
-    )
-
-    step1_dir = paths.local_protocol_sections_step1_dir(study_id, output_dir)
-    step1_dir.mkdir(parents=True, exist_ok=True)
-
-    for cid in ids:
-        sec = get_section_by_id(manifest, cid)
-        assert sec is not None
-        if not sec.get("sentences"):
-            print(f"Skip (no sentences): {cid}")
-            continue
-        print(f"Step 1 extract: {cid} …")
-        out_obj = llm_mod.extract_protocol_section_step1(
-            study_id=study_id,
-            section=sec,
-            acrf_markdown=acrf,
-            acrf_summary_context=acrf_summary_context,
-        )
-        safe = cid.replace(":", "_")
-        out_path = step1_dir / f"{safe}.json"
-        write_json(out_path, out_obj)
-        print(f"  Wrote {out_path}")
-        _upload_if_enabled(
-            out_path,
-            paths.protocol_section_step1_blob(study_id, cid),
-            upload=upload,
-            content_type="application/json",
-        )
-
-
-def run_rules(
-    *,
-    study_id: str,
-    output_dir: Path,
-    upload: bool,
-    strip_page_markers: bool = True,
-    rollup_max_section_level: Optional[int] = 1,
-    use_acrf_summary: bool = True,
-    overwrite: bool = True,
-) -> None:
-    """Alias: segment protocol + Step 1 extract for all sections."""
-    run_protocol_segment(
-        study_id=study_id,
-        output_dir=output_dir,
-        upload=upload,
-        strip_page_markers=strip_page_markers,
-        rollup_max_section_level=rollup_max_section_level,
-    )
-    run_protocol_sections_extract(
-        study_id=study_id,
-        output_dir=output_dir,
-        upload=upload,
-        all_sections=True,
-        section_id=[],
-        match_regex=None,
-        skip_section_id=[],
-        skip_regex=None,
-        include_acrf=True,
-        use_acrf_summary=use_acrf_summary,
-        overwrite=overwrite,
-    )
-
-
 def run_clear_stage(
     *,
     study_id: str,
-    stage: Literal["extraction", "step1", "step2"],
+    stage: Literal["extraction"],
     output_dir: Path,
     clear_blob: bool,
 ) -> None:
@@ -1028,12 +915,6 @@ def run_clear_stage(
             paths.extraction_layout_prefix(study_id, "protocol"),
             paths.extraction_layout_prefix(study_id, "acrf"),
         ]
-    elif stage == "step1":
-        targets = [paths.local_protocol_sections_step1_dir(study_id, output_dir)]
-        blob_prefixes = [f"{paths.protocol_sections_blob_prefix(study_id)}/step1/"]
-    elif stage == "step2":
-        targets = [paths.local_pipeline_step2_dir(study_id, output_dir)]
-        blob_prefixes = [f"{paths.pipeline_step2_blob_prefix(study_id)}/"]
     else:
         raise typer.BadParameter(f"Unsupported stage: {stage}")
 
@@ -1079,359 +960,6 @@ def run_clear_stage(
     print(
         f"Deleted {deleted}/{len(blob_names)} blob object(s) "
         f"for stage={stage!r} in container {container!r}."
-    )
-
-
-def run_step2_merge(
-    *,
-    study_id: str,
-    output_dir: Path,
-    upload: bool,
-    use_acrf_summary: bool = True,
-    overwrite: bool = True,
-) -> Path:
-    """Merge and semantic-dedup all Step 1 section outputs into one Step 2 artifact."""
-    _load_env()
-    if overwrite:
-        run_clear_stage(
-            study_id=study_id,
-            stage="step2",
-            output_dir=output_dir,
-            clear_blob=False,
-        )
-    step1_dir = paths.local_protocol_sections_step1_dir(study_id, output_dir)
-    if not step1_dir.is_dir():
-        raise typer.BadParameter(
-            f"Missing {step1_dir}. Run `pdcheck protocol sections extract --study-id {study_id} --all` first."
-        )
-    step1_files = sorted(step1_dir.glob("*.json"))
-    if not step1_files:
-        raise typer.BadParameter(f"No Step 1 JSON files found under {step1_dir}.")
-
-    step1_schema = load_schema("protocol_section_step1.schema.json")
-    step1_objects = []
-    for path in step1_files:
-        obj = read_json(path)
-        errs = validate(obj, step1_schema)
-        if errs:
-            raise typer.BadParameter(
-                f"Step 1 file failed schema validation: {path} :: {'; '.join(errs[:5])}"
-            )
-        step1_objects.append(obj)
-
-    _, acrf_summary_context = _load_acrf_contexts(
-        study_id=study_id,
-        output_dir=output_dir,
-        include_acrf=True,
-        use_acrf_summary=use_acrf_summary,
-        caller="step2-dedup",
-    )
-    merged = step2_merge.merge_step1_outputs(
-        study_id=study_id,
-        step1_objects=step1_objects,
-        acrf_summary_context=acrf_summary_context,
-    )
-    step2_schema = load_schema("protocol_sections_step2_merged.schema.json")
-    out_errs = validate(merged, step2_schema)
-    if out_errs:
-        raise typer.BadParameter(
-            "Step 2 output failed schema validation: " + "; ".join(out_errs[:10])
-        )
-
-    out_path = paths.local_protocol_sections_step2_merged(study_id, output_dir)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    write_json(out_path, merged)
-    print(f"Wrote {out_path}")
-    _upload_if_enabled(
-        out_path,
-        paths.protocol_sections_step2_merged_blob(study_id),
-        upload=upload,
-        content_type="application/json",
-    )
-    return out_path
-
-
-def run_step2_export_review(
-    *,
-    study_id: str,
-    output_dir: Path,
-    workbook: Optional[Path],
-    upload: bool,
-) -> Path:
-    _load_env()
-    step2_path = paths.local_protocol_sections_step2_merged(study_id, output_dir)
-    if not step2_path.is_file():
-        raise typer.BadParameter(
-            f"Missing {step2_path}. Run `pdcheck step2 --study-id {study_id}` first."
-        )
-    workbook_path = workbook or paths.local_protocol_sections_step2_review_workbook(
-        study_id, output_dir
-    )
-    workbook_path.parent.mkdir(parents=True, exist_ok=True)
-    out = step2_review.export_step2_review_workbook(
-        step2_json_path=step2_path,
-        workbook_path=workbook_path,
-    )
-    print(f"Wrote {out}")
-    _upload_if_enabled(
-        out,
-        paths.protocol_sections_step2_review_workbook_blob(study_id),
-        upload=upload,
-        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-    return out
-
-
-def _context_from_sections(*, study_id: str, output_dir: Path, section_ids: List[str]) -> str:
-    raw_dir = paths.local_protocol_sections_raw_dir(study_id, output_dir)
-    chunks: List[str] = []
-    for sid in sorted(set(section_ids)):
-        safe = sid.replace(":", "_")
-        path = raw_dir / f"{safe}.md"
-        if not path.is_file():
-            continue
-        chunks.append(path.read_text(encoding="utf-8"))
-    if chunks:
-        return "\n\n---\n\n".join(chunks)
-    return _read_protocol_source_md(study_id, output_dir).read_text(encoding="utf-8")
-
-
-def run_step2_apply_review(
-    *,
-    study_id: str,
-    output_dir: Path,
-    workbook: Path,
-    context_mode: Literal["full_protocol", "sections_only"],
-    strict: bool,
-    upload: bool,
-    use_acrf_summary: bool = True,
-) -> None:
-    _load_env()
-    step2_path = paths.local_protocol_sections_step2_merged(study_id, output_dir)
-    if not step2_path.is_file():
-        raise typer.BadParameter(
-            f"Missing {step2_path}. Run `pdcheck step2 --study-id {study_id}` first."
-        )
-    if not workbook.is_file():
-        raise typer.BadParameter(f"Workbook not found: {workbook}")
-    step2_obj = read_json(step2_path)
-    review_rows = step2_review.read_step2_review_workbook(workbook)
-
-    full_protocol = _read_protocol_source_md(study_id, output_dir).read_text(encoding="utf-8")
-    _, acrf_summary_context = _load_acrf_contexts(
-        study_id=study_id,
-        output_dir=output_dir,
-        include_acrf=True,
-        use_acrf_summary=use_acrf_summary,
-        caller="step2-revalidate",
-    )
-
-    def _revalidate(rule: dict, deviation: dict, dm_comments: str) -> List[dict]:
-        if context_mode == "full_protocol":
-            protocol_context = full_protocol
-        else:
-            protocol_context = _context_from_sections(
-                study_id=study_id,
-                output_dir=output_dir,
-                section_ids=list(deviation.get("source_section_ids", [])),
-            )
-        return llm_mod.revalidate_deviation_with_dm_feedback(
-            study_id=study_id,
-            rule=rule,
-            deviation=deviation,
-            dm_comments=dm_comments,
-            protocol_context=protocol_context,
-            context_mode=context_mode,
-            acrf_summary_context=acrf_summary_context,
-        )
-
-    final_obj, audit_obj, final_rows = step2_review.apply_review_and_finalize(
-        step2_obj=step2_obj,
-        review_rows=review_rows,
-        revalidate_deviation=_revalidate,
-        strict=strict,
-    )
-
-    final_json_path = paths.local_protocol_sections_step2_validated(study_id, output_dir)
-    audit_json_path = paths.local_protocol_sections_step2_validation_audit(
-        study_id, output_dir
-    )
-    final_json_path.parent.mkdir(parents=True, exist_ok=True)
-    step2_review.write_finalized_step2_outputs(
-        final_obj=final_obj,
-        audit_obj=audit_obj,
-        final_json_path=final_json_path,
-        audit_json_path=audit_json_path,
-    )
-    print(f"Wrote {final_json_path}")
-    print(f"Wrote {audit_json_path}")
-    reviewed_workbook = paths.local_dm_review_workbook(study_id, output_dir)
-    step2_review.write_final_review_workbook(
-        output_workbook=reviewed_workbook,
-        rows=final_rows,
-    )
-    print(f"Wrote {reviewed_workbook}")
-
-    _upload_if_enabled(
-        final_json_path,
-        paths.protocol_sections_step2_validated_blob(study_id),
-        upload=upload,
-        content_type="application/json",
-    )
-    _upload_if_enabled(
-        audit_json_path,
-        paths.protocol_sections_step2_validation_audit_blob(study_id),
-        upload=upload,
-        content_type="application/json",
-    )
-    _upload_if_enabled(
-        reviewed_workbook,
-        paths.dm_review_workbook_blob(study_id),
-        upload=upload,
-        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-
-
-@app.command("rules")
-def cmd_rules(
-    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
-    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
-    upload: bool = typer.Option(True, "--upload/--no-upload"),
-    keep_di_page_markers: bool = typer.Option(
-        False,
-        "--keep-di-page-markers",
-        help="Keep DI PageHeader/PageFooter/PageNumber/PageBreak HTML comments in markdown.",
-    ),
-    rollup_to_level: int = typer.Option(
-        1,
-        "--rollup-to-level",
-        min=1,
-        max=6,
-        help="Max ATX depth for manifest sections (1=# only … 6=######). Deeper headings roll into parent body. Use 6 for legacy one-section-per-heading behavior.",
-    ),
-    use_acrf_summary: bool = typer.Option(
-        True,
-        "--use-acrf-summary/--no-use-acrf-summary",
-        help="Attach merged aCRF summary context when available.",
-    ),
-    overwrite: bool = typer.Option(
-        True,
-        "--overwrite/--no-overwrite",
-        help="Before Step 1 extract, remove existing local Step 1 JSON under pipeline/.../protocol_sections/step1/.",
-    ),
-) -> None:
-    """Segment protocol and run Step 1 extraction on every section (shortcut)."""
-    run_rules(
-        study_id=study_id,
-        output_dir=output_dir,
-        upload=upload,
-        strip_page_markers=not keep_di_page_markers,
-        rollup_max_section_level=rollup_to_level,
-        use_acrf_summary=use_acrf_summary,
-        overwrite=overwrite,
-    )
-
-
-@app.command("clear-stage")
-def cmd_clear_stage(
-    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
-    stage: Literal["extraction", "step1", "step2"] = typer.Option(
-        ...,
-        "--stage",
-        help="Pipeline stage outputs to clear: extraction, step1, or step2.",
-    ),
-    clear_blob: bool = typer.Option(
-        False,
-        "--blob",
-        help="Also clear corresponding blob outputs for the selected stage.",
-    ),
-    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
-) -> None:
-    """Delete local outputs for a selected pipeline stage."""
-    _load_env()
-    run_clear_stage(
-        study_id=study_id,
-        stage=stage,
-        output_dir=output_dir,
-        clear_blob=clear_blob,
-    )
-
-
-@app.command("step2")
-def cmd_step2(
-    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
-    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
-    upload: bool = typer.Option(True, "--upload/--no-upload"),
-    use_acrf_summary: bool = typer.Option(
-        True,
-        "--use-acrf-summary/--no-use-acrf-summary",
-        help="Attach merged aCRF summary context to dedup LLM prompts when available.",
-    ),
-    overwrite: bool = typer.Option(
-        True,
-        "--overwrite/--no-overwrite",
-        help="Before merge, remove existing local Step 2 outputs under pipeline/.../step2/.",
-    ),
-) -> None:
-    """Merge Step 1 section outputs and deduplicate semantic duplicates."""
-    run_step2_merge(
-        study_id=study_id,
-        output_dir=output_dir,
-        upload=upload,
-        use_acrf_summary=use_acrf_summary,
-        overwrite=overwrite,
-    )
-
-
-@app.command("step2-export-review")
-def cmd_step2_export_review(
-    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
-    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
-    workbook: Optional[Path] = typer.Option(
-        None, "--workbook", "-w", help="Destination workbook path (.xlsx)."
-    ),
-    upload: bool = typer.Option(True, "--upload/--no-upload"),
-) -> None:
-    """Export Step 2 merged deviations to DM review workbook."""
-    run_step2_export_review(
-        study_id=study_id,
-        output_dir=output_dir,
-        workbook=workbook,
-        upload=upload,
-    )
-
-
-@app.command("step2-apply-review")
-def cmd_step2_apply_review(
-    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
-    workbook: Path = typer.Option(..., "--workbook", "-w", help="Reviewed workbook path"),
-    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
-    context_mode: Literal["full_protocol", "sections_only"] = typer.Option(
-        "full_protocol",
-        "--context-mode",
-        help="Protocol context for revalidation prompt.",
-    ),
-    strict: bool = typer.Option(
-        False,
-        "--strict",
-        help="Fail if any revalidation rows remain unresolved or invalid.",
-    ),
-    upload: bool = typer.Option(True, "--upload/--no-upload"),
-    use_acrf_summary: bool = typer.Option(
-        True,
-        "--use-acrf-summary/--no-use-acrf-summary",
-        help="Attach merged aCRF summary context to revalidation prompts when available.",
-    ),
-) -> None:
-    """Apply reviewed DM workbook and produce validated Step 2 outputs."""
-    run_step2_apply_review(
-        study_id=study_id,
-        output_dir=output_dir,
-        workbook=workbook,
-        context_mode=context_mode,
-        strict=strict,
-        upload=upload,
-        use_acrf_summary=use_acrf_summary,
     )
 
 
@@ -1528,75 +1056,6 @@ def cmd_protocol_sections_preview(
         print()
 
 
-@sections_app.command("extract")
-def cmd_protocol_sections_extract(
-    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
-    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
-    upload: bool = typer.Option(True, "--upload/--no-upload"),
-    all_sections: bool = typer.Option(
-        False,
-        "--all",
-        help="Process every section (respect skips).",
-    ),
-    section_id: Optional[List[str]] = typer.Option(
-        None,
-        "--section-id",
-        help="Repeat to select multiple sections.",
-    ),
-    match_regex: Optional[str] = typer.Option(
-        None,
-        "--match-regex",
-        help="Select sections whose joined path matches this regex.",
-    ),
-    skip_section_id: Optional[List[str]] = typer.Option(
-        None,
-        "--skip-section-id",
-        help="Repeat to skip section ids.",
-    ),
-    skip_regex: Optional[str] = typer.Option(
-        None,
-        "--skip-regex",
-        help="Skip sections whose joined path matches this regex.",
-    ),
-    no_acrf: bool = typer.Option(
-        False,
-        "--no-acrf",
-        help="Do not append aCRF context to prompts.",
-    ),
-    use_acrf_summary: bool = typer.Option(
-        True,
-        "--use-acrf-summary/--no-use-acrf-summary",
-        help="Attach merged aCRF summary context when available.",
-    ),
-    overwrite: bool = typer.Option(
-        True,
-        "--overwrite/--no-overwrite",
-        help="Before extract, remove existing local Step 1 JSON under pipeline/.../protocol_sections/step1/.",
-    ),
-) -> None:
-    """Run Step 1 LLM extraction for selected sections."""
-    _load_env()
-    sid_list = section_id or []
-    sk_list = skip_section_id or []
-    if not all_sections and not sid_list and not match_regex:
-        raise typer.BadParameter(
-            "Select sections with --all, --section-id, and/or --match-regex."
-        )
-    run_protocol_sections_extract(
-        study_id=study_id,
-        output_dir=output_dir,
-        upload=upload,
-        all_sections=all_sections,
-        section_id=sid_list,
-        match_regex=match_regex,
-        skip_section_id=sk_list,
-        skip_regex=skip_regex,
-        include_acrf=not no_acrf,
-        use_acrf_summary=use_acrf_summary,
-        overwrite=overwrite,
-    )
-
-
 @acrf_app.command("split-toc")
 def cmd_acrf_split_toc(
     study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
@@ -1672,6 +1131,31 @@ def cmd_acrf_summarize(
     run_acrf_summarize(study_id=study_id, output_dir=output_dir, upload=upload)
 
 
+@app.command("clear-stage")
+def cmd_clear_stage(
+    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
+    stage: Literal["extraction"] = typer.Option(
+        ...,
+        "--stage",
+        help="Pipeline stage outputs to clear: extraction.",
+    ),
+    clear_blob: bool = typer.Option(
+        False,
+        "--blob",
+        help="Also clear corresponding blob outputs for the selected stage.",
+    ),
+    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
+) -> None:
+    """Delete local outputs for a selected pipeline stage."""
+    _load_env()
+    run_clear_stage(
+        study_id=study_id,
+        stage=stage,
+        output_dir=output_dir,
+        clear_blob=clear_blob,
+    )
+
+
 app.add_typer(protocol_app, name="protocol")
 app.add_typer(acrf_app, name="acrf")
 app.add_typer(ui_app, name="ui")
@@ -1692,8 +1176,8 @@ def cmd_ui_step_api(
 def cmd_v2_run(
     study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
     output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
-    from_step: int = typer.Option(1, "--from-step", min=1, max=10),
-    to_step: int = typer.Option(10, "--to-step", min=1, max=10),
+    from_step: int = typer.Option(1, "--from-step", min=1, max=14),
+    to_step: int = typer.Option(14, "--to-step", min=1, max=14),
     step_range: Optional[str] = typer.Option(
         None,
         "--step-range",
@@ -1724,7 +1208,7 @@ def cmd_v2_validate(
     """Validate final PD specification artifacts for a study."""
     _load_env()
     from pdcheck_factory.json_util import read_json
-    from pdcheck_factory.pd_spec_validate import validate_final_deviations
+    from pdcheck_factory.check_validate import validate_check_artifacts
 
     final_path = paths.local_final_deviations_json(study_id, output_dir)
     if not final_path.is_file():
@@ -1734,7 +1218,30 @@ def cmd_v2_validate(
     index_path = paths.local_protocol_paragraph_index_json(study_id, output_dir)
     if index_path.is_file():
         paragraph_index = read_json(index_path)
-    report = validate_final_deviations(final_obj, paragraph_index=paragraph_index)
+    deviations_obj = {"deviations": []}
+    deviations_path = paths.local_deviations_validated_json(study_id, output_dir)
+    if deviations_path.is_file():
+        deviations_obj = read_json(deviations_path)
+    rules_obj = {"rules": []}
+    rules_path = paths.local_rules_parsed_json(study_id, output_dir)
+    if rules_path.is_file():
+        rules_obj = read_json(rules_path)
+    pseudo_obj = {"items": []}
+    pseudo_path = paths.local_pseudo_logic_validated_json(study_id, output_dir)
+    if pseudo_path.is_file():
+        pseudo_obj = read_json(pseudo_path)
+    dictionary_obj = {}
+    dictionary_path = paths.local_acrf_field_dictionary_json(study_id, output_dir)
+    if dictionary_path.is_file():
+        dictionary_obj = read_json(dictionary_path)
+    report = validate_check_artifacts(
+        deviations_obj=deviations_obj,
+        rules_obj=rules_obj,
+        pseudo_obj=pseudo_obj,
+        dictionary_obj=dictionary_obj,
+        final_obj=final_obj,
+        paragraph_index=paragraph_index,
+    )
     typer.echo(json.dumps(report.to_dict(), indent=2))
     if not report.ok:
         raise typer.Exit(code=1)
@@ -1749,60 +1256,7 @@ def cmd_v2_ready_for_review(
     cmd_v2_validate(study_id=study_id, output_dir=output_dir)
 
 
-@app.command("run-all")
-def cmd_run_all(
-    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
-    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
-    skip_acrf: bool = typer.Option(False, "--skip-acrf"),
-    upload: bool = typer.Option(True, "--upload/--no-upload"),
-    use_acrf_summary: bool = typer.Option(
-        True,
-        "--use-acrf-summary/--no-use-acrf-summary",
-        help="Attach merged aCRF summary context to downstream LLM prompts when available.",
-    ),
-    overwrite: bool = typer.Option(
-        True,
-        "--overwrite/--no-overwrite",
-        help="Before Step 1 extract in run-all, remove existing local Step 1 outputs (same as protocol sections extract).",
-    ),
-) -> None:
-    """extract → aCRF summarize → protocol segment + Step 1 extract for all sections."""
-    if skip_acrf:
-        raise typer.BadParameter("run-all requires aCRF; do not pass --skip-acrf.")
-    run_extract(
-        study_id=study_id,
-        protocol_blob=None,
-        acrf_blob=None,
-        output_dir=output_dir,
-        model_id=None,
-        sas_ttl=int(os.getenv("DI_SAS_TTL_MINUTES", "15")),
-        upload=upload,
-        skip_acrf=False,
-        skip_protocol=False,
-        upload_only=False,
-        run_opendataloader_ocr=True,
-        opendataloader_only=False,
-        debug_blob=False,
-    )
-    run_acrf_split_toc(
-        source_md=_read_acrf_source_md(study_id, output_dir),
-        destination_dir=_default_acrf_toc_dir(study_id, output_dir),
-        write_manifest=True,
-    )
-    run_acrf_summarize(study_id=study_id, output_dir=output_dir, upload=upload)
-    run_rules(
-        study_id=study_id,
-        output_dir=output_dir,
-        upload=upload,
-        use_acrf_summary=use_acrf_summary,
-        overwrite=overwrite,
-    )
-    print("run-all complete through Step 1 extraction with aCRF summary context.")
-
-
 def main() -> None:
     app()
 
 
-if __name__ == "__main__":
-    main()

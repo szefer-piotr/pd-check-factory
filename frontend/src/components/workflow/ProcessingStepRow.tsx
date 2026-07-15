@@ -6,6 +6,8 @@ const STEP_PHASE_MAP: Record<string, string[]> = {
   "acrf-summary-text": ["acrf-summary"],
   "extract-rules": ["extract-rules"],
   "extract-deviations": ["extract-deviations"],
+  "normalize-checks": ["normalize-checks"],
+  "classify-programmability": ["classify-programmability"],
   "import-pd-spec-enrich": ["pd-enrich"]
 };
 

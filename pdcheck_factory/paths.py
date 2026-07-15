@@ -218,6 +218,26 @@ def local_acrf_summary_text_merged(study_id: str, output_dir: Path) -> Path:
     return local_acrf_summary_text_dir(study_id, output_dir) / "acrf_summary_text_merged.json"
 
 
+def local_acrf_field_dictionary_json(study_id: str, output_dir: Path) -> Path:
+    return local_acrf_summary_text_dir(study_id, output_dir) / "acrf_field_dictionary.json"
+
+
+def local_deviations_normalized_json(study_id: str, output_dir: Path) -> Path:
+    return local_deviations_dir(study_id, output_dir) / "deviations_normalized.json"
+
+
+def local_check_dedup_audit_json(study_id: str, output_dir: Path) -> Path:
+    return local_deviations_dir(study_id, output_dir) / "check_dedup_audit.json"
+
+
+def local_programmability_classified_json(study_id: str, output_dir: Path) -> Path:
+    return local_deviations_dir(study_id, output_dir) / "programmability_classified.json"
+
+
+def local_pipeline_quality_metrics_json(study_id: str, output_dir: Path) -> Path:
+    return local_final_dir(study_id, output_dir) / "pipeline_quality_metrics.json"
+
+
 def local_rules_dir(study_id: str, output_dir: Path) -> Path:
     return local_pipeline_v2_dir(study_id, output_dir) / "rules"
 

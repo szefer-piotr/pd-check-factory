@@ -42,6 +42,10 @@ def test_reset_study_clears_artifacts_keeps_manifest(tmp_path: Path, monkeypatch
         lambda **_kwargs: ["pipeline/RESET-ME/ui_upload_manifest.json"],
     )
     monkeypatch.setattr("pdcheck_factory.blob_io.delete_blobs", fake_delete)
+    monkeypatch.setattr(
+        "pdcheck_factory.blob_io.purge_blobs_with_prefix",
+        lambda **_kwargs: 0,
+    )
 
     result = service.reset_study(study_id)
     assert result["studyId"] == study_id

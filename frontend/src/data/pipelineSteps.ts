@@ -208,8 +208,12 @@ export const PROCESSING_BACKEND_STEP_IDS = [
   "index-protocol",
   "acrf-split-toc",
   "acrf-summary-text",
+  "acrf-field-dictionary",
   "extract-rules",
-  "extract-deviations"
+  "extract-deviations",
+  "normalize-checks",
+  "deduplicate-checks",
+  "classify-programmability"
 ] as const;
 
 /** PDF/index steps required before uploads can run extraction (PD spec import grounding uses these). */
@@ -217,7 +221,8 @@ export const PROCESSING_CORE_STEP_IDS = [
   "extract-inputs",
   "index-protocol",
   "acrf-split-toc",
-  "acrf-summary-text"
+  "acrf-summary-text",
+  "acrf-field-dictionary"
 ] as const;
 
 /** Steps shown in horizontal workflow navigation. */
@@ -360,6 +365,7 @@ export const IMPORT_BACKEND_STEP_IDS = [
   "index-protocol",
   "acrf-split-toc",
   "acrf-summary-text",
+  "acrf-field-dictionary",
   "import-pd-spec-ground",
   "merge-pd-spec-imports"
 ] as const;

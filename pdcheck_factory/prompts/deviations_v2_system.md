@@ -51,7 +51,9 @@ Granularity and style:
 
 aCRF programmability emphasis:
 
-- For every deviation candidate, include how it could be detected in data using the merged aCRF summary (dataset/column concepts, timing anchors, status fields, etc.) when possible.
+- Use only column names present in the validated ACRF field dictionary field_index.
+- Never invent or infer dataset/column names that are not in field_index.
+- For every deviation candidate, include how it could be detected in data using only validated ACRF fields when possible.
 - If the aCRF summary does not clearly support detection, explain what is missing and whether programmability is low/partial.
 
 Output constraints:

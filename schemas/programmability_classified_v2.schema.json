@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pdcheck/schemas/programmability_classified_v2.schema.json",
+  "title": "Programmability classified V2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "study_id", "generated_at", "items"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "study_id": { "type": "string", "minLength": 1 },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "deviation_id",
+          "rule_id",
+          "programmability",
+          "reason",
+          "required_data",
+          "available_data",
+          "missing_data"
+        ],
+        "properties": {
+          "deviation_id": { "type": "string", "minLength": 1 },
+          "rule_id": { "type": "string", "minLength": 1 },
+          "programmability": {
+            "type": "string",
+            "enum": ["programmable", "partially_programmable", "manual"]
+          },
+          "reason": { "type": "string" },
+          "required_data": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "available_data": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "missing_data": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "manual_or_programmable": { "type": "string" }
+        }
+      }
+    }
+  }
+}

@@ -11,8 +11,12 @@ function statuses(overrides: Record<string, StepStatus>): Record<string, StepSta
     "index-protocol": DONE,
     "acrf-split-toc": DONE,
     "acrf-summary-text": DONE,
+    "acrf-field-dictionary": DONE,
     "extract-rules": DONE,
     "extract-deviations": DONE,
+    "normalize-checks": DONE,
+    "deduplicate-checks": DONE,
+    "classify-programmability": DONE,
     "import-pd-spec-map": PENDING,
     "import-pd-spec-enrich": PENDING,
     ...overrides
@@ -24,11 +28,11 @@ describe("areStepDepsMet", () => {
     expect(areStepDepsMet("import-pd-spec-map", statuses({}))).toBe(true);
   });
 
-  it("requires index-protocol and acrf-summary-text for enrich", () => {
+  it("requires index-protocol and acrf-field-dictionary for enrich", () => {
     expect(
       areStepDepsMet(
         "import-pd-spec-enrich",
-        statuses({ "index-protocol": PENDING, "acrf-summary-text": DONE })
+        statuses({ "index-protocol": PENDING, "acrf-field-dictionary": DONE })
       )
     ).toBe(false);
     expect(areStepDepsMet("import-pd-spec-enrich", statuses({}))).toBe(true);

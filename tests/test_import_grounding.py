@@ -125,6 +125,7 @@ class TestImportGrounding(unittest.TestCase):
                     "rule_id": dev["rule_id"],
                     "rule_title": "Cat / Sub",
                     "pseudo_logic": "SELECT 1",
+                    "manual_or_programmable": "Programmable",
                     "programmable": True,
                     "programmability_note": "ok",
                     "status": "pending",

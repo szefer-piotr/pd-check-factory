@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://pd-check-factory/schemas/pseudo_logic_v2.schema.json",
+  "$id": "https://pdcheck-factory/schemas/pseudo_logic_v2.schema.json",
   "title": "Pseudo logic V2",
   "type": "object",
   "required": ["schema_version", "study_id", "generated_at", "items"],
@@ -12,18 +12,50 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["deviation_id", "rule_id", "pseudo_logic"],
+        "required": ["deviation_id", "rule_id"],
         "properties": {
           "deviation_id": { "type": "string", "minLength": 1 },
           "rule_id": { "type": "string", "minLength": 1 },
           "rule_title": { "type": "string" },
-          "pseudo_logic": { "type": "string", "minLength": 1 },
+          "pseudo_logic": { "type": ["string", "null"] },
+          "manual_review_instructions": { "type": "string" },
+          "manual_or_programmable": {
+            "type": "string",
+            "enum": ["Manual", "Programmable", "Partially programmable"]
+          },
           "programmable": { "type": "boolean" },
           "programmability_note": { "type": "string" },
-          "status": { "type": "string", "enum": ["pending", "accepted", "to_review", "rejected"] },
-          "dm_comment": { "type": "string" }
+          "status": {
+            "type": "string",
+            "enum": ["pending", "accepted", "to_review", "rejected", "needs_mapping_review"]
+          },
+          "dm_comment": { "type": "string" },
+          "required_data": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "field_validation": { "type": "object" }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "oneOf": [
+          {
+            "required": ["manual_or_programmable", "manual_review_instructions"],
+            "properties": {
+              "manual_or_programmable": { "const": "Manual" },
+              "pseudo_logic": { "type": "null" },
+              "manual_review_instructions": { "type": "string", "minLength": 1 }
+            }
+          },
+          {
+            "required": ["manual_or_programmable", "pseudo_logic"],
+            "properties": {
+              "manual_or_programmable": {
+                "enum": ["Programmable", "Partially programmable"]
+              },
+              "pseudo_logic": { "type": "string", "minLength": 1 }
+            }
+          }
+        ]
       }
     }
   },
