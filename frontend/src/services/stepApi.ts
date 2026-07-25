@@ -47,6 +47,8 @@ export interface StepStatusesResponse {
   codingPhaseAccepted?: boolean;
   codingPhaseAcceptedAt?: string | null;
   importVersions?: ImportVersionsInfo;
+  activeStepArtifacts?: Record<string, string>;
+  stepArtifactVersions?: StepArtifactVersionsMap;
   steps: StepItemStatus[];
   nextStepId: string | null;
 }
@@ -173,6 +175,8 @@ export interface StudySummary {
   stepStatuses: Record<string, StepStatus>;
   nextStepId: string | null;
   importVersions?: ImportVersionsInfo;
+  activeStepArtifacts?: Record<string, string>;
+  stepArtifactVersions?: StepArtifactVersionsMap;
   codingPhaseAccepted?: boolean;
   deviationSummary?: DeviationSummary | null;
 }
@@ -234,7 +238,52 @@ export interface StepPreviewResponse {
   stepStatuses: Record<string, StepStatus>;
   partial?: boolean;
   itemCount?: number;
+  generatedAt?: string;
+  version?: string | null;
+  versionCreatedAt?: string;
 }
+
+export interface StepArtifactVersionEntry {
+  version: string;
+  created_at: string;
+  generated_at: string;
+  itemCount: number;
+  active?: boolean;
+}
+
+export interface StepArtifactVersionsInfo {
+  stepId: string;
+  activeVersion?: string | null;
+  versions: StepArtifactVersionEntry[];
+}
+
+export type StepArtifactVersionsMap = Record<string, StepArtifactVersionsInfo>;
+
+export interface StepArtifactVersionsResponse {
+  studyId: string;
+  stepId: string;
+  activeVersion?: string | null;
+  versions: StepArtifactVersionEntry[];
+  activeStepArtifacts: Record<string, string>;
+  stepStatuses: Record<string, StepStatus>;
+}
+
+export interface SetActiveStepArtifactResponse {
+  studyId: string;
+  stepId: string;
+  version: string;
+  itemCount: number;
+  activeStepArtifacts: Record<string, string>;
+  stepStatuses: Record<string, StepStatus>;
+}
+
+export const VERSIONED_BACKEND_STEP_IDS = [
+  "acrf-summary-text",
+  "extract-rules",
+  "extract-deviations"
+] as const;
+
+export type VersionedBackendStepId = (typeof VERSIONED_BACKEND_STEP_IDS)[number];
 
 export interface Step1UploadResponse {
   studyId: string;
@@ -859,9 +908,9 @@ export async function fetchSpecificationsPreview(studyId: string): Promise<Speci
 export async function runStep(
   studyId: string,
   stepId: string,
-  options?: { llmInstructions?: string; llmDeployment?: string; force?: boolean }
+  options?: { llmInstructions?: string; llmDeployment?: string }
 ): Promise<StepRunResponse> {
-  const body: Record<string, string | boolean> = {};
+  const body: Record<string, string | boolean> = { force: true };
   const note = options?.llmInstructions?.trim();
   if (note) {
     body.llmInstructions = note;
@@ -869,9 +918,6 @@ export async function runStep(
   const deployment = options?.llmDeployment?.trim();
   if (deployment) {
     body.llmDeployment = deployment;
-  }
-  if (options?.force === true) {
-    body.force = true;
   }
   const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/steps/${encodeURIComponent(stepId)}/run`, {
     method: "POST",
@@ -881,11 +927,43 @@ export async function runStep(
   return parseApiResponse<StepRunResponse>(response);
 }
 
-export async function fetchStepPreview(studyId: string, stepId: string): Promise<StepPreviewResponse> {
+export async function fetchStepPreview(
+  studyId: string,
+  stepId: string,
+  options?: { version?: string }
+): Promise<StepPreviewResponse> {
+  const version = options?.version?.trim();
+  const query = version ? `?version=${encodeURIComponent(version)}` : "";
   const response = await fetch(
-    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/steps/${encodeURIComponent(stepId)}/preview`
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/steps/${encodeURIComponent(stepId)}/preview${query}`
   );
   return parseApiResponse<StepPreviewResponse>(response);
+}
+
+export async function fetchStepArtifactVersions(
+  studyId: string,
+  stepId: string
+): Promise<StepArtifactVersionsResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step-artifact-versions?stepId=${encodeURIComponent(stepId)}`
+  );
+  return parseApiResponse<StepArtifactVersionsResponse>(response);
+}
+
+export async function setActiveStepArtifact(
+  studyId: string,
+  stepId: string,
+  version: string
+): Promise<SetActiveStepArtifactResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/active-step-artifact`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stepId, version })
+    }
+  );
+  return parseApiResponse<SetActiveStepArtifactResponse>(response);
 }
 
 export async function fetchExtractionLive(studyId: string): Promise<ExtractionLiveResponse> {

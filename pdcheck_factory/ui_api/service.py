@@ -22,6 +22,7 @@ from pdcheck_factory import (
     paths,
     pipeline_v2,
     review_sources,
+    step_artifact_versions,
     study_artifact_sync,
 )
 from pdcheck_factory.json_util import read_json, write_json
@@ -387,10 +388,16 @@ class UiStepService:
             statuses["merge-pd-spec-imports"] = "skipped"
         return statuses
 
+    _FULL_PREVIEW_MAX_CHARS = 500_000
+
     def _read_excerpt(self, file_path: Path, max_chars: int = 2500) -> str:
         if not file_path.exists() or not file_path.is_file():
             return ""
         return file_path.read_text(encoding="utf-8")[:max_chars]
+
+    def _read_full_preview(self, file_path: Path) -> str:
+        """Return full file content for structured step previews (rules, deviations, aCRF summary)."""
+        return self._read_excerpt(file_path, max_chars=self._FULL_PREVIEW_MAX_CHARS)
 
     def _clear_deviation_extraction_artifacts(self, study_id: str) -> None:
         p = self._study_paths(study_id)
@@ -406,6 +413,20 @@ class UiStepService:
         ):
             if artifact.is_file():
                 artifact.unlink()
+
+    def _ensure_acrf_field_dictionary(self, study_id: str) -> None:
+        """Build the ACRF field dictionary from the merged summary when missing."""
+        dictionary_path = paths.local_acrf_field_dictionary_json(study_id, self.output_dir)
+        if dictionary_path.is_file():
+            return
+        summary_path = paths.local_acrf_summary_text_merged(study_id, self.output_dir)
+        if not summary_path.is_file():
+            return
+        self._append_pipeline_log(
+            study_id,
+            "[acrf-field-dictionary] Building missing field dictionary from aCRF summary…",
+        )
+        pipeline_v2.step_acrf_field_dictionary(study_id, self.output_dir)
 
     def get_extraction_live(self, study_id: str) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
@@ -540,6 +561,7 @@ class UiStepService:
         ui_stage: str | None = None,
         pipeline_ui_step: str | None = None,
         clear_pd_spec_import_mode: bool = False,
+        active_step_artifacts: Dict[str, str] | None = None,
     ) -> Dict[str, Any]:
         existing = self._read_upload_manifest_obj(study_id)
         resolved_pd_spec_import_mode = (
@@ -579,6 +601,10 @@ class UiStepService:
             if pipeline_ui_step is not None
             else existing.get("pipelineUiStep"),
         }
+        if active_step_artifacts is not None:
+            manifest["activeStepArtifacts"] = active_step_artifacts
+        elif isinstance(existing.get("activeStepArtifacts"), dict):
+            manifest["activeStepArtifacts"] = existing["activeStepArtifacts"]
         if coding_phase_accepted:
             manifest["codingPhaseAcceptedAt"] = datetime.now(timezone.utc).isoformat()
         elif "codingPhaseAcceptedAt" in existing:
@@ -783,7 +809,7 @@ class UiStepService:
                 "text": text,
             }
         )
-        state["logs"] = logs[-500:]
+        state["logs"] = logs[-2000:]
         path = self._pipeline_run_state_path(study_id)
         path.parent.mkdir(parents=True, exist_ok=True)
         write_json(path, state)
@@ -1066,21 +1092,36 @@ class UiStepService:
 
     def _ensure_review_source_state(self, study_id: str, review_source: str) -> None:
         path = review_sources.review_state_path(study_id, self.output_dir, review_source)
-        if path.is_file():
-            return
         path.parent.mkdir(parents=True, exist_ok=True)
 
         if review_source == review_sources.REVIEW_SOURCE_GENERATED:
-            legacy = paths.local_deviations_review_state(study_id, self.output_dir)
+            # Keep non-empty generated review state (includes user accept/reject edits).
+            if path.is_file():
+                existing = read_json(path)
+                if existing.get("deviations"):
+                    return
+
+            # Empty or missing generated file: prefer fresh extract output, then legacy.
             parsed = paths.local_deviations_parsed_json(study_id, self.output_dir)
-            if legacy.is_file():
-                state_obj = read_json(legacy)
-            elif parsed.is_file():
-                state_obj = read_json(parsed)
-            else:
+            legacy = paths.local_deviations_review_state(study_id, self.output_dir)
+            state_obj: Dict[str, Any] | None = None
+            if parsed.is_file():
+                candidate = read_json(parsed)
+                if candidate.get("deviations"):
+                    state_obj = candidate
+            if state_obj is None and legacy.is_file():
+                candidate = read_json(legacy)
+                if candidate.get("deviations"):
+                    state_obj = candidate
+            if state_obj is None:
+                if path.is_file():
+                    return
                 state_obj = review_sources.empty_review_state(study_id)
             write_json(path, state_obj)
             self._mirror_upload(study_id, path)
+            return
+
+        if path.is_file():
             return
 
         if review_source == review_sources.REVIEW_SOURCE_IMPORTED_PD_SPEC:
@@ -1868,6 +1909,8 @@ class UiStepService:
             "stepStatuses": statuses,
             "nextStepId": status_payload["nextStepId"],
             "importVersions": status_payload.get("importVersions"),
+            "activeStepArtifacts": manifest.get("activeStepArtifacts") or {},
+            "stepArtifactVersions": status_payload.get("stepArtifactVersions"),
             "codingPhaseAccepted": status_payload.get("codingPhaseAccepted", False),
             "deviationSummary": deviation_summary,
         }
@@ -2161,16 +2204,6 @@ class UiStepService:
         study_id = self._require_study_id(study_id)
         self._assert_both_uploads_ready(study_id)
 
-        if not force and self._step_artifact_complete(study_id, "extract-inputs"):
-            mode = extraction_resolve.read_ui_extractor_choice(study_id, self.output_dir)
-            return {
-                "studyId": study_id,
-                "message": "Extraction already complete",
-                "skipped": True,
-                "extractor": mode or extraction_resolve.UI_EXTRACTOR_BOTH,
-                "stepStatuses": self._step_statuses(study_id),
-            }
-
         raw = (extractor or "").strip().lower()
         if not raw:
             mode = extraction_resolve.UI_EXTRACTOR_DI
@@ -2198,10 +2231,9 @@ class UiStepService:
             error="",
             startedAt=started_at,
             finishedAt="",
-            logs=[],
             activeRunId=active_run_id,
         )
-        self._append_pipeline_log(study_id, f"Starting extraction (extractor={mode})")
+        self._append_pipeline_log(study_id, f"[extract-inputs] Starting extraction (extractor={mode})")
 
         def _extract_log(message: str) -> None:
             self._append_pipeline_log(study_id, message)
@@ -2605,6 +2637,12 @@ class UiStepService:
             "codingPhaseAccepted": bool(manifest.get("codingPhaseAccepted")),
             "codingPhaseAcceptedAt": manifest.get("codingPhaseAcceptedAt"),
             "importVersions": pipeline_v2.list_import_versions(study_id, self.output_dir),
+            "activeStepArtifacts": manifest.get("activeStepArtifacts") or {},
+            "stepArtifactVersions": step_artifact_versions.list_all_step_versions(
+                study_id,
+                self.output_dir,
+                manifest.get("activeStepArtifacts"),
+            ),
             "steps": [
                 {"stepId": step_id, "status": statuses.get(step_id, "pending")}
                 for step_id in self._effective_step_order(study_id)
@@ -2740,6 +2778,55 @@ class UiStepService:
             "sources": sources,
         }
 
+    def get_step_artifact_versions(self, study_id: str, step_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        if not step_artifact_versions.is_versioned_step(step_id):
+            raise UiApiError("VALIDATION_ERROR", f"Step '{step_id}' does not support artifact versions", 400)
+        manifest = self._read_upload_manifest_obj(study_id)
+        active_map = manifest.get("activeStepArtifacts") or {}
+        active_version = str(active_map.get(step_id) or "").strip() or None
+        payload = step_artifact_versions.list_step_versions(
+            study_id,
+            self.output_dir,
+            step_id,
+            active_version=active_version,
+        )
+        return {
+            "studyId": study_id,
+            **payload,
+            "activeStepArtifacts": active_map,
+            "stepStatuses": self._step_statuses(study_id),
+        }
+
+    def set_active_step_artifact(self, study_id: str, step_id: str, version: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        step_id = (step_id or "").strip()
+        version = (version or "").strip()
+        if not step_id:
+            raise UiApiError("VALIDATION_ERROR", "stepId is required", 400)
+        if not version:
+            raise UiApiError("VALIDATION_ERROR", "version is required", 400)
+        if not step_artifact_versions.is_versioned_step(step_id):
+            raise UiApiError("VALIDATION_ERROR", f"Step '{step_id}' does not support artifact versions", 400)
+        try:
+            result = step_artifact_versions.apply_active_step_artifact(
+                study_id, self.output_dir, step_id, version
+            )
+        except ValueError as exc:
+            raise UiApiError("VALIDATION_ERROR", str(exc), 400) from exc
+        manifest = self._read_upload_manifest_obj(study_id)
+        active_map = dict(manifest.get("activeStepArtifacts") or {})
+        active_map[step_id] = version
+        self._write_upload_manifest(study_id, active_step_artifacts=active_map)
+        return {
+            "studyId": study_id,
+            "stepId": step_id,
+            "version": version,
+            "itemCount": result.get("itemCount", 0),
+            "activeStepArtifacts": active_map,
+            "stepStatuses": self._step_statuses(study_id),
+        }
+
     def sync_study(self, study_id: str) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         self._assert_safe_study_id(study_id)
@@ -2764,18 +2851,29 @@ class UiStepService:
         if step_id not in allowed_steps:
             raise UiApiError("NOT_FOUND", f"Unknown stepId '{step_id}'", 404)
 
+        # Studies that predate the dedicated dictionary step still have aCRF summary;
+        # rebuild the dictionary so dependency checks and extraction can proceed.
+        if step_id in {
+            "extract-deviations",
+            "normalize-checks",
+            "deduplicate-checks",
+            "classify-programmability",
+            "import-pd-spec-ground",
+            "import-pd-spec-enrich",
+        }:
+            self._ensure_acrf_field_dictionary(study_id)
+
         statuses = self._step_statuses(study_id)
         self._assert_step_dependencies(statuses, step_id, study_id)
 
-        if not force and self._step_artifact_complete(study_id, step_id):
-            summary = "Already complete (skipped)"
-            return {
-                "studyId": study_id,
-                "stepId": step_id,
-                "summary": summary,
-                "skipped": True,
-                "stepStatuses": self._step_statuses(study_id),
-            }
+        # UI re-runs always send force=true; clear stale deviation/review artifacts so
+        # extract-deviations actually regenerates instead of leaving old review state.
+        if force and step_id == "extract-deviations":
+            self._clear_deviation_extraction_artifacts(study_id)
+            self._append_pipeline_log(
+                study_id,
+                "[extract-deviations] Cleared prior deviation/review artifacts for forced re-run",
+            )
 
         extra = (llm_instructions or "").strip()
         stage_labels = {
@@ -2808,18 +2906,19 @@ class UiStepService:
             llmProgress=None,
             activeRunId=active_run_id,
         )
-        self._append_pipeline_log(study_id, f"Starting step {step_id}")
+        self._append_pipeline_log(study_id, f"[{step_id}] Starting step {step_id}")
 
         from pdcheck_factory import llm
 
         def _pipeline_log(message: str) -> None:
             self._append_pipeline_log(study_id, message)
 
+        new_version: str | None = None
         try:
             with llm.use_deployment(llm_deployment), llm.use_pipeline_log(_pipeline_log):
                 summary = self._execute_run_step(study_id, step_id, extra=extra, force=force)
         except Exception as exc:  # noqa: BLE001
-            self._append_pipeline_log(study_id, f"Step {step_id} failed: {exc}", level="error")
+            self._append_pipeline_log(study_id, f"[{step_id}] Step {step_id} failed: {exc}", level="error")
             self._write_pipeline_run_state(
                 study_id,
                 status="failed",
@@ -2830,7 +2929,19 @@ class UiStepService:
             )
             raise
 
-        self._append_pipeline_log(study_id, summary)
+        if step_artifact_versions.is_versioned_step(step_id):
+            try:
+                new_version = step_artifact_versions.register_version_after_run(
+                    study_id, self.output_dir, step_id
+                )
+                manifest = self._read_upload_manifest_obj(study_id)
+                active_map = dict(manifest.get("activeStepArtifacts") or {})
+                active_map[step_id] = new_version
+                self._write_upload_manifest(study_id, active_step_artifacts=active_map)
+            except ValueError:
+                new_version = None
+
+        self._append_pipeline_log(study_id, f"[{step_id}] {summary}")
         self._write_pipeline_run_state(
             study_id,
             status="done",
@@ -2847,13 +2958,11 @@ class UiStepService:
             "studyId": study_id,
             "stepId": step_id,
             "summary": summary,
+            "version": new_version,
             "stepStatuses": self._step_statuses(study_id),
         }
 
     def _execute_run_step(self, study_id: str, step_id: str, *, extra: str, force: bool = False) -> str:
-        if not force and self._step_artifact_complete(study_id, step_id):
-            return "Already complete (skipped)"
-
         progress_callback = self._make_llm_progress_callback(study_id)
 
         if step_id == "index-protocol":
@@ -2898,8 +3007,6 @@ class UiStepService:
             )
             summary = f"Extracted {len(result.get('rules', []))} rules."
         elif step_id == "extract-deviations":
-            if force:
-                self._clear_deviation_extraction_artifacts(study_id)
             result = pipeline_v2.step4_5_extract_deviations(
                 study_id,
                 self.output_dir,
@@ -2907,6 +3014,9 @@ class UiStepService:
                 progress_callback=progress_callback,
                 force=force,
             )
+            # PipelineApp goes extract-deviations → review (skips normalize/dedup),
+            # so review state must be seeded here from parsed candidates.
+            pipeline_v2.initialize_review_states(study_id, self.output_dir)
             summary = f"Extracted {len(result.get('deviations', []))} raw deviation candidates."
         elif step_id == "normalize-checks":
             result = pipeline_v2.step_normalize_checks(
@@ -3045,7 +3155,13 @@ class UiStepService:
 
         return summary
 
-    def get_step_preview(self, study_id: str, step_id: str) -> Dict[str, Any]:
+    def get_step_preview(
+        self,
+        study_id: str,
+        step_id: str,
+        *,
+        version: str | None = None,
+    ) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         allowed_steps = set(STEP_ORDER) | set(IMPORT_STEP_ORDER)
         if step_id not in allowed_steps:
@@ -3080,35 +3196,72 @@ class UiStepService:
                     }
                 )
         elif step_id == "acrf-summary-text":
+            preview_path = step_artifact_versions.resolve_preview_path(
+                study_id,
+                self.output_dir,
+                step_id,
+                p.acrf_summary_text_merged,
+                version=version,
+            )
             previews.append(
                 {
                     "title": "aCRF merged summary preview",
-                    "body": self._read_excerpt(p.acrf_summary_text_merged),
+                    "body": self._read_full_preview(preview_path),
                     "highlight": True,
                 }
             )
         elif step_id == "extract-rules":
+            preview_path = step_artifact_versions.resolve_preview_path(
+                study_id,
+                self.output_dir,
+                step_id,
+                p.rules_parsed,
+                version=version,
+            )
             previews.append(
                 {
                     "title": "Rules preview",
-                    "body": self._read_excerpt(p.rules_parsed),
+                    "body": self._read_full_preview(preview_path),
                     "highlight": True,
                 }
             )
         elif step_id == "extract-deviations":
+            preview_path = step_artifact_versions.resolve_preview_path(
+                study_id,
+                self.output_dir,
+                step_id,
+                p.deviations_parsed,
+                version=version,
+            )
             previews.append(
                 {
                     "title": "Deviations preview",
-                    "body": self._read_excerpt(p.deviations_parsed),
+                    "body": self._read_full_preview(preview_path),
                     "highlight": True,
                 }
             )
-            previews.append(
-                {
-                    "title": "Review state preview",
-                    "body": self._read_excerpt(p.deviations_review_state),
-                }
-            )
+            if not version and p.deviations_review_state.is_file():
+                previews.append(
+                    {
+                        "title": "Review state preview",
+                        "body": self._read_excerpt(p.deviations_review_state),
+                    }
+                )
+            elif version:
+                review_snapshot = step_artifact_versions.version_artifact_path(
+                    study_id,
+                    self.output_dir,
+                    step_id,
+                    version,
+                    "deviations_review_state.json",
+                )
+                if review_snapshot.is_file():
+                    previews.append(
+                        {
+                            "title": "Review state preview",
+                            "body": self._read_excerpt(review_snapshot),
+                        }
+                    )
         elif step_id == "import-pd-spec-ground":
             review_dir = paths.local_review_dir(study_id, self.output_dir)
             import_files = sorted(review_dir.glob("deviations_import_*.json")) if review_dir.exists() else []
@@ -3154,18 +3307,56 @@ class UiStepService:
         is_running = run_state.get("status") == "running"
         partial = is_running and run_state.get("currentSubStepId") == step_id
         item_count = 0
-        if step_id == "extract-rules" and p.rules_parsed.is_file():
-            try:
-                rules_obj = read_json(p.rules_parsed)
-                item_count = len(rules_obj.get("rules", []))
-            except (json.JSONDecodeError, OSError, ValueError):
-                item_count = 0
-        elif step_id == "extract-deviations" and p.deviations_parsed.is_file():
-            try:
-                dev_obj = read_json(p.deviations_parsed)
-                item_count = len(dev_obj.get("deviations", []))
-            except (json.JSONDecodeError, OSError, ValueError):
-                item_count = 0
+        generated_at = ""
+        active_version = version
+        if not active_version and step_artifact_versions.is_versioned_step(step_id):
+            manifest = self._read_upload_manifest_obj(study_id)
+            active_map = manifest.get("activeStepArtifacts") or {}
+            active_version = str(active_map.get(step_id) or "").strip() or None
+
+        if step_id == "extract-rules":
+            preview_path = step_artifact_versions.resolve_preview_path(
+                study_id, self.output_dir, step_id, p.rules_parsed, version=version
+            )
+            if preview_path.is_file():
+                try:
+                    rules_obj = read_json(preview_path)
+                    item_count = len(rules_obj.get("rules", []))
+                    generated_at = str(rules_obj.get("generated_at") or "")
+                except (json.JSONDecodeError, OSError, ValueError):
+                    item_count = 0
+        elif step_id == "extract-deviations":
+            preview_path = step_artifact_versions.resolve_preview_path(
+                study_id, self.output_dir, step_id, p.deviations_parsed, version=version
+            )
+            if preview_path.is_file():
+                try:
+                    dev_obj = read_json(preview_path)
+                    item_count = len(dev_obj.get("deviations", []))
+                    generated_at = str(dev_obj.get("generated_at") or "")
+                except (json.JSONDecodeError, OSError, ValueError):
+                    item_count = 0
+        elif step_id == "acrf-summary-text":
+            preview_path = step_artifact_versions.resolve_preview_path(
+                study_id, self.output_dir, step_id, p.acrf_summary_text_merged, version=version
+            )
+            if preview_path.is_file():
+                try:
+                    summary_obj = read_json(preview_path)
+                    item_count = len(summary_obj.get("datasets", []))
+                    generated_at = str(summary_obj.get("generated_at") or "")
+                except (json.JSONDecodeError, OSError, ValueError):
+                    item_count = 0
+
+        version_meta: Dict[str, Any] = {}
+        if active_version and step_artifact_versions.is_versioned_step(step_id):
+            version_dir = step_artifact_versions.version_artifact_path(
+                study_id, self.output_dir, step_id, active_version, "manifest.json"
+            ).parent
+            if version_dir.is_dir():
+                version_meta = step_artifact_versions.artifact_metadata(
+                    study_id, self.output_dir, step_id, version_dir
+                )
 
         return {
             "studyId": study_id,
@@ -3174,6 +3365,9 @@ class UiStepService:
             "stepStatuses": self._step_statuses(study_id),
             "partial": partial,
             "itemCount": item_count,
+            "generatedAt": generated_at,
+            "version": active_version,
+            "versionCreatedAt": version_meta.get("created_at", ""),
         }
 
     def _pd_spec_workbook_available(self, study_id: str) -> bool:

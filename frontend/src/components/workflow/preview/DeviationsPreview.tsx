@@ -18,8 +18,8 @@ export function DeviationsPreview({ rows, showExtendedColumns = false }: Deviati
   }
 
   return (
-    <div className="preview-table-wrap">
-      <table className="preview-table">
+    <div className="preview-table-wrap preview-table-wrap-wide">
+      <table className="preview-table preview-table-spreadsheet">
         <thead>
           <tr>
             <th>Deviation ID</th>

@@ -208,6 +208,10 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 data = self.service.get_extraction_live(study_id)
             elif tail == "import-versions":
                 data = self.service.get_import_versions(study_id)
+            elif tail == "step-artifact-versions":
+                qs = parse_qs(parsed.query)
+                step_id = (qs.get("stepId") or [""])[0]
+                data = self.service.get_step_artifact_versions(study_id, step_id)
             elif tail == "summary":
                 data = self.service.get_study_summary(study_id)
             elif tail == "runs":
@@ -262,7 +266,9 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 data = self.service.get_step7_deviation_chat(study_id, deviation_id)
             elif tail.startswith("steps/") and tail.endswith("/preview"):
                 step_id = tail[len("steps/") : -len("/preview")]
-                data = self.service.get_step_preview(study_id, step_id)
+                qs = parse_qs(parsed.query)
+                version = (qs.get("version") or [""])[0] or None
+                data = self.service.get_step_preview(study_id, step_id, version=version)
             else:
                 raise UiApiError("NOT_FOUND", "Not found", 404)
 
@@ -323,6 +329,8 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 data = self.service.preprocess_acrf(study_id)
             elif tail == "active-deviations-source":
                 data = self._parse_active_deviations_source(study_id)
+            elif tail == "active-step-artifact":
+                data = self._parse_active_step_artifact(study_id)
             elif tail.startswith("step7/deviations/") and tail.endswith("/refine"):
                 deviation_id = tail[len("step7/deviations/") : -len("/refine")]
                 data = self._parse_step7_refine(study_id, deviation_id)
@@ -682,6 +690,17 @@ class StepApiHandler(BaseHTTPRequestHandler):
         return self.service.set_active_deviations_source(
             study_id,
             str(payload.get("activeDeviationsSource", "")),
+        )
+
+    def _parse_active_step_artifact(self, study_id: str) -> Dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0:
+            raise UiApiError("BAD_JSON", "Missing JSON body", 400)
+        payload = parse_json_body(self.rfile.read(length))
+        return self.service.set_active_step_artifact(
+            study_id,
+            str(payload.get("stepId", "")),
+            str(payload.get("version", "")),
         )
 
     def _match_v1(self, path: str) -> Tuple[str, str] | None:

@@ -223,16 +223,103 @@ def test_run_step_force_clears_review_state_before_extract(tmp_path: Path, monke
     study_id = "MY-STUDY"
     _seed_deviation_deps(study_id, tmp_path, rule_count=2)
     review = paths.local_deviations_review_state(study_id, tmp_path)
+    generated = paths.local_deviations_review_generated_json(study_id, tmp_path)
     _touch(review, json.dumps({"deviations": [{"deviation_id": "dev-stale"}]}))
+    _touch(generated, json.dumps({"deviations": []}))
 
     def fake_deviations(sid, output_dir, *, additional_instructions="", progress_callback=None, force=False):
         assert force is True
+        assert not paths.local_deviations_review_state(sid, output_dir).exists()
+        assert not paths.local_deviations_review_generated_json(sid, output_dir).exists()
+        out = paths.local_deviations_parsed_json(sid, output_dir)
+        _touch(
+            out,
+            json.dumps(
+                {
+                    "schema_version": "1.0.0",
+                    "study_id": sid,
+                    "generated_at": "2026-01-01T00:00:00+00:00",
+                    "deviations": [{"deviation_id": "dev-0001", "text": "Fresh", "status": "pending"}],
+                }
+            ),
+        )
+        return {"deviations": [{"deviation_id": "dev-0001"}]}
+
+    monkeypatch.setattr(pipeline_v2, "step4_5_extract_deviations", fake_deviations)
+
+    service.run_step(study_id, "extract-deviations", force=True)
+    # Extract re-seeds review state from parsed so Review is not empty after re-run.
+    assert review.exists()
+    assert generated.exists()
+    assert read_json(generated)["deviations"][0]["deviation_id"] == "dev-0001"
+    rows = service.get_step7_deviations(study_id, review_source="generated")
+    assert len(rows["rows"]) == 1
+    assert rows["rows"][0]["deviation_id"] == "dev-0001"
+
+
+def test_ensure_review_source_refreshes_empty_generated_from_parsed(tmp_path: Path) -> None:
+    from pdcheck_factory import review_sources
+
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "MY-STUDY"
+    parsed = paths.local_deviations_parsed_json(study_id, tmp_path)
+    generated = paths.local_deviations_review_generated_json(study_id, tmp_path)
+    _touch(
+        parsed,
+        json.dumps(
+            {
+                "schema_version": "1.0.0",
+                "study_id": study_id,
+                "generated_at": "2026-01-01T00:00:00+00:00",
+                "deviations": [
+                    {
+                        "deviation_id": "dev-0001",
+                        "rule_id": "rule-001",
+                        "text": "Parsed deviation",
+                        "paragraph_refs": ["p1"],
+                        "status": "pending",
+                    }
+                ],
+            }
+        ),
+    )
+    # Stale empty generated file left behind after a prior re-run race / restore.
+    _touch(
+        generated,
+        json.dumps(
+            {
+                "schema_version": "1.0.0",
+                "study_id": study_id,
+                "generated_at": "2026-01-01T00:00:00+00:00",
+                "deviations": [],
+            }
+        ),
+    )
+
+    rows = service.get_step7_deviations(study_id, review_source=review_sources.REVIEW_SOURCE_GENERATED)
+    assert len(rows["rows"]) == 1
+    assert rows["rows"][0]["deviation_text"] == "Parsed deviation"
+    assert len(read_json(generated)["deviations"]) == 1
+
+
+def test_run_step_builds_missing_acrf_dictionary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pdcheck_factory import pipeline_v2
+
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "MY-STUDY"
+    _seed_deviation_deps(study_id, tmp_path, rule_count=1)
+    dictionary = paths.local_acrf_field_dictionary_json(study_id, tmp_path)
+    dictionary.unlink()
+    assert not dictionary.exists()
+
+    def fake_deviations(sid, output_dir, *, additional_instructions="", progress_callback=None, force=False):
+        del additional_instructions, progress_callback, force
+        assert paths.local_acrf_field_dictionary_json(sid, output_dir).exists()
         out = paths.local_deviations_parsed_json(sid, output_dir)
         _touch(out, json.dumps({"deviations": [{"deviation_id": "dev-0001"}]}))
         return {"deviations": [{"deviation_id": "dev-0001"}]}
 
     monkeypatch.setattr(pipeline_v2, "step4_5_extract_deviations", fake_deviations)
-    monkeypatch.setattr(pipeline_v2, "initialize_review_states", lambda *args, **kwargs: None)
-
     service.run_step(study_id, "extract-deviations", force=True)
-    assert not review.exists() or service._step_artifact_complete(study_id, "extract-deviations") is False
+    assert dictionary.exists()
+    assert service._step_statuses(study_id)["acrf-field-dictionary"] == "done"

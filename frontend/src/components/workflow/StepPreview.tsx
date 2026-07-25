@@ -1,11 +1,13 @@
 import type { PipelinePreviewItem } from "../../types/pipeline";
 import {
+  extractAcrfSummaryFromJson,
   extractDeviationsFromJson,
   extractRulesFromJson,
   isFileListPreview,
   parseFileList,
   tryParseJson
 } from "../../utils/previewFormat";
+import { AcrfSummaryPreview } from "./preview/AcrfSummaryPreview";
 import { DeviationsPreview } from "./preview/DeviationsPreview";
 import { RulesPreview } from "./preview/RulesPreview";
 
@@ -13,6 +15,15 @@ interface StepPreviewProps {
   stepId: string;
   previews: PipelinePreviewItem[];
   hasRun?: boolean;
+}
+
+function isAcrfSummaryStep(stepId: string, title: string): boolean {
+  const lower = title.toLowerCase();
+  return (
+    stepId === "acrf-summary-text" ||
+    stepId === "acrf-summary" ||
+    (lower.includes("acrf") && lower.includes("summary"))
+  );
 }
 
 function renderPreviewBody(stepId: string, preview: PipelinePreviewItem): JSX.Element {
@@ -39,6 +50,12 @@ function renderPreviewBody(stepId: string, preview: PipelinePreviewItem): JSX.El
       const rows = extractDeviationsFromJson(parsed);
       if (rows.length > 0) {
         return <DeviationsPreview rows={rows} />;
+      }
+    }
+    if (isAcrfSummaryStep(stepId, preview.title)) {
+      const rows = extractAcrfSummaryFromJson(parsed);
+      if (rows.length > 0) {
+        return <AcrfSummaryPreview rows={rows} />;
       }
     }
   }

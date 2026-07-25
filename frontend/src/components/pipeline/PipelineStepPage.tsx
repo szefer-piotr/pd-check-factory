@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { Card } from "../layout/Card";
 import { Stack } from "../layout/Stack";
 import { LlmProgressBar } from "../workflow/LlmProgressBar";
-import { LogPanel } from "./LogPanel";
+import { PipelineLogDrawer } from "./PipelineLogDrawer";
 import type { LlmProgress, PipelineLogLine } from "../../services/stepApi";
 
 export type StepRunState = "idle" | "running" | "done" | "failed";
@@ -16,7 +16,7 @@ interface PipelineStepPageProps {
   isRunning: boolean;
   runLabel?: string;
   rerunLabel?: string;
-  onRun: (force: boolean) => void;
+  onRun: () => void;
   logs: PipelineLogLine[];
   llmProgress?: LlmProgress | null;
   error?: string;
@@ -45,41 +45,40 @@ export function PipelineStepPage({
 
   return (
     <div className="pipeline-step-page">
-    <Stack gap="md">
-      <header className="pipeline-step-header">
-        <div>
-          <h1>{title}</h1>
-          <p className="pipeline-step-description">{description}</p>
+      <div className="pipeline-step-layout">
+        <div className="pipeline-step-main">
+        <Stack gap="md">
+          <header className="pipeline-step-header">
+            <div>
+              <h1>{title}</h1>
+              <p className="pipeline-step-description">{description}</p>
+            </div>
+            <span className={`pipeline-step-badge pipeline-step-badge-${status}`}>{statusLabel}</span>
+          </header>
+
+          {isRunning ? (
+            <div className="pipeline-run-banner" role="status">
+              Processing in progress — do not close the browser.
+            </div>
+          ) : null}
+
+          {error ? <p className="pipeline-error">{error}</p> : null}
+          {message ? <p className="pipeline-message">{message}</p> : null}
+
+          {children ? <Card>{children}</Card> : null}
+
+          <div className="pipeline-step-actions">
+            <button type="button" disabled={!canRun || isRunning} onClick={onRun}>
+              {isComplete ? rerunLabel : runLabel}
+            </button>
+          </div>
+
+          {llmProgress ? <LlmProgressBar progress={llmProgress} /> : null}
+        </Stack>
         </div>
-        <span className={`pipeline-step-badge pipeline-step-badge-${status}`}>{statusLabel}</span>
-      </header>
 
-      {isRunning ? (
-        <div className="pipeline-run-banner" role="status">
-          Processing in progress — do not close the browser.
-        </div>
-      ) : null}
-
-      {error ? <p className="pipeline-error">{error}</p> : null}
-      {message ? <p className="pipeline-message">{message}</p> : null}
-
-      {children ? <Card>{children}</Card> : null}
-
-      <div className="pipeline-step-actions">
-        <button type="button" disabled={!canRun || isRunning} onClick={() => onRun(false)}>
-          {isComplete ? rerunLabel : runLabel}
-        </button>
-        {isComplete ? (
-          <button type="button" disabled={!canRun || isRunning} onClick={() => onRun(true)} className="secondary">
-            Force re-run
-          </button>
-        ) : null}
+        <PipelineLogDrawer logs={logs} active={isRunning || status === "running"} />
       </div>
-
-      {llmProgress ? <LlmProgressBar progress={llmProgress} /> : null}
-
-      <LogPanel logs={logs} active={isRunning || status === "running"} />
-    </Stack>
     </div>
   );
 }

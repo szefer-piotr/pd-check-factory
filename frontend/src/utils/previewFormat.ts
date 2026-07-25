@@ -34,28 +34,75 @@ export interface DeviationPreviewRow {
   text: string;
 }
 
-export function extractRulesFromJson(data: unknown, limit = 12): RulePreviewRow[] {
+export interface AcrfSummaryPreviewRow {
+  dataset_name: string;
+  column_name: string;
+  column_description: string;
+  column_values: string;
+}
+
+export function extractRulesFromJson(data: unknown): RulePreviewRow[] {
   const rules = extractArray(data, ["rules"]);
-  return rules.slice(0, limit).map((item, index) => {
+  return rules.map((item, index) => {
     const row = item as Record<string, unknown>;
     return {
       rule_id: String(row.rule_id ?? row.id ?? `rule-${index + 1}`),
       title: String(row.title ?? row.rule_title ?? ""),
-      text: truncate(String(row.text ?? ""), 120)
+      text: String(row.text ?? "")
     };
   });
 }
 
-export function extractDeviationsFromJson(data: unknown, limit = 12): DeviationPreviewRow[] {
+export function extractDeviationsFromJson(data: unknown): DeviationPreviewRow[] {
   const deviations = extractArray(data, ["deviations", "items"]);
-  return deviations.slice(0, limit).map((item, index) => {
+  return deviations.map((item, index) => {
     const row = item as Record<string, unknown>;
     return {
       deviation_id: String(row.deviation_id ?? row.id ?? `dev-${index + 1}`),
       rule_id: String(row.rule_id ?? ""),
-      text: truncate(String(row.text ?? row.deviation_text ?? ""), 120)
+      text: String(row.text ?? row.deviation_text ?? "")
     };
   });
+}
+
+export function extractAcrfSummaryFromJson(data: unknown): AcrfSummaryPreviewRow[] {
+  const datasets = extractArray(data, ["datasets"]);
+  const rows: AcrfSummaryPreviewRow[] = [];
+  for (const item of datasets) {
+    const dataset = item as Record<string, unknown>;
+    const datasetName = String(dataset.dataset_name ?? dataset.name ?? "");
+    const columns = Array.isArray(dataset.columns) ? dataset.columns : [];
+    for (const columnItem of columns) {
+      const column = columnItem as Record<string, unknown>;
+      rows.push({
+        dataset_name: datasetName || "—",
+        column_name: String(column.column_name ?? column.name ?? ""),
+        column_description: String(column.column_description ?? column.notes ?? ""),
+        column_values: formatColumnValues(column)
+      });
+    }
+  }
+  return rows;
+}
+
+function formatColumnValues(column: Record<string, unknown>): string {
+  if (column.column_values != null && String(column.column_values).trim()) {
+    return String(column.column_values);
+  }
+  const allowed = column.allowed_values ?? column.categorical_values;
+  if (Array.isArray(allowed) && allowed.length > 0) {
+    return allowed.map(String).join(", ");
+  }
+  const valueRange = column.value_range;
+  if (valueRange && typeof valueRange === "object") {
+    const range = valueRange as Record<string, unknown>;
+    const min = String(range.min ?? "");
+    const max = String(range.max ?? "");
+    if (min || max) {
+      return [min && `min: ${min}`, max && `max: ${max}`].filter(Boolean).join(", ");
+    }
+  }
+  return "";
 }
 
 function extractArray(data: unknown, keys: string[]): unknown[] {
@@ -72,11 +119,4 @@ function extractArray(data: unknown, keys: string[]): unknown[] {
     }
   }
   return [];
-}
-
-function truncate(value: string, max: number): string {
-  if (value.length <= max) {
-    return value;
-  }
-  return `${value.slice(0, max)}…`;
 }

@@ -1180,7 +1180,7 @@ def _seed_processing_artifacts(service: UiStepService, study_id: str, tmp_path: 
     _touch(review, '{"deviations": []}')
 
 
-def test_run_step1_extract_skips_when_artifacts_exist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_step1_extract_always_runs_when_artifacts_exist(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     service = UiStepService(output_dir=tmp_path)
     study_id = "SKIP-EX"
     _seed_processing_artifacts(service, study_id, tmp_path)
@@ -1199,8 +1199,8 @@ def test_run_step1_extract_skips_when_artifacts_exist(tmp_path: Path, monkeypatc
     monkeypatch.setattr(cli_mod, "run_extract", fake_run_extract)
 
     out = service.run_step1_extract(study_id, extractor="both", force=False)
-    assert out.get("skipped") is True
-    assert called["run_extract"] is False
+    assert out.get("skipped") is not True
+    assert called["run_extract"] is True
     assert out["stepStatuses"]["extract-inputs"] == "done"
 
 
@@ -1228,7 +1228,7 @@ def test_run_step1_extract_force_runs_when_artifacts_exist(tmp_path: Path, monke
     assert called["run_extract"] is True
 
 
-def test_run_step_skips_when_artifact_exists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_step_always_runs_when_artifact_exists(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from pdcheck_factory import pipeline_v2
 
     service = UiStepService(output_dir=tmp_path)
@@ -1239,14 +1239,67 @@ def test_run_step_skips_when_artifact_exists(tmp_path: Path, monkeypatch: pytest
 
     def fake_rules(sid: str, output_dir: Path, *args, **kwargs):
         called["rules"] = True
+        _touch(paths.local_rules_parsed_json(sid, output_dir), '{"schema_version":"1.0.0","study_id":"' + sid + '","generated_at":"2026-01-01T00:00:00+00:00","rules":[]}')
         return {"rules": []}
 
     monkeypatch.setattr(pipeline_v2, "step3_extract_rules", fake_rules)
 
     out = service.run_step(study_id, "extract-rules", force=False)
-    assert out.get("skipped") is True
-    assert called["rules"] is False
-    assert "skipped" in out["summary"].lower()
+    assert out.get("skipped") is not True
+    assert called["rules"] is True
+    assert out.get("version") == "v1"
+
+
+def test_run_step_rules_version_snapshot_and_restore(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pdcheck_factory import pipeline_v2, step_artifact_versions
+
+    run_count = {"n": 0}
+
+    def fake_rules(sid: str, output_dir: Path, **kwargs: object) -> dict:
+        run_count["n"] += 1
+        rule_id = f"rule-{run_count['n']}"
+        obj = {
+            "schema_version": "1.0.0",
+            "study_id": sid,
+            "generated_at": f"2026-01-0{run_count['n']}T00:00:00+00:00",
+            "rules": [
+                {
+                    "rule_id": rule_id,
+                    "title": "Title",
+                    "text": "Text",
+                    "paragraph_refs": ["p1"],
+                }
+            ],
+        }
+        write_json(paths.local_rules_parsed_json(sid, output_dir), obj)
+        return obj
+
+    monkeypatch.setattr(pipeline_v2, "step3_extract_rules", fake_rules)
+
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "VER-RULES"
+    proto = extraction_resolve.resolve_protocol_rendered_source_md(study_id, tmp_path)
+    acrf = extraction_resolve.resolve_acrf_rendered_source_md(study_id, tmp_path)
+    _touch(proto)
+    _touch(acrf)
+    _touch(paths.local_protocol_paragraph_index_json(study_id, tmp_path), '{"paragraphs": []}')
+
+    out1 = service.run_step(study_id, "extract-rules")
+    assert out1["version"] == "v1"
+
+    out2 = service.run_step(study_id, "extract-rules")
+    assert out2["version"] == "v2"
+
+    listed = step_artifact_versions.list_step_versions(
+        study_id, tmp_path, "extract-rules", active_version="v2"
+    )
+    assert len(listed["versions"]) == 2
+    assert listed["versions"][0]["version"] == "v1"
+    assert listed["versions"][1]["version"] == "v2"
+
+    service.set_active_step_artifact(study_id, "extract-rules", "v1")
+    active_rules = read_json(paths.local_rules_parsed_json(study_id, tmp_path))
+    assert active_rules["rules"][0]["rule_id"] == "rule-1"
 
 
 def test_upload_status_includes_processing_complete_flags(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
