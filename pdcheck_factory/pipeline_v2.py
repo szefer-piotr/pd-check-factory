@@ -210,6 +210,72 @@ def _load_programmability_classification(study_id: str, output_dir: Path) -> Dic
     return {}
 
 
+def _normalize_manual_or_programmable(value: str) -> str:
+    text = str(value or "").strip().lower()
+    if text == "manual":
+        return "Manual"
+    if text == "programmable":
+        return "Programmable"
+    if text in {"partially programmable", "partially_programmable"}:
+        return "Partially programmable"
+    return str(value or "").strip()
+
+
+def _classification_from_deviation(deviation: Dict[str, Any]) -> Dict[str, Any] | None:
+    """Build classification from an explicit Manual / Partially programmable label on the deviation."""
+    manual_label = _normalize_manual_or_programmable(pd_spec_field(deviation, "manual_or_programmable"))
+    if manual_label == "Manual":
+        return {
+            "programmability": "manual",
+            "manual_or_programmable": "Manual",
+            "reason": "Marked as manual (not programmable).",
+            "required_data": [],
+        }
+    if manual_label == "Partially programmable":
+        return {
+            "programmability": "partially_programmable",
+            "manual_or_programmable": "Partially programmable",
+            "reason": "Marked as partially programmable.",
+            "required_data": [],
+        }
+    return None
+
+
+def _is_non_programmable_classification(classification: Dict[str, Any] | None) -> bool:
+    if not classification:
+        return False
+    programmability = str(classification.get("programmability", "")).strip().lower()
+    label = _normalize_manual_or_programmable(
+        str(classification.get("manual_or_programmable", "") or "")
+    )
+    return programmability == "manual" or label == "Manual"
+
+
+def _resolve_classification_for_pseudo(
+    *,
+    study_id: str,
+    output_dir: Path,
+    deviation: Dict[str, Any],
+    programmability_by_dev: Dict[str, Dict[str, Any]] | None = None,
+) -> Dict[str, Any]:
+    """Resolve programmability for pseudo generation; never LLM-classify explicit Manual rows."""
+    from_dev = _classification_from_deviation(deviation)
+    if _is_non_programmable_classification(from_dev):
+        return from_dev  # type: ignore[return-value]
+    if programmability_by_dev is None:
+        programmability_by_dev = _load_programmability_classification(study_id, output_dir)
+    classification = programmability_by_dev.get(str(deviation.get("deviation_id", "")))
+    if classification:
+        return classification
+    if from_dev is not None:
+        return from_dev
+    return programmability_classify.classify_single_deviation(
+        study_id=study_id,
+        deviation=deviation,
+        dictionary_obj=_acrf_field_dictionary(study_id, output_dir),
+    )
+
+
 def _manual_review_instructions(deviation_text: str) -> str:
     text = (deviation_text or "").strip()
     if not text:
@@ -228,13 +294,21 @@ def _build_pseudo_logic_item(
     dictionary_obj = _acrf_field_dictionary(study_id, output_dir)
     acrf_summary = _acrf_field_dictionary_text(study_id, output_dir)[:50000]
     programmability = str((classification or {}).get("programmability", "manual")).strip().lower()
-    manual_or_programmable = str(
-        (classification or {}).get("manual_or_programmable", "Manual")
-    ).strip() or "Manual"
+    manual_or_programmable = _normalize_manual_or_programmable(
+        str((classification or {}).get("manual_or_programmable", "Manual") or "")
+    ) or "Manual"
     reason = str((classification or {}).get("reason", "")).strip()
     required_data = list((classification or {}).get("required_data", []) or [])
+    deviation_label = _normalize_manual_or_programmable(
+        pd_spec_field(deviation, "manual_or_programmable")
+    )
 
-    if programmability == "manual" or manual_or_programmable == "Manual":
+    # Non-programmable deviations never get pseudo logic (always None).
+    if (
+        programmability == "manual"
+        or manual_or_programmable == "Manual"
+        or deviation_label == "Manual"
+    ):
         item = {
             "deviation_id": deviation.get("deviation_id", ""),
             "rule_id": deviation.get("rule_id", ""),
@@ -243,7 +317,7 @@ def _build_pseudo_logic_item(
             "manual_review_instructions": _manual_review_instructions(str(deviation.get("text", ""))),
             "manual_or_programmable": "Manual",
             "programmable": False,
-            "programmability_note": reason,
+            "programmability_note": reason or "Not programmable.",
             "required_data": required_data,
             "status": "pending",
             "dm_comment": "",
@@ -725,13 +799,13 @@ def step8_generate_pseudo_logic(
     total_accepted = len(accepted_deviations)
     for index, dev in enumerate(accepted_deviations):
         rule = rule_by_id.get(dev.get("rule_id"), {})
-        classification = programmability_by_dev.get(str(dev.get("deviation_id", "")))
-        if not classification:
-            classification = programmability_classify.classify_single_deviation(
-                study_id=study_id,
-                deviation=dev,
-                dictionary_obj=_acrf_field_dictionary(study_id, output_dir),
-            )
+        # Skip LLM classify/generate for non-programmable (Manual) deviations.
+        classification = _resolve_classification_for_pseudo(
+            study_id=study_id,
+            output_dir=output_dir,
+            deviation=dev,
+            programmability_by_dev=programmability_by_dev,
+        )
         item = _build_pseudo_logic_item(
             study_id=study_id,
             output_dir=output_dir,
@@ -790,14 +864,11 @@ def generate_pseudo_logic_for_deviation(
         rules_obj = read_json(paths.local_rules_parsed_json(study_id, output_dir))
         rule_by_id = {r["rule_id"]: r for r in rules_obj.get("rules", [])}
     rule = rule_by_id.get(str(deviation.get("rule_id", "")), {})
-    programmability_by_dev = _load_programmability_classification(study_id, output_dir)
-    classification = programmability_by_dev.get(str(deviation.get("deviation_id", "")))
-    if not classification:
-        classification = programmability_classify.classify_single_deviation(
-            study_id=study_id,
-            deviation=deviation,
-            dictionary_obj=_acrf_field_dictionary(study_id, output_dir),
-        )
+    classification = _resolve_classification_for_pseudo(
+        study_id=study_id,
+        output_dir=output_dir,
+        deviation=deviation,
+    )
     return _build_pseudo_logic_item(
         study_id=study_id,
         output_dir=output_dir,
@@ -1149,32 +1220,11 @@ def generate_pseudo_logic_for_imported_deviation(
     sub = pd_spec_field(deviation, "protocol_deviation_sub_category")
     rule_title = f"{category} / {sub}".strip(" /")
     rule = {"title": rule_title}
-    manual_label = pd_spec_field(deviation, "manual_or_programmable").strip()
-    if manual_label == "Manual":
-        classification = {
-            "programmability": "manual",
-            "manual_or_programmable": "Manual",
-            "reason": "Imported as manual check.",
-            "required_data": [],
-        }
-    elif manual_label == "Partially programmable":
-        classification = {
-            "programmability": "partially_programmable",
-            "manual_or_programmable": "Partially programmable",
-            "reason": "Imported as partially programmable check.",
-            "required_data": [],
-        }
-    else:
-        classification = None
-    if classification is None:
-        programmability_by_dev = _load_programmability_classification(study_id, output_dir)
-        classification = programmability_by_dev.get(str(deviation.get("deviation_id", "")))
-        if not classification:
-            classification = programmability_classify.classify_single_deviation(
-                study_id=study_id,
-                deviation=deviation,
-                dictionary_obj=_acrf_field_dictionary(study_id, output_dir),
-            )
+    classification = _resolve_classification_for_pseudo(
+        study_id=study_id,
+        output_dir=output_dir,
+        deviation=deviation,
+    )
     return _build_pseudo_logic_item(
         study_id=study_id,
         output_dir=output_dir,

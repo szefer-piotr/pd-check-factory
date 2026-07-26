@@ -6,6 +6,8 @@ import { deploymentForStep } from "../../hooks/useStudySettings";
 import type { StudySettings } from "../../hooks/useStudySettings";
 import { usePipelineRunState } from "../../hooks/usePipelineRunState";
 import {
+  dedupeDeviationsPerRule,
+  fetchExtractDeviationsVersionPlan,
   fetchStepArtifactVersions,
   fetchStepPreview,
   runStep,
@@ -33,6 +35,10 @@ interface BackendRunStepPageProps {
 }
 
 const PREVIEW_STEP_IDS = new Set(["extract-rules", "extract-deviations", "acrf-summary"]);
+
+type VersionChoiceDialog = {
+  matchingVersion: string;
+} | null;
 
 function formatTimestamp(ts: string | undefined): string {
   if (!ts) {
@@ -68,6 +74,8 @@ export function BackendRunStepPage({
   const [versions, setVersions] = useState<StepArtifactVersionEntry[]>([]);
   const [activeVersion, setActiveVersion] = useState<string | null>(null);
   const [versionLoading, setVersionLoading] = useState(false);
+  const [versionChoice, setVersionChoice] = useState<VersionChoiceDialog>(null);
+  const [dedupeMessage, setDedupeMessage] = useState("");
 
   const poll = isRunActive || localRunning;
   const { runState } = usePipelineRunState(studyId, { enabled: poll, pollMs: 1500 });
@@ -77,6 +85,7 @@ export function BackendRunStepPage({
   const isRunning = status === "running" || isRunActive || localRunning;
   const showPreview = step.backendStepId && PREVIEW_STEP_IDS.has(step.id);
   const showVersionPicker = isVersionedStep(step.backendStepId);
+  const isExtractDeviations = step.backendStepId === "extract-deviations";
 
   const refreshPreview = useCallback(async (): Promise<void> => {
     if (!studyId.trim() || !step.backendStepId || !showPreview) {
@@ -127,6 +136,17 @@ export function BackendRunStepPage({
     };
   }, [defaultDeployment, settings, step.backendStepId]);
 
+  async function executeExtractDeviations(versionMode: "new" | "overwrite", overwriteVersion?: string): Promise<void> {
+    const result = await runStep(studyId.trim(), "extract-deviations", {
+      ...runOptions(),
+      versionMode,
+      overwriteVersion
+    });
+    onStatusesChange(result.stepStatuses);
+    await refreshVersions();
+    await refreshPreview();
+  }
+
   async function handleRun(): Promise<void> {
     if (!studyId.trim()) {
       return;
@@ -134,14 +154,82 @@ export function BackendRunStepPage({
     onRunActiveChange(true);
     setLocalRunning(true);
     setLocalError("");
+    setDedupeMessage("");
     try {
       if (step.id === "extract-pdfs") {
         const result = await runStep1Extraction(studyId.trim(), "document_intelligence", { force: true });
         onStatusesChange(result.stepStatuses);
+      } else if (isExtractDeviations) {
+        const plan = await fetchExtractDeviationsVersionPlan(studyId.trim());
+        if (plan.matchingVersion) {
+          setVersionChoice({ matchingVersion: plan.matchingVersion });
+          setLocalRunning(false);
+          onRunActiveChange(false);
+          return;
+        }
+        await executeExtractDeviations("new");
       } else if (step.backendStepId) {
         const result = await runStep(studyId.trim(), step.backendStepId, runOptions());
         onStatusesChange(result.stepStatuses);
       }
+      await refreshVersions();
+      await refreshPreview();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setLocalError(message);
+    } finally {
+      setLocalRunning(false);
+      onRunActiveChange(false);
+    }
+  }
+
+  async function confirmVersionChoice(mode: "new" | "overwrite"): Promise<void> {
+    if (!versionChoice) {
+      return;
+    }
+    const matching = versionChoice.matchingVersion;
+    setVersionChoice(null);
+    onRunActiveChange(true);
+    setLocalRunning(true);
+    setLocalError("");
+    try {
+      if (mode === "overwrite") {
+        await executeExtractDeviations("overwrite", matching);
+      } else {
+        await executeExtractDeviations("new");
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      setLocalError(message);
+    } finally {
+      setLocalRunning(false);
+      onRunActiveChange(false);
+    }
+  }
+
+  async function handleDedupePerRule(): Promise<void> {
+    if (!studyId.trim() || isRunning) {
+      return;
+    }
+    const confirmed = window.confirm(
+      "Deduplicate deviations per rule?\n\nCreates a new deviations version from the active set. Prior versions remain available."
+    );
+    if (!confirmed) {
+      return;
+    }
+    onRunActiveChange(true);
+    setLocalRunning(true);
+    setLocalError("");
+    setDedupeMessage("");
+    try {
+      const deployment = deploymentForStep("extract-deviations", settings, defaultDeployment);
+      const result = await dedupeDeviationsPerRule(studyId.trim(), {
+        llmDeployment: deployment || undefined
+      });
+      onStatusesChange(result.stepStatuses);
+      setDedupeMessage(
+        `Deduped ${result.beforeCount} → ${result.afterCount} (removed ${result.removedCount}); wrote ${result.version}.`
+      );
       await refreshVersions();
       await refreshPreview();
     } catch (err) {
@@ -194,6 +282,18 @@ export function BackendRunStepPage({
         />
       ) : null}
 
+      {isExtractDeviations && isComplete ? (
+        <div className="pipeline-step-secondary-actions">
+          <button type="button" disabled={isRunning} onClick={() => void handleDedupePerRule()}>
+            Deduplicate deviations (per rule)
+          </button>
+          <p className="pipeline-step-secondary-hint">
+            Merges near-duplicate candidates within each rule and writes a new version.
+          </p>
+          {dedupeMessage ? <p className="pipeline-message">{dedupeMessage}</p> : null}
+        </div>
+      ) : null}
+
       {showPreview && previewItems.length > 0 ? (
         <>
           {preview?.generatedAt || preview?.version ? (
@@ -212,6 +312,33 @@ export function BackendRunStepPage({
           />
         </>
       ) : null}
+
+      {versionChoice ? (
+        <div className="version-choice-dialog" role="dialog" aria-modal="true" aria-labelledby="version-choice-title">
+          <div className="version-choice-dialog-card">
+            <h3 id="version-choice-title">Same upstream sources</h3>
+            <p>
+              A deviations version already exists for the current rules / aCRF sources (
+              <strong>{versionChoice.matchingVersion}</strong>). Overwrite it, or create a new version?
+            </p>
+            <div className="version-choice-dialog-actions">
+              <button type="button" onClick={() => void confirmVersionChoice("overwrite")}>
+                Overwrite {versionChoice.matchingVersion}
+              </button>
+              <button type="button" className="secondary" onClick={() => void confirmVersionChoice("new")}>
+                Create new version
+              </button>
+              <button
+                type="button"
+                className="secondary"
+                onClick={() => setVersionChoice(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </>
   );
 
@@ -229,7 +356,7 @@ export function BackendRunStepPage({
       error={localError || runState.error || undefined}
       message={runState.message || undefined}
     >
-      {showVersionPicker || showPreview ? stepContent : null}
+      {showVersionPicker || showPreview || isExtractDeviations ? stepContent : null}
     </PipelineStepPage>
   );
 }

@@ -212,6 +212,8 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 qs = parse_qs(parsed.query)
                 step_id = (qs.get("stepId") or [""])[0]
                 data = self.service.get_step_artifact_versions(study_id, step_id)
+            elif tail == "steps/extract-deviations/version-plan":
+                data = self.service.get_extract_deviations_version_plan(study_id)
             elif tail == "summary":
                 data = self.service.get_study_summary(study_id)
             elif tail == "runs":
@@ -371,17 +373,33 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 llm_instructions: str | None = None
                 llm_deployment: str | None = None
                 force = False
+                version_mode: str | None = None
+                overwrite_version: str | None = None
                 if length > 0:
                     payload = parse_json_body(self.rfile.read(length))
                     llm_instructions = str(payload.get("llmInstructions", "") or "")
                     llm_deployment = str(payload.get("llmDeployment", "") or "") or None
                     force = bool(payload.get("force", False))
+                    raw_mode = str(payload.get("versionMode", "") or "").strip()
+                    version_mode = raw_mode or None
+                    overwrite_version = str(payload.get("overwriteVersion", "") or "").strip() or None
                 data = self.service.run_step(
                     study_id,
                     step_id,
                     llm_instructions=llm_instructions,
                     llm_deployment=llm_deployment,
                     force=force,
+                    version_mode=version_mode,
+                    overwrite_version=overwrite_version,
+                )
+            elif tail == "steps/extract-deviations/dedupe-per-rule":
+                length = int(self.headers.get("Content-Length", "0"))
+                llm_deployment = None
+                if length > 0:
+                    payload = parse_json_body(self.rfile.read(length))
+                    llm_deployment = str(payload.get("llmDeployment", "") or "") or None
+                data = self.service.dedupe_deviations_per_rule(
+                    study_id, llm_deployment=llm_deployment
                 )
             else:
                 raise UiApiError("NOT_FOUND", "Not found", 404)

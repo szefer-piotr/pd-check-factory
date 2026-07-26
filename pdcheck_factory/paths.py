@@ -230,6 +230,10 @@ def local_check_dedup_audit_json(study_id: str, output_dir: Path) -> Path:
     return local_deviations_dir(study_id, output_dir) / "check_dedup_audit.json"
 
 
+def local_per_rule_dedup_audit_json(study_id: str, output_dir: Path) -> Path:
+    return local_deviations_dir(study_id, output_dir) / "per_rule_dedup_audit.json"
+
+
 def local_programmability_classified_json(study_id: str, output_dir: Path) -> Path:
     return local_deviations_dir(study_id, output_dir) / "programmability_classified.json"
 

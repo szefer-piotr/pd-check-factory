@@ -249,6 +249,9 @@ export interface StepArtifactVersionEntry {
   generated_at: string;
   itemCount: number;
   active?: boolean;
+  sourceVersions?: Record<string, unknown>;
+  sourceSummary?: string;
+  derivedFrom?: { version?: string; operation?: string };
 }
 
 export interface StepArtifactVersionsInfo {
@@ -908,7 +911,12 @@ export async function fetchSpecificationsPreview(studyId: string): Promise<Speci
 export async function runStep(
   studyId: string,
   stepId: string,
-  options?: { llmInstructions?: string; llmDeployment?: string }
+  options?: {
+    llmInstructions?: string;
+    llmDeployment?: string;
+    versionMode?: "new" | "overwrite";
+    overwriteVersion?: string;
+  }
 ): Promise<StepRunResponse> {
   const body: Record<string, string | boolean> = { force: true };
   const note = options?.llmInstructions?.trim();
@@ -919,12 +927,67 @@ export async function runStep(
   if (deployment) {
     body.llmDeployment = deployment;
   }
+  if (options?.versionMode) {
+    body.versionMode = options.versionMode;
+  }
+  const overwrite = options?.overwriteVersion?.trim();
+  if (overwrite) {
+    body.overwriteVersion = overwrite;
+  }
   const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/steps/${encodeURIComponent(stepId)}/run`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body)
   });
   return parseApiResponse<StepRunResponse>(response);
+}
+
+export interface ExtractDeviationsVersionPlanResponse {
+  studyId: string;
+  sourceVersions: Record<string, unknown>;
+  matchingVersion: string | null;
+  activeVersion: string | null;
+  versionsWithSameSources: string[];
+  stepStatuses: Record<string, StepStatus>;
+}
+
+export async function fetchExtractDeviationsVersionPlan(
+  studyId: string
+): Promise<ExtractDeviationsVersionPlanResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/steps/extract-deviations/version-plan`
+  );
+  return parseApiResponse<ExtractDeviationsVersionPlanResponse>(response);
+}
+
+export interface DedupeDeviationsPerRuleResponse {
+  studyId: string;
+  beforeCount: number;
+  afterCount: number;
+  removedCount: number;
+  version: string;
+  auditSummary: { mergeCount: number; removedCount: number };
+  stepStatuses: Record<string, StepStatus>;
+}
+
+export async function dedupeDeviationsPerRule(
+  studyId: string,
+  options?: { llmDeployment?: string }
+): Promise<DedupeDeviationsPerRuleResponse> {
+  const body: Record<string, string> = {};
+  const deployment = options?.llmDeployment?.trim();
+  if (deployment) {
+    body.llmDeployment = deployment;
+  }
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/steps/extract-deviations/dedupe-per-rule`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }
+  );
+  return parseApiResponse<DedupeDeviationsPerRuleResponse>(response);
 }
 
 export async function fetchStepPreview(

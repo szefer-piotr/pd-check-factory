@@ -19,6 +19,18 @@
       "type": "array",
       "items": { "type": "string", "minLength": 1 }
     },
+    "source_versions": {
+      "type": "object",
+      "additionalProperties": true
+    },
+    "derived_from": {
+      "type": "object",
+      "properties": {
+        "version": { "type": "string" },
+        "operation": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
     "deviations": {
       "type": "array",
       "items": {

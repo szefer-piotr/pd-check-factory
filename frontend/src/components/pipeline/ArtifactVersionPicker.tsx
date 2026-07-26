@@ -11,7 +11,8 @@ interface ArtifactVersionPickerProps {
 
 const DOWNSTREAM_WARNINGS: Record<string, string[]> = {
   "extract-rules": ["extract-deviations"],
-  "acrf-summary-text": ["extract-rules", "extract-deviations"]
+  "acrf-summary-text": ["extract-rules", "extract-deviations"],
+  "extract-deviations": []
 };
 
 function formatTimestamp(ts: string): string {
@@ -23,6 +24,20 @@ function formatTimestamp(ts: string): string {
   } catch {
     return ts;
   }
+}
+
+function derivedLabel(entry: StepArtifactVersionEntry): string | null {
+  const derived = entry.derivedFrom;
+  if (!derived?.operation) {
+    return null;
+  }
+  if (derived.operation === "per-rule-dedup" && derived.version) {
+    return `dedup of ${derived.version}`;
+  }
+  if (derived.version) {
+    return `${derived.operation} from ${derived.version}`;
+  }
+  return derived.operation;
 }
 
 export function ArtifactVersionPicker({
@@ -52,6 +67,7 @@ export function ArtifactVersionPicker({
         {versions.map((entry) => {
           const isActive = entry.version === activeVersion || (entry.active ?? false);
           const isOlder = latestVersion && entry.version !== latestVersion;
+          const derived = derivedLabel(entry);
           return (
             <li key={entry.version} className="artifact-version-item">
               <label className="artifact-version-label">
@@ -65,6 +81,7 @@ export function ArtifactVersionPicker({
                 />
                 <span className="artifact-version-name">{entry.version}</span>
                 {isActive ? <span className="artifact-version-badge">Active</span> : null}
+                {derived ? <span className="artifact-version-badge artifact-version-badge-derived">{derived}</span> : null}
               </label>
               <div className="artifact-version-meta">
                 <span>Created {formatTimestamp(entry.created_at)}</span>
@@ -72,6 +89,7 @@ export function ArtifactVersionPicker({
                   <span>Generated {formatTimestamp(entry.generated_at)}</span>
                 ) : null}
                 {entry.itemCount > 0 ? <span>{entry.itemCount} items</span> : null}
+                {entry.sourceSummary ? <span>{entry.sourceSummary}</span> : null}
               </div>
               {isOlder && downstreamDone && isActive ? (
                 <p className="artifact-version-warning">

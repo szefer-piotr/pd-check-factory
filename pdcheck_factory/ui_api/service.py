@@ -399,6 +399,15 @@ class UiStepService:
         """Return full file content for structured step previews (rules, deviations, aCRF summary)."""
         return self._read_excerpt(file_path, max_chars=self._FULL_PREVIEW_MAX_CHARS)
 
+    def _clear_pseudo_logic_artifacts(self, study_id: str) -> None:
+        for artifact in (
+            paths.local_pseudo_logic_review_state(study_id, self.output_dir),
+            paths.local_pseudo_logic_validated_json(study_id, self.output_dir),
+            paths.local_pseudo_logic_raw_txt(study_id, self.output_dir),
+        ):
+            if artifact.is_file():
+                artifact.unlink()
+
     def _clear_deviation_extraction_artifacts(self, study_id: str) -> None:
         p = self._study_paths(study_id)
         for artifact in (
@@ -413,6 +422,227 @@ class UiStepService:
         ):
             if artifact.is_file():
                 artifact.unlink()
+        self._clear_pseudo_logic_artifacts(study_id)
+
+    def _stamp_deviation_source_lineage(
+        self,
+        study_id: str,
+        *,
+        source_versions: Dict[str, Any],
+        derived_from: Dict[str, Any] | None = None,
+    ) -> None:
+        parsed_path = paths.local_deviations_parsed_json(study_id, self.output_dir)
+        if not parsed_path.is_file():
+            return
+        parsed = read_json(parsed_path)
+        parsed["source_versions"] = source_versions
+        if derived_from:
+            parsed["derived_from"] = derived_from
+        else:
+            parsed.pop("derived_from", None)
+        write_json(parsed_path, parsed)
+        self._mirror_upload(study_id, parsed_path)
+        for review_path in (
+            paths.local_deviations_review_state(study_id, self.output_dir),
+            paths.local_deviations_review_generated_json(study_id, self.output_dir),
+            paths.local_deviations_validated_json(study_id, self.output_dir),
+        ):
+            if not review_path.is_file():
+                continue
+            try:
+                review_obj = read_json(review_path)
+            except (json.JSONDecodeError, OSError, ValueError, TypeError):
+                continue
+            review_obj["source_versions"] = source_versions
+            if derived_from:
+                review_obj["derived_from"] = derived_from
+            else:
+                review_obj.pop("derived_from", None)
+            write_json(review_path, review_obj)
+            self._mirror_upload(study_id, review_path)
+
+    def get_extract_deviations_version_plan(self, study_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        self._ensure_acrf_field_dictionary(study_id)
+        manifest = self._read_upload_manifest_obj(study_id)
+        active_map = dict(manifest.get("activeStepArtifacts") or {})
+        source_versions = step_artifact_versions.resolve_deviation_source_versions(
+            study_id, self.output_dir, active_map
+        )
+        matches = step_artifact_versions.find_versions_with_same_sources(
+            study_id, self.output_dir, "extract-deviations", source_versions
+        )
+        active_version = str(active_map.get("extract-deviations") or "").strip() or None
+        matching_version = None
+        if matches:
+            if active_version and active_version in matches:
+                matching_version = active_version
+            else:
+                matching_version = matches[-1]
+        return {
+            "studyId": study_id,
+            "sourceVersions": source_versions,
+            "matchingVersion": matching_version,
+            "activeVersion": active_version,
+            "versionsWithSameSources": matches,
+            "stepStatuses": self._step_statuses(study_id),
+        }
+
+    def dedupe_deviations_per_rule(
+        self,
+        study_id: str,
+        *,
+        llm_deployment: str | None = None,
+    ) -> Dict[str, Any]:
+        """Semantically dedupe active deviations within each rule; write a new version."""
+        from pdcheck_factory import llm, per_rule_dedup
+
+        study_id = self._require_study_id(study_id)
+        statuses = self._step_statuses(study_id)
+        if statuses.get("extract-deviations") != "done":
+            raise UiApiError(
+                "STEP_BLOCKED",
+                "extract-deviations must be complete before per-rule dedup",
+                409,
+            )
+
+        parsed_path = paths.local_deviations_parsed_json(study_id, self.output_dir)
+        if not parsed_path.is_file():
+            raise UiApiError("STEP_BLOCKED", "Missing deviations_parsed.json", 409)
+
+        parsed = read_json(parsed_path)
+        deviations = list(parsed.get("deviations", []))
+        before_count = len(deviations)
+        if before_count == 0:
+            raise UiApiError("STEP_BLOCKED", "No deviations to deduplicate", 409)
+
+        manifest = self._read_upload_manifest_obj(study_id)
+        active_map = dict(manifest.get("activeStepArtifacts") or {})
+        parent_version = str(active_map.get("extract-deviations") or "").strip() or None
+        source_versions = parsed.get("source_versions")
+        if not isinstance(source_versions, dict):
+            source_versions = step_artifact_versions.resolve_deviation_source_versions(
+                study_id, self.output_dir, active_map
+            )
+
+        progress_callback = self._make_llm_progress_callback(study_id)
+        active_run = self._active_run_entry(study_id)
+        active_run_id = str(active_run.get("runId")) if active_run else ""
+        self._write_pipeline_run_state(
+            study_id,
+            status="running",
+            currentStage="per_rule_dedup",
+            currentSubStepId="extract-deviations",
+            message="Deduplicating deviations per rule…",
+            error="",
+            startedAt=datetime.now(timezone.utc).isoformat(),
+            finishedAt="",
+            llmProgress=None,
+            activeRunId=active_run_id,
+        )
+
+        def _pipeline_log(message: str) -> None:
+            self._append_pipeline_log(study_id, message)
+
+        try:
+            with llm.use_deployment(llm_deployment), llm.use_pipeline_log(_pipeline_log):
+                acrf_context = ""
+                try:
+                    acrf_context = pipeline_v2._acrf_field_dictionary_text(study_id, self.output_dir)[:50000]
+                except Exception:  # noqa: BLE001
+                    acrf_context = ""
+                kept, audit_items = per_rule_dedup.deduplicate_deviations_per_rule(
+                    study_id=study_id,
+                    deviations=deviations,
+                    acrf_context=acrf_context or None,
+                    progress_callback=progress_callback,
+                )
+        except Exception as exc:  # noqa: BLE001
+            self._append_pipeline_log(
+                study_id, f"[per-rule-dedup] Failed: {exc}", level="error"
+            )
+            self._write_pipeline_run_state(
+                study_id,
+                status="failed",
+                message="Per-rule dedup failed",
+                error=str(exc),
+                finishedAt=datetime.now(timezone.utc).isoformat(),
+                llmProgress=None,
+            )
+            raise
+
+        after_count = len(kept)
+        removed_count = max(0, before_count - after_count)
+        derived_from = {
+            "version": parent_version or "",
+            "operation": "per-rule-dedup",
+        }
+        parsed["deviations"] = kept
+        parsed["generated_at"] = datetime.now(timezone.utc).isoformat()
+        parsed["source_versions"] = source_versions
+        parsed["derived_from"] = derived_from
+        write_json(parsed_path, parsed)
+        self._mirror_upload(study_id, parsed_path)
+
+        pipeline_v2.initialize_review_states(study_id, self.output_dir)
+        self._stamp_deviation_source_lineage(
+            study_id,
+            source_versions=source_versions,
+            derived_from=derived_from,
+        )
+
+        audit = per_rule_dedup.build_dedup_audit(
+            study_id=study_id,
+            items=audit_items,
+            before_count=before_count,
+            after_count=after_count,
+        )
+        audit_path = paths.local_per_rule_dedup_audit_json(study_id, self.output_dir)
+        write_json(audit_path, audit)
+        self._mirror_upload(study_id, audit_path)
+
+        self._clear_pseudo_logic_artifacts(study_id)
+
+        new_version = step_artifact_versions.register_version_after_run(
+            study_id,
+            self.output_dir,
+            "extract-deviations",
+            source_versions=source_versions,
+            derived_from=derived_from,
+            version_mode="new",
+        )
+        active_map["extract-deviations"] = new_version
+        self._write_upload_manifest(study_id, active_step_artifacts=active_map)
+
+        summary = (
+            f"Per-rule dedup reduced deviations from {before_count} to {after_count} "
+            f"(removed {removed_count}); wrote {new_version}."
+        )
+        self._append_pipeline_log(study_id, f"[per-rule-dedup] {summary}")
+        self._write_pipeline_run_state(
+            study_id,
+            status="done",
+            currentStage="complete",
+            currentSubStepId="extract-deviations",
+            message=summary,
+            finishedAt=datetime.now(timezone.utc).isoformat(),
+            llmProgress=None,
+            activeRunId=active_run_id,
+        )
+        self._touch_active_run_after_step(study_id)
+
+        return {
+            "studyId": study_id,
+            "beforeCount": before_count,
+            "afterCount": after_count,
+            "removedCount": removed_count,
+            "version": new_version,
+            "auditSummary": {
+                "mergeCount": len(audit_items),
+                "removedCount": removed_count,
+            },
+            "stepStatuses": self._step_statuses(study_id),
+        }
 
     def _ensure_acrf_field_dictionary(self, study_id: str) -> None:
         """Build the ACRF field dictionary from the merged summary when missing."""
@@ -1621,7 +1851,7 @@ class UiStepService:
             "paragraph_refs_text": ", ".join(refs),
             "supporting_sentences": supporting_sentences,
             "data_support_note": str(row.get("data_support_note", "")),
-            "pseudo_logic": str(pseudo.get("pseudo_logic", "")),
+            "pseudo_logic": "" if pseudo.get("pseudo_logic") is None else str(pseudo.get("pseudo_logic", "")),
             "status": str(row.get("status", "pending")),
             "dm_comment": str(row.get("dm_comment", "")),
             "entry_source": entry_source,
@@ -2814,6 +3044,9 @@ class UiStepService:
             )
         except ValueError as exc:
             raise UiApiError("VALIDATION_ERROR", str(exc), 400) from exc
+        if step_id == "extract-deviations":
+            # Avoid stale pseudo-logic joining recycled deviation_ids after restore.
+            self._clear_pseudo_logic_artifacts(study_id)
         manifest = self._read_upload_manifest_obj(study_id)
         active_map = dict(manifest.get("activeStepArtifacts") or {})
         active_map[step_id] = version
@@ -2845,6 +3078,8 @@ class UiStepService:
         llm_instructions: str | None = None,
         llm_deployment: str | None = None,
         force: bool = False,
+        version_mode: str | None = None,
+        overwrite_version: str | None = None,
     ) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         allowed_steps = set(STEP_ORDER) | set(IMPORT_STEP_ORDER)
@@ -2865,6 +3100,54 @@ class UiStepService:
 
         statuses = self._step_statuses(study_id)
         self._assert_step_dependencies(statuses, step_id, study_id)
+
+        resolved_version_mode = (version_mode or "new").strip().lower() or "new"
+        resolved_overwrite = (overwrite_version or "").strip() or None
+        source_versions_for_run: Dict[str, Any] | None = None
+
+        if step_id == "extract-deviations":
+            manifest = self._read_upload_manifest_obj(study_id)
+            active_map = dict(manifest.get("activeStepArtifacts") or {})
+            source_versions_for_run = step_artifact_versions.resolve_deviation_source_versions(
+                study_id, self.output_dir, active_map
+            )
+            if resolved_version_mode == "overwrite":
+                if not resolved_overwrite:
+                    raise UiApiError(
+                        "VALIDATION_ERROR",
+                        "overwriteVersion is required when versionMode is overwrite",
+                        400,
+                    )
+                version_dir = (
+                    paths.local_pipeline_v2_dir(study_id, self.output_dir)
+                    / "versions"
+                    / "extract-deviations"
+                    / resolved_overwrite
+                )
+                if not version_dir.is_dir():
+                    raise UiApiError(
+                        "STEP_BLOCKED",
+                        f"Version '{resolved_overwrite}' not found for extract-deviations",
+                        409,
+                    )
+                existing_manifest = step_artifact_versions.get_version_manifest(
+                    study_id, self.output_dir, "extract-deviations", resolved_overwrite
+                )
+                existing_sources = existing_manifest.get("sourceVersions")
+                if existing_sources is not None and not step_artifact_versions.source_versions_equal(
+                    existing_sources, source_versions_for_run
+                ):
+                    raise UiApiError(
+                        "STEP_BLOCKED",
+                        f"Cannot overwrite '{resolved_overwrite}': upstream sources do not match",
+                        409,
+                    )
+            elif resolved_version_mode != "new":
+                raise UiApiError(
+                    "VALIDATION_ERROR",
+                    f"Invalid versionMode '{version_mode}'",
+                    400,
+                )
 
         # UI re-runs always send force=true; clear stale deviation/review artifacts so
         # extract-deviations actually regenerates instead of leaving old review state.
@@ -2917,6 +3200,12 @@ class UiStepService:
         try:
             with llm.use_deployment(llm_deployment), llm.use_pipeline_log(_pipeline_log):
                 summary = self._execute_run_step(study_id, step_id, extra=extra, force=force)
+                if step_id == "extract-deviations" and source_versions_for_run is not None:
+                    self._stamp_deviation_source_lineage(
+                        study_id,
+                        source_versions=source_versions_for_run,
+                        derived_from=None,
+                    )
         except Exception as exc:  # noqa: BLE001
             self._append_pipeline_log(study_id, f"[{step_id}] Step {step_id} failed: {exc}", level="error")
             self._write_pipeline_run_state(
@@ -2931,14 +3220,24 @@ class UiStepService:
 
         if step_artifact_versions.is_versioned_step(step_id):
             try:
+                register_kwargs: Dict[str, Any] = {}
+                if step_id == "extract-deviations":
+                    register_kwargs = {
+                        "source_versions": source_versions_for_run,
+                        "version_mode": resolved_version_mode,
+                        "overwrite_version": resolved_overwrite,
+                        "derived_from": None,
+                    }
                 new_version = step_artifact_versions.register_version_after_run(
-                    study_id, self.output_dir, step_id
+                    study_id, self.output_dir, step_id, **register_kwargs
                 )
                 manifest = self._read_upload_manifest_obj(study_id)
                 active_map = dict(manifest.get("activeStepArtifacts") or {})
                 active_map[step_id] = new_version
                 self._write_upload_manifest(study_id, active_step_artifacts=active_map)
-            except ValueError:
+            except ValueError as exc:
+                if step_id == "extract-deviations" and resolved_version_mode == "overwrite":
+                    raise UiApiError("STEP_BLOCKED", str(exc), 409) from exc
                 new_version = None
 
         self._append_pipeline_log(study_id, f"[{step_id}] {summary}")
@@ -4273,11 +4572,17 @@ class UiStepService:
             status="done",
             currentStage="complete",
             currentSubStepId="pseudo-logic-bulk",
-            message=f"Generated pseudo logic for {len(pseudo_out.get('items', []))} deviations.",
+            message=(
+                f"Generated pseudo logic for "
+                f"{sum(1 for item in pseudo_out.get('items', []) if item.get('pseudo_logic'))} "
+                f"programmable deviations "
+                f"({len(pseudo_out.get('items', []))} accepted processed)."
+            ),
             llmProgress=None,
         )
 
         items = list(pseudo_out.get("items", []))
+        generated_count = sum(1 for item in items if item.get("pseudo_logic"))
         state_obj = self._load_state(study_id, source)
         rules_obj = read_json(paths.local_rules_parsed_json(study_id, self.output_dir))
         pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in items}
@@ -4295,7 +4600,7 @@ class UiStepService:
         return {
             "studyId": study_id,
             "reviewSource": source,
-            "generated": len(items),
+            "generated": generated_count,
             "rows": rows,
             "stepStatuses": self._step_statuses(study_id),
         }

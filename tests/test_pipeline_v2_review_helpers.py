@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from pdcheck_factory import pipeline_v2
+from pdcheck_factory import paths, pipeline_v2
 from pdcheck_factory.json_util import write_json
 
 
@@ -174,6 +174,170 @@ class PipelineV2ReviewHelpersTests(unittest.TestCase):
             self.assertIn("SELECT 1", item["pseudo_logic"])
             self.assertTrue(item["programmable"])
             self.assertIn("window", item["programmability_note"])
+
+    def test_bulk_pseudo_skips_non_programmable_deviations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            output_dir = Path(tmp)
+            study_id = "study-manual-skip"
+
+            write_json(
+                output_dir
+                / study_id
+                / "pipeline"
+                / "acrf_summary"
+                / "acrf_summary_text_merged.json",
+                {
+                    "schema_version": "1.0.0",
+                    "study_id": study_id,
+                    "generated_at": "2026-01-01T00:00:00+00:00",
+                    "datasets": [],
+                },
+            )
+            write_json(
+                output_dir
+                / study_id
+                / "pipeline"
+                / "acrf_summary"
+                / "acrf_field_dictionary.json",
+                {
+                    "schema_version": "1.0.0",
+                    "study_id": study_id,
+                    "generated_at": "2026-01-01T00:00:00+00:00",
+                    "datasets": [],
+                    "field_index": {
+                        "SV.VISIT": {
+                            "dataset_name": "SV",
+                            "column_name": "VISIT",
+                            "label": "Visit",
+                            "type": "categorical",
+                        }
+                    },
+                },
+            )
+            write_json(
+                paths.local_rules_parsed_json(study_id, output_dir),
+                {
+                    "schema_version": "1.0.0",
+                    "study_id": study_id,
+                    "generated_at": "2026-01-01T00:00:00+00:00",
+                    "rules": [
+                        {
+                            "rule_id": "rule-001",
+                            "title": "Visit timing",
+                            "text": "Visit window",
+                            "paragraph_refs": ["p1"],
+                        },
+                        {
+                            "rule_id": "rule-002",
+                            "title": "Clinical judgement",
+                            "text": "PI judgement",
+                            "paragraph_refs": ["p2"],
+                        },
+                    ],
+                },
+            )
+            write_json(
+                paths.local_deviations_validated_json(study_id, output_dir),
+                {
+                    "schema_version": "1.0.0",
+                    "study_id": study_id,
+                    "generated_at": "2026-01-01T00:00:00+00:00",
+                    "deviations": [
+                        {
+                            "deviation_id": "dev-prog",
+                            "rule_id": "rule-001",
+                            "text": "Visit outside Day 3-5 window",
+                            "paragraph_refs": ["p1"],
+                            "status": "accepted",
+                            "dm_comment": "",
+                            "manual_or_programmable": "Programmable",
+                        },
+                        {
+                            "deviation_id": "dev-manual",
+                            "rule_id": "rule-002",
+                            "text": "Investigator clinical judgement not documented",
+                            "paragraph_refs": ["p2"],
+                            "status": "accepted",
+                            "dm_comment": "",
+                            "manual_or_programmable": "Manual",
+                        },
+                    ],
+                },
+            )
+            # Prior classification incorrectly marks the Manual row as programmable.
+            write_json(
+                paths.local_programmability_classified_json(study_id, output_dir),
+                {
+                    "schema_version": "1.0.0",
+                    "study_id": study_id,
+                    "generated_at": "2026-01-01T00:00:00+00:00",
+                    "items": [
+                        {
+                            "deviation_id": "dev-prog",
+                            "rule_id": "rule-001",
+                            "programmability": "programmable",
+                            "manual_or_programmable": "Programmable",
+                            "reason": "ok",
+                            "required_data": ["SV.VISIT"],
+                            "available_data": ["SV.VISIT"],
+                            "missing_data": [],
+                        },
+                        {
+                            "deviation_id": "dev-manual",
+                            "rule_id": "rule-002",
+                            "programmability": "programmable",
+                            "manual_or_programmable": "Programmable",
+                            "reason": "should be ignored",
+                            "required_data": ["SV.VISIT"],
+                            "available_data": ["SV.VISIT"],
+                            "missing_data": [],
+                        },
+                    ],
+                },
+            )
+
+            classify_calls: list[str] = []
+            generate_calls: list[str] = []
+
+            def _fake_generate_pseudo_logic_structured(**kwargs):  # type: ignore[no-untyped-def]
+                generate_calls.append(str(kwargs.get("user", "") or kwargs))
+                return "SV: VISIT out of window"
+
+            def _fake_chat_text_repairs(**kwargs):  # type: ignore[no-untyped-def]
+                label = str(kwargs.get("label", ""))
+                if label.startswith("v2-programmability-classify"):
+                    classify_calls.append(label)
+                return (
+                    "<<<BEGIN_PROGRAMMABILITY>>>\n"
+                    "PROGRAMMABILITY: programmable\n"
+                    "REQUIRED_DATA: SV.VISIT\n"
+                    "AVAILABLE_DATA: SV.VISIT\n"
+                    "MISSING_DATA: \n"
+                    "REASON: ok\n"
+                    "<<<END_PROGRAMMABILITY>>>"
+                )
+
+            with patch(
+                "pdcheck_factory.pipeline_v2.llm.generate_pseudo_logic_structured",
+                side_effect=_fake_generate_pseudo_logic_structured,
+            ), patch(
+                "pdcheck_factory.programmability_classify.llm.chat_text_repairs",
+                side_effect=_fake_chat_text_repairs,
+            ), patch(
+                "pdcheck_factory.pipeline_v2.llm.chat_text_repairs",
+                side_effect=_fake_chat_text_repairs,
+            ):
+                out = pipeline_v2.step8_generate_pseudo_logic(study_id, output_dir)
+
+            by_id = {item["deviation_id"]: item for item in out["items"]}
+            self.assertEqual(len(out["items"]), 2)
+            self.assertIsNotNone(by_id["dev-prog"]["pseudo_logic"])
+            self.assertTrue(by_id["dev-prog"]["programmable"])
+            self.assertIsNone(by_id["dev-manual"]["pseudo_logic"])
+            self.assertFalse(by_id["dev-manual"]["programmable"])
+            self.assertEqual(by_id["dev-manual"]["manual_or_programmable"], "Manual")
+            self.assertEqual(len(generate_calls), 1)
+            self.assertEqual(classify_calls, [])
 
 
 if __name__ == "__main__":
