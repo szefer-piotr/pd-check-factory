@@ -831,7 +831,22 @@ export function Step7DeviationDrawer({
                 ) : (
                   <p className="step7-muted">Not generated yet.</p>
                 )}
-                {row.programmable !== null ? (
+                {row.manual_or_programmable ? (
+                  <p className="step7-muted">
+                    <span
+                      className={`step7-pill step7-pill-${
+                        row.manual_or_programmable === "Programmable"
+                          ? "programmable"
+                          : row.manual_or_programmable === "Partially programmable"
+                            ? "partial"
+                            : "manual"
+                      }`}
+                    >
+                      {row.manual_or_programmable}
+                    </span>
+                    {row.programmability_note ? ` — ${row.programmability_note}` : null}
+                  </p>
+                ) : row.programmable !== null ? (
                   <p className="step7-muted">
                     <span className={`step7-pill step7-pill-${row.programmable ? "yes" : "no"}`}>
                       programmable: {row.programmable ? "yes" : "no"}

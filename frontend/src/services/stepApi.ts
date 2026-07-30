@@ -464,6 +464,7 @@ export interface Step7DeviationRow {
   dm_comment: string;
   entry_source: string;
   programmable: boolean | null;
+  manual_or_programmable?: "Programmable" | "Partially programmable" | "Manual" | "";
   programmability_note: string;
   protocol_deviation_category?: string;
   protocol_deviation_sub_category?: string;

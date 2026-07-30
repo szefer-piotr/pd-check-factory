@@ -1611,8 +1611,25 @@ body {
   font-weight: 600;
 }
 
-.step7-pill-yes { background: var(--accent-soft); color: var(--accent); }
+.step7-pill-yes,
+.step7-pill-programmable { background: var(--accent-soft); color: var(--accent); }
 .step7-pill-no { background: var(--danger-soft); color: var(--danger); }
+.step7-pill-partial { background: #fff7e6; color: var(--warning); }
+.step7-pill-manual { background: var(--surface-muted); color: var(--text-muted); }
+
+.step7-prog-badge {
+  display: inline-block;
+  padding: 0.05rem 0.4rem;
+  border-radius: var(--radius-sm);
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.step7-prog-badge-programmable { background: var(--accent-soft); color: var(--accent); }
+.step7-prog-badge-partial { background: #fff7e6; color: var(--warning); }
+.step7-prog-badge-manual { background: var(--surface-muted); color: var(--text-muted); }
 
 .study-pipeline-view {
   display: grid;

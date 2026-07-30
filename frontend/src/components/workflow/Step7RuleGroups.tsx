@@ -1,6 +1,8 @@
 import { useEffect, useRef } from "react";
 import type { Step7DeviationRow } from "../../services/stepApi";
 
+export type ManualOrProgrammable = NonNullable<Step7DeviationRow["manual_or_programmable"]>;
+
 export interface RuleGroup {
   ruleId: string;
   ruleTitle: string;
@@ -15,6 +17,44 @@ interface Step7RuleGroupsProps {
   isBulkGeneratingPseudo?: boolean;
 }
 
+const PROG_SHORT_LABEL: Record<Exclude<ManualOrProgrammable, "">, string> = {
+  Programmable: "Programmable",
+  "Partially programmable": "Partial",
+  Manual: "Manual"
+};
+
+export function programmabilitySlug(
+  label: Step7DeviationRow["manual_or_programmable"] | undefined
+): "programmable" | "partial" | "manual" | "" {
+  if (label === "Programmable") {
+    return "programmable";
+  }
+  if (label === "Partially programmable") {
+    return "partial";
+  }
+  if (label === "Manual") {
+    return "manual";
+  }
+  return "";
+}
+
+function ProgrammabilityBadge({ row }: { row: Step7DeviationRow }): JSX.Element | null {
+  const label = row.manual_or_programmable;
+  const slug = programmabilitySlug(label);
+  if (!label || !slug) {
+    return null;
+  }
+  return (
+    <span
+      className={`step7-prog-badge step7-prog-badge-${slug}`}
+      title={label}
+      aria-label={`Programmability: ${label}`}
+    >
+      {PROG_SHORT_LABEL[label]}
+    </span>
+  );
+}
+
 function PseudoIndicator({
   row,
   isBulkGeneratingPseudo
@@ -23,16 +63,26 @@ function PseudoIndicator({
   isBulkGeneratingPseudo: boolean;
 }): JSX.Element | null {
   if (row.pseudo_logic) {
-    const programmable = row.programmable;
-    const ariaLabel =
-      programmable === false
-        ? "Pseudo logic generated (non-programmable)"
-        : programmable === true
-          ? "Pseudo logic generated (programmable)"
-          : "Pseudo logic generated";
+    const label = row.manual_or_programmable;
+    let ariaLabel = "Pseudo logic generated";
+    let warn = false;
+    if (label === "Programmable") {
+      ariaLabel = "Pseudo logic generated (programmable)";
+    } else if (label === "Partially programmable") {
+      ariaLabel = "Pseudo logic generated (partially programmable)";
+      warn = true;
+    } else if (label === "Manual") {
+      ariaLabel = "Pseudo logic generated (manual)";
+      warn = true;
+    } else if (row.programmable === true) {
+      ariaLabel = "Pseudo logic generated (programmable)";
+    } else if (row.programmable === false) {
+      ariaLabel = "Pseudo logic generated (non-programmable)";
+      warn = true;
+    }
     return (
       <span
-        className={`step7-pseudo-icon step7-pseudo-icon-ready ${programmable === false ? "step7-pseudo-icon-warn" : ""}`}
+        className={`step7-pseudo-icon step7-pseudo-icon-ready ${warn ? "step7-pseudo-icon-warn" : ""}`}
         title={row.pseudo_logic.slice(0, 160)}
         aria-label={ariaLabel}
       >
@@ -43,6 +93,14 @@ function PseudoIndicator({
 
   if (row.status !== "accepted") {
     return null;
+  }
+
+  if (row.manual_or_programmable === "Manual") {
+    return (
+      <span className="step7-pseudo-icon step7-pseudo-icon-empty" aria-label="Manual check — no pseudo logic">
+        ∅
+      </span>
+    );
   }
 
   if (isBulkGeneratingPseudo) {
@@ -132,6 +190,7 @@ export function Step7RuleGroups({
                   <span className="step7-deviation-id">{row.deviation_id}</span>
                   <p className="step7-deviation-snippet">{row.deviation_text}</p>
                   <div className="step7-deviation-row-trailing">
+                    <ProgrammabilityBadge row={row} />
                     <PseudoIndicator row={row} isBulkGeneratingPseudo={isBulkGeneratingPseudo} />
                     <span className={`step7-status step7-status-${row.status}`}>{row.status}</span>
                   </div>

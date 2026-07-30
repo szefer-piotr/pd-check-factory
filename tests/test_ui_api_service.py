@@ -671,6 +671,93 @@ def _seed_step7_state(tmp_path: Path, study_id: str, status: str = "accepted") -
     _touch(validated_path, state_json)
 
 
+def test_normalized_step7_row_exposes_manual_or_programmable(tmp_path: Path) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "MY-STUDY"
+    _seed_step7_state(tmp_path, study_id, status="accepted")
+
+    review_path = tmp_path / study_id / "pipeline" / "review" / "deviations_review_state.json"
+    write_json(
+        review_path,
+        {
+            "schema_version": "1.0.0",
+            "study_id": study_id,
+            "deviations": [
+                {
+                    "deviation_id": "dev-prog",
+                    "rule_id": "rule-001",
+                    "text": "Programmable check",
+                    "paragraph_refs": ["p1"],
+                    "status": "accepted",
+                    "dm_comment": "",
+                    "manual_or_programmable": "Programmable",
+                },
+                {
+                    "deviation_id": "dev-partial",
+                    "rule_id": "rule-001",
+                    "text": "Partial check",
+                    "paragraph_refs": ["p1"],
+                    "status": "accepted",
+                    "dm_comment": "",
+                    "manual_or_programmable": "Partially programmable",
+                },
+                {
+                    "deviation_id": "dev-manual",
+                    "rule_id": "rule-001",
+                    "text": "Manual check",
+                    "paragraph_refs": ["p1"],
+                    "status": "accepted",
+                    "dm_comment": "",
+                    "manual_or_programmable": "Manual",
+                },
+            ],
+        },
+    )
+    write_json(
+        paths.local_pseudo_logic_review_state(study_id, tmp_path),
+        {
+            "schema_version": "1.0.0",
+            "study_id": study_id,
+            "items": [
+                {
+                    "deviation_id": "dev-prog",
+                    "rule_id": "rule-001",
+                    "pseudo_logic": "SELECT 1",
+                    "manual_or_programmable": "Programmable",
+                    "programmable": True,
+                    "programmability_note": "fully covered",
+                },
+                {
+                    "deviation_id": "dev-partial",
+                    "rule_id": "rule-001",
+                    "pseudo_logic": "FLAG candidates",
+                    "manual_or_programmable": "Partially programmable",
+                    "programmable": False,
+                    "programmability_note": "needs confirmation",
+                },
+                {
+                    "deviation_id": "dev-manual",
+                    "rule_id": "rule-001",
+                    "pseudo_logic": None,
+                    "manual_or_programmable": "Manual",
+                    "programmable": False,
+                    "programmability_note": "subjective",
+                },
+            ],
+        },
+    )
+
+    payload = service.get_step7_deviations(study_id)
+    by_id = {row["deviation_id"]: row for row in payload["rows"]}
+    assert by_id["dev-prog"]["manual_or_programmable"] == "Programmable"
+    assert by_id["dev-prog"]["programmable"] is True
+    assert by_id["dev-partial"]["manual_or_programmable"] == "Partially programmable"
+    assert by_id["dev-partial"]["programmable"] is False
+    assert by_id["dev-manual"]["manual_or_programmable"] == "Manual"
+    assert by_id["dev-manual"]["programmable"] is False
+    assert by_id["dev-manual"]["pseudo_logic"] == ""
+
+
 def test_generate_step7_pseudo_logic_for_deviation_writes_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

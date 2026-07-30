@@ -1838,6 +1838,19 @@ class UiStepService:
             programmable = programmable_from_manual_or_programmable(
                 pd_spec_field(row, "manual_or_programmable").strip()
             )
+        manual_or_programmable = pipeline_v2._normalize_manual_or_programmable(
+            str(
+                pseudo.get("manual_or_programmable")
+                or pd_spec_field(row, "manual_or_programmable")
+                or ""
+            )
+        )
+        if manual_or_programmable not in {
+            "Programmable",
+            "Partially programmable",
+            "Manual",
+        }:
+            manual_or_programmable = ""
         rule_text = str(rule.get("text") or rule.get("rule_text") or rule.get("description") or "")
         if not rule_text and category and entry_source == "imported_pd_spec":
             rule_text = category
@@ -1856,6 +1869,7 @@ class UiStepService:
             "dm_comment": str(row.get("dm_comment", "")),
             "entry_source": entry_source,
             "programmable": programmable,
+            "manual_or_programmable": manual_or_programmable,
             "programmability_note": str(pseudo.get("programmability_note", "")),
             "protocol_deviation_category": category,
             "protocol_deviation_sub_category": sub_category,
