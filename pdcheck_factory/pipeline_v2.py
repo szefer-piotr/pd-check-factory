@@ -16,6 +16,7 @@ from pdcheck_factory import (
     check_field_validate,
     check_normalize,
     check_validate,
+    cost_usage,
     document_chat_agent,
     deviation_classify,
     deviation_consolidate,
@@ -1575,28 +1576,47 @@ def apply_active_deviations_source(
 def run_steps(study_id: str, output_dir: Path, from_step: int, to_step: int) -> None:
     if from_step < 1 or to_step > 14 or from_step > to_step:
         raise ValueError("Invalid step range. Use 1..14 with from_step <= to_step.")
-    for step in range(from_step, to_step + 1):
-        print(f"[v2] Running step {step}")
-        if step == 1:
-            step1_acrf_summary_text(study_id, output_dir)
-        elif step == 2:
-            step_acrf_field_dictionary(study_id, output_dir)
-        elif step == 3:
-            step2_protocol_paragraph_index(study_id, output_dir)
-        elif step == 4:
-            step3_extract_rules(study_id, output_dir)
-        elif step == 5:
-            step4_5_extract_deviations(study_id, output_dir)
-        elif step == 6:
-            step_normalize_checks(study_id, output_dir)
-        elif step == 7:
-            step_deduplicate_checks(study_id, output_dir)
-            initialize_review_states(study_id, output_dir)
-        elif step == 8:
-            step_classify_programmability(study_id, output_dir)
-        elif step in (9, 10, 11, 13):
-            continue
-        elif step == 12:
-            step8_generate_pseudo_logic(study_id, output_dir)
-        elif step == 14:
-            step10_finalize(study_id, output_dir)
+    step_labels = {
+        1: "acrf-summary-text",
+        2: "acrf-field-dictionary",
+        3: "index-protocol",
+        4: "extract-rules",
+        5: "extract-deviations",
+        6: "normalize-checks",
+        7: "deduplicate-checks",
+        8: "classify-programmability",
+        9: "review-placeholder",
+        10: "review-placeholder",
+        11: "review-placeholder",
+        12: "generate-pseudo-logic",
+        13: "review-placeholder",
+        14: "review-and-finalize",
+    }
+    with cost_usage.session(study_id, output_dir):
+        for step in range(from_step, to_step + 1):
+            print(f"[v2] Running step {step}")
+            with cost_usage.use_step(step_labels.get(step, f"v2-step-{step}")):
+                if step == 1:
+                    step1_acrf_summary_text(study_id, output_dir)
+                elif step == 2:
+                    step_acrf_field_dictionary(study_id, output_dir)
+                elif step == 3:
+                    step2_protocol_paragraph_index(study_id, output_dir)
+                elif step == 4:
+                    step3_extract_rules(study_id, output_dir)
+                elif step == 5:
+                    step4_5_extract_deviations(study_id, output_dir)
+                elif step == 6:
+                    step_normalize_checks(study_id, output_dir)
+                elif step == 7:
+                    step_deduplicate_checks(study_id, output_dir)
+                    initialize_review_states(study_id, output_dir)
+                elif step == 8:
+                    step_classify_programmability(study_id, output_dir)
+                elif step in (9, 10, 11, 13):
+                    continue
+                elif step == 12:
+                    step8_generate_pseudo_logic(study_id, output_dir)
+                elif step == 14:
+                    step10_finalize(study_id, output_dir)
+        cost_usage.print_cost_summary(cost_usage.load_artifact(study_id, output_dir))

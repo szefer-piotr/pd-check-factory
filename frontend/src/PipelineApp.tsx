@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Page } from "./components/layout/Page";
 import { BackendRunStepPage } from "./pages/pipeline/BackendRunStepPage";
 import { ConfigStepPage } from "./pages/pipeline/ConfigStepPage";
+import { CostAnalysisStepPage } from "./pages/pipeline/CostAnalysisStepPage";
 import { ExportStepPage } from "./pages/pipeline/ExportStepPage";
 import { ReviewStepPage } from "./pages/pipeline/ReviewStepPage";
 import { StudyStepPage } from "./pages/pipeline/StudyStepPage";
@@ -47,6 +48,7 @@ function stepComplete(
       return ctx.bothUploaded;
     case "review":
     case "export":
+    case "cost-analysis":
       return ctx.backendStatuses["extract-deviations"] === "done";
     default:
       return step.backendStepId ? ctx.backendStatuses[step.backendStepId] === "done" : false;
@@ -285,6 +287,8 @@ export function PipelineApp(): JSX.Element {
         );
       case "export":
         return <ExportStepPage studyId={studyId} />;
+      case "cost-analysis":
+        return <CostAnalysisStepPage studyId={studyId} />;
       default:
         return (
           <BackendRunStepPage

@@ -216,6 +216,8 @@ class StepApiHandler(BaseHTTPRequestHandler):
                 data = self.service.get_extract_deviations_version_plan(study_id)
             elif tail == "summary":
                 data = self.service.get_study_summary(study_id)
+            elif tail == "cost-usage":
+                data = self.service.get_cost_usage(study_id)
             elif tail == "runs":
                 data = self.service.get_study_runs(study_id)
             elif tail == "step7/review-sources":

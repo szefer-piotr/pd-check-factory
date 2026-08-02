@@ -125,6 +125,13 @@ def run_layout_for_blob(
     if not markdown_content:
         markdown_content = getattr(result, "content", None) or ""
 
+    from pdcheck_factory import cost_usage
+
+    pages = cost_usage.di_page_count(result, raw_dict if isinstance(raw_dict, dict) else None)
+    if pages <= 0:
+        _log(f"DI [{doc_role}]: warning — could not determine page count for cost logging")
+    cost_usage.record_di_usage(doc_role=doc_role, model_id=model_id, pages=pages)
+
     plain_text = strip_markdown(markdown_content)
 
     raw_out_path = local_layout_base / "raw" / "analyze_result.json"

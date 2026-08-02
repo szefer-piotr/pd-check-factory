@@ -745,6 +745,47 @@ export async function fetchStudySummary(studyId: string): Promise<StudySummary> 
   return parseApiResponse<StudySummary>(response);
 }
 
+export interface CostLlmTotals {
+  calls: number;
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  cost_usd: number | null;
+}
+
+export interface CostDiTotals {
+  calls: number;
+  pages: number;
+  cost_usd: number | null;
+}
+
+export interface CostStepBucket {
+  llm: CostLlmTotals;
+  document_intelligence: CostDiTotals;
+  cost_usd: number | null;
+}
+
+export interface CostUsageResponse {
+  studyId: string;
+  available: boolean;
+  artifactPath: string;
+  schemaVersion?: string;
+  updatedAt?: string;
+  pricingSource?: string;
+  totals: {
+    llm: CostLlmTotals;
+    document_intelligence: CostDiTotals;
+    cost_usd: number | null;
+  };
+  byStep: Record<string, CostStepBucket>;
+  eventCount: number;
+}
+
+export async function fetchCostUsage(studyId: string): Promise<CostUsageResponse> {
+  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/cost-usage`);
+  return parseApiResponse<CostUsageResponse>(response);
+}
+
 export async function fetchStudyRuns(studyId: string): Promise<StudyRunsResponse> {
   const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/runs`);
   return parseApiResponse<StudyRunsResponse>(response);

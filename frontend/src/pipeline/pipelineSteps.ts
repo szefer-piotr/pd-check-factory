@@ -11,7 +11,8 @@ export type PipelineStepId =
   | "extract-rules"
   | "extract-deviations"
   | "review"
-  | "export";
+  | "export"
+  | "cost-analysis";
 
 export interface PipelineStepDef {
   id: PipelineStepId;
@@ -106,6 +107,13 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
     title: "Export CSV",
     shortTitle: "Export",
     description: "Download accepted deviations as company PD Specifications CSV."
+  },
+  {
+    id: "cost-analysis",
+    route: "cost-analysis",
+    title: "Cost analysis",
+    shortTitle: "Cost",
+    description: "Review estimated Azure OpenAI and Document Intelligence spend for this study."
   }
 ];
 

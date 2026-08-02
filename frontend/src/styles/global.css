@@ -4928,3 +4928,48 @@ body {
     border-bottom: 1px solid var(--color-border, #ddd);
   }
 }
+
+.cost-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(10.5rem, 1fr));
+  gap: var(--space-sm);
+}
+
+.metric-label {
+  font-size: 0.8rem;
+  color: var(--color-muted, #666);
+  margin-bottom: 0.25rem;
+}
+
+.metric-value {
+  font-size: 1.25rem;
+  font-weight: 650;
+}
+
+.cost-breakdown-title {
+  margin: 0 0 var(--space-sm);
+  font-size: 1.05rem;
+}
+
+.cost-table-wrap {
+  overflow-x: auto;
+}
+
+.cost-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+.cost-table th,
+.cost-table td {
+  text-align: left;
+  padding: 0.45rem 0.55rem;
+  border-bottom: 1px solid var(--color-border, #ddd);
+  white-space: nowrap;
+}
+
+.cost-table th {
+  font-weight: 600;
+  color: var(--color-muted, #555);
+}

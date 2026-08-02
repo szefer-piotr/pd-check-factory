@@ -18,6 +18,7 @@ from openpyxl import Workbook, load_workbook
 from pdcheck_factory import (
     blob_io,
     coding_workbook_export,
+    cost_usage,
     extraction_resolve,
     paths,
     pipeline_v2,
@@ -545,7 +546,11 @@ class UiStepService:
             self._append_pipeline_log(study_id, message)
 
         try:
-            with llm.use_deployment(llm_deployment), llm.use_pipeline_log(_pipeline_log):
+            with (
+                llm.use_deployment(llm_deployment),
+                llm.use_pipeline_log(_pipeline_log),
+                cost_usage.session(study_id, self.output_dir, step="per-rule-dedup"),
+            ):
                 acrf_context = ""
                 try:
                     acrf_context = pipeline_v2._acrf_field_dictionary_text(study_id, self.output_dir)[:50000]
@@ -2159,6 +2164,28 @@ class UiStepService:
             "deviationSummary": deviation_summary,
         }
 
+    def get_cost_usage(self, study_id: str) -> Dict[str, Any]:
+        """Return cumulative LLM + Document Intelligence cost usage for a study."""
+        from pdcheck_factory import cost_usage
+
+        study_id = self._require_study_id(study_id)
+        path = paths.local_pipeline_cost_usage_json(study_id, self.output_dir)
+        available = path.is_file()
+        artifact = cost_usage.load_artifact(study_id, self.output_dir) if available else cost_usage.empty_artifact(
+            study_id
+        )
+        return {
+            "studyId": study_id,
+            "available": available,
+            "artifactPath": str(path),
+            "schemaVersion": artifact.get("schema_version"),
+            "updatedAt": artifact.get("updated_at"),
+            "pricingSource": artifact.get("pricing_source"),
+            "totals": artifact.get("totals") or {},
+            "byStep": artifact.get("by_step") or {},
+            "eventCount": len(artifact.get("events") or []),
+        }
+
     def _read_upload_manifest_local_only(self, study_id: str) -> Dict[str, Any]:
         manifest_path = self._ui_upload_manifest_path(study_id)
         if manifest_path.is_file():
@@ -2485,7 +2512,9 @@ class UiStepService:
         from pdcheck_factory import llm
 
         try:
-            with llm.use_pipeline_log(_extract_log):
+            with llm.use_pipeline_log(_extract_log), cost_usage.session(
+                study_id, self.output_dir, step="extract-inputs"
+            ):
                 run_extract(
                     study_id=study_id,
                     protocol_blob=None,
@@ -3212,7 +3241,11 @@ class UiStepService:
 
         new_version: str | None = None
         try:
-            with llm.use_deployment(llm_deployment), llm.use_pipeline_log(_pipeline_log):
+            with (
+                llm.use_deployment(llm_deployment),
+                llm.use_pipeline_log(_pipeline_log),
+                cost_usage.session(study_id, self.output_dir, step=step_id),
+            ):
                 summary = self._execute_run_step(study_id, step_id, extra=extra, force=force)
                 if step_id == "extract-deviations" and source_versions_for_run is not None:
                     self._stamp_deviation_source_lineage(
@@ -4266,7 +4299,10 @@ class UiStepService:
         from pdcheck_factory import llm
 
         try:
-            with llm.use_deployment(llm_deployment):
+            with (
+                llm.use_deployment(llm_deployment),
+                cost_usage.session(study_id, self.output_dir, step="review-chat"),
+            ):
                 revised_row, audit = pipeline_v2.refine_single_deviation_with_comment(
                     study_id=study_id,
                     output_dir=self.output_dir,
@@ -4419,11 +4455,12 @@ class UiStepService:
             )
 
         try:
-            pseudo_item = pipeline_v2.generate_pseudo_logic_for_deviation(
-                study_id=study_id,
-                output_dir=self.output_dir,
-                deviation=row,
-            )
+            with cost_usage.session(study_id, self.output_dir, step="generate-pseudo-logic"):
+                pseudo_item = pipeline_v2.generate_pseudo_logic_for_deviation(
+                    study_id=study_id,
+                    output_dir=self.output_dir,
+                    deviation=row,
+                )
         except Exception as exc:  # noqa: BLE001
             raise UiApiError("PSEUDO_LOGIC_FAILED", str(exc), 500) from exc
 
@@ -4567,11 +4604,12 @@ class UiStepService:
         )
         progress_callback = self._make_llm_progress_callback(study_id)
         try:
-            pseudo_out = pipeline_v2.step8_generate_pseudo_logic(
-                study_id,
-                self.output_dir,
-                progress_callback=progress_callback,
-            )
+            with cost_usage.session(study_id, self.output_dir, step="generate-pseudo-logic"):
+                pseudo_out = pipeline_v2.step8_generate_pseudo_logic(
+                    study_id,
+                    self.output_dir,
+                    progress_callback=progress_callback,
+                )
         except Exception as exc:  # noqa: BLE001
             self._write_pipeline_run_state(
                 study_id,

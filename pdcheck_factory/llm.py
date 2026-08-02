@@ -149,15 +149,27 @@ def use_pipeline_log(callback: Callable[[str], None] | None) -> Iterator[None]:
 STEP1_TEXT_SCHEMA_VERSION = "3.0.0"
 
 
-def _log_chat_usage(resp: Any, deployment: str, label: str) -> None:
+def _log_chat_usage(
+    resp: Any,
+    deployment: str,
+    label: str,
+    *,
+    attempt: int | None = None,
+    max_attempts: int | None = None,
+    log_prefix: str = "llm-text",
+) -> None:
     usage = getattr(resp, "usage", None)
     prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
     completion_tokens = getattr(usage, "completion_tokens", None) if usage else None
     total_tokens = getattr(usage, "total_tokens", None) if usage else None
     model_name = getattr(resp, "model", None)
+    attempt_part = ""
+    if attempt is not None and max_attempts is not None:
+        attempt_part = f" attempt={attempt}/{max_attempts}"
     message = (
-        "[llm-text] "
-        f"label={label!r} deployment={deployment!r} model={model_name!r} "
+        f"[{log_prefix}] "
+        f"label={label!r} deployment={deployment!r} model={model_name!r}"
+        f"{attempt_part} "
         f"prompt_tokens={prompt_tokens} completion_tokens={completion_tokens} "
         f"total_tokens={total_tokens}"
     )
@@ -165,6 +177,17 @@ def _log_chat_usage(resp: Any, deployment: str, label: str) -> None:
     callback = _pipeline_log_callback.get()
     if callback is not None:
         callback(message)
+    from pdcheck_factory import cost_usage
+
+    cost_usage.record_llm_usage(
+        deployment=deployment,
+        model=model_name,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        label=label,
+        attempt=attempt,
+    )
 
 
 def chat_text_repairs(
@@ -229,21 +252,13 @@ def chat_json(
             response_format=response_model,
             **_chat_completion_kwargs(deployment),
         )
-        usage = getattr(resp, "usage", None)
-        prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
-        completion_tokens = (
-            getattr(usage, "completion_tokens", None) if usage else None
-        )
-        total_tokens = getattr(usage, "total_tokens", None) if usage else None
-        response_model_name = getattr(resp, "model", None)
-        print(
-            "[llm-usage] "
-            f"deployment={deployment!r} "
-            f"model={response_model_name!r} "
-            f"attempt={attempt + 1}/{max_repairs + 1} "
-            f"prompt_tokens={prompt_tokens} "
-            f"completion_tokens={completion_tokens} "
-            f"total_tokens={total_tokens}"
+        _log_chat_usage(
+            resp,
+            deployment,
+            label="json",
+            attempt=attempt + 1,
+            max_attempts=max_repairs + 1,
+            log_prefix="llm-usage",
         )
         message = resp.choices[0].message
         choice = message.content or ""

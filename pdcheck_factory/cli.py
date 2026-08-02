@@ -14,6 +14,7 @@ import typer
 from dotenv import load_dotenv
 
 from pdcheck_factory import blob_io, di_layout, opendataloader_ocr, paths, pipeline_v2
+from pdcheck_factory import cost_usage
 from pdcheck_factory import llm as llm_mod
 from pdcheck_factory.json_util import load_schema, read_json, validate, write_json
 from pdcheck_factory.ui_step_api import run_step_api
@@ -43,6 +44,13 @@ _TOC_CODE = re.compile(r"\(([^)]+)\)\s*$")
 _PAGE_HEADER = re.compile(r"^Page:\s*(.+)$")
 _PAGE_CODE = re.compile(r"\(([^)]+)\)")
 _PAGE_NUMBER = re.compile(r'<!--\s*PageNumber\s*=\s*"Page\s+(\d+)\s+of\s+\d+\s+pages"\s*-->')
+_HTML_TABLE = re.compile(r"<table\b[^>]*>(.*?)</table>", re.IGNORECASE | re.DOTALL)
+_HTML_ROW = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.IGNORECASE | re.DOTALL)
+_HTML_CELL = re.compile(r"<t[hd]\b[^>]*>(.*?)</t[hd]>", re.IGNORECASE | re.DOTALL)
+_FORM_OID_RE = re.compile(r"^[A-Z][A-Z0-9]{0,7}$")
+_FORM_HEADING_RE = re.compile(
+    r"^(?:#{1,6}\s*)?([A-Z][A-Z0-9]{0,7})\s*[-–—]\s*(.+?)\s*$"
+)
 
 
 def _load_env() -> None:
@@ -82,19 +90,13 @@ def _acrf_section_meta_from_file(section_md: Path) -> Tuple[str, List[str]]:
     return section_id, section_path
 
 
-def run_acrf_split_toc(
-    *,
-    source_md: Path,
-    destination_dir: Path,
-    write_manifest: bool,
-) -> Tuple[int, Path]:
-    text = source_md.read_text(encoding="utf-8")
-    lines = text.splitlines(keepends=True)
+def _html_cell_text(raw: str) -> str:
+    return " ".join(re.sub(r"<[^>]+>", " ", raw).split()).strip()
 
-    page_marker = "\n".join(lines[:300])
-    rows = _TOC_ROW.findall(page_marker)
+
+def _parse_acrf_toc_rows(page_marker: str) -> List[Dict[str, object]]:
     toc: List[Dict[str, object]] = []
-    for raw_name, raw_page in rows:
+    for raw_name, raw_page in _TOC_ROW.findall(page_marker):
         name = " ".join(raw_name.split())
         page_txt = raw_page.strip()
         if not page_txt.isdigit():
@@ -103,54 +105,100 @@ def run_acrf_split_toc(
         m_code = _TOC_CODE.search(name)
         code = m_code.group(1) if m_code else ""
         toc.append({"name": name, "code": code, "toc_page": page_no})
-    if not toc:
-        raise typer.BadParameter(f"No TOC rows found in {source_md}.")
+    return toc
 
-    starts_by_code: Dict[str, int] = {}
-    starts_by_page: Dict[int, int] = {}
 
+def _parse_acrf_form_inventory(text: str) -> List[Dict[str, object]]:
+    """Parse Form OID / Form name rows from the first aCRF form-inventory HTML table."""
+    for table_html in _HTML_TABLE.findall(text):
+        oid_idx: Optional[int] = None
+        name_idx: Optional[int] = None
+        inventory: List[Dict[str, object]] = []
+        for row_html in _HTML_ROW.findall(table_html):
+            cells = [_html_cell_text(c) for c in _HTML_CELL.findall(row_html)]
+            if not cells:
+                continue
+            lowered = [c.casefold() for c in cells]
+            if oid_idx is None:
+                if "form oid" in lowered and "form name" in lowered:
+                    oid_idx = lowered.index("form oid")
+                    name_idx = lowered.index("form name")
+                continue
+            assert oid_idx is not None and name_idx is not None
+            if oid_idx >= len(cells) or name_idx >= len(cells):
+                continue
+            code = cells[oid_idx].strip().upper()
+            name = cells[name_idx].strip()
+            if not code or not name or not _FORM_OID_RE.match(code):
+                continue
+            inventory.append({"name": f"{name} ({code})", "code": code})
+        if inventory:
+            return inventory
+    return []
+
+
+def _find_form_section_start(lines: List[str], code: str, _name: str) -> Optional[int]:
+    """Locate the first body start for a form OID (heading, plain title, or Page:)."""
+    code_u = code.upper()
+    for i, line in enumerate(lines, start=1):
+        stripped = line.rstrip("\n").strip()
+        m = _FORM_HEADING_RE.match(stripped)
+        if m and m.group(1).upper() == code_u:
+            return i
     for i, line in enumerate(lines, start=1):
         ph = _PAGE_HEADER.match(line.rstrip("\n"))
-        if ph:
-            full = ph.group(1)
-            m_code = _PAGE_CODE.search(full)
-            if m_code:
-                code = m_code.group(1)
-                starts_by_code.setdefault(code, i)
-        pn = _PAGE_NUMBER.search(line)
-        if pn:
-            page_num = int(pn.group(1))
-            starts_by_page.setdefault(page_num, i + 1)
+        if not ph:
+            continue
+        m_code = _PAGE_CODE.search(ph.group(1))
+        if m_code and m_code.group(1).upper() == code_u:
+            return i
+    return None
 
+
+def _assign_section_boundaries(
+    rows: List[Dict[str, object]],
+    *,
+    start_lookup: Callable[[Dict[str, object]], Optional[int]],
+    total_lines: int,
+) -> List[Dict[str, object]]:
     out_rows: List[Dict[str, object]] = []
-    sorted_toc = sorted(toc, key=lambda x: int(x["toc_page"]))
-    for idx, row in enumerate(sorted_toc):
-        code = str(row["code"])
-        toc_page = int(row["toc_page"])
-        start = starts_by_code.get(code) or starts_by_page.get(toc_page)
+    starts: List[Optional[int]] = [start_lookup(row) for row in rows]
+    for idx, row in enumerate(rows):
+        start = starts[idx]
         if start is None:
             continue
-        end = len(lines)
-        for nxt in sorted_toc[idx + 1 :]:
-            n_code = str(nxt["code"])
-            n_page = int(nxt["toc_page"])
-            n_start = starts_by_code.get(n_code) or starts_by_page.get(n_page)
-            if n_start is not None and n_start > start:
-                end = n_start - 1
+        next_start: Optional[int] = None
+        for nxt in starts[idx + 1 :]:
+            if nxt is not None and nxt > start:
+                next_start = nxt
                 break
-        row["start_line"] = start
-        row["end_line"] = end
-        out_rows.append(row)
+        out = dict(row)
+        out["start_line"] = start
+        out["end_line"] = (next_start - 1) if next_start is not None else total_lines
+        out_rows.append(out)
+    return out_rows
 
-    if not out_rows:
-        raise typer.BadParameter("Could not determine section boundaries from TOC.")
+
+def _write_acrf_sections(
+    *,
+    source_md: Path,
+    destination_dir: Path,
+    lines: List[str],
+    out_rows: List[Dict[str, object]],
+    write_manifest: bool,
+    split_strategy: str,
+    total_lines: int,
+) -> Tuple[int, Path]:
+    for row in out_rows:
+        if row.get("end_line") is None:
+            row["end_line"] = total_lines
 
     destination_dir.mkdir(parents=True, exist_ok=True)
     written = 0
-    for row in out_rows:
+    for seq, row in enumerate(out_rows, start=1):
         name = str(row["name"])
         code = str(row["code"])
-        page = int(row["toc_page"])
+        page = int(row["toc_page"]) if row.get("toc_page") is not None else seq
         start = int(row["start_line"])
         end = int(row["end_line"])
         body = "".join(lines[start - 1 : end])
@@ -164,11 +212,96 @@ def run_acrf_split_toc(
     if write_manifest:
         manifest = {
             "source_md": str(source_md),
+            "split_strategy": split_strategy,
             "sections": out_rows,
         }
         write_json(manifest_path, manifest)
 
     return written, manifest_path
+
+
+def run_acrf_split_toc(
+    *,
+    source_md: Path,
+    destination_dir: Path,
+    write_manifest: bool,
+) -> Tuple[int, Path]:
+    text = source_md.read_text(encoding="utf-8")
+    lines = text.splitlines(keepends=True)
+    total_lines = len(lines)
+
+    page_marker = "\n".join(lines[:300])
+    toc = _parse_acrf_toc_rows(page_marker)
+
+    if toc:
+        starts_by_code: Dict[str, int] = {}
+        starts_by_page: Dict[int, int] = {}
+
+        for i, line in enumerate(lines, start=1):
+            ph = _PAGE_HEADER.match(line.rstrip("\n"))
+            if ph:
+                full = ph.group(1)
+                m_code = _PAGE_CODE.search(full)
+                if m_code:
+                    code = m_code.group(1)
+                    starts_by_code.setdefault(code, i)
+            pn = _PAGE_NUMBER.search(line)
+            if pn:
+                page_num = int(pn.group(1))
+                starts_by_page.setdefault(page_num, i + 1)
+
+        sorted_toc = sorted(toc, key=lambda x: int(x["toc_page"]))
+
+        def _toc_start(row: Dict[str, object]) -> Optional[int]:
+            code = str(row["code"])
+            toc_page = int(row["toc_page"])
+            return starts_by_code.get(code) or starts_by_page.get(toc_page)
+
+        out_rows = _assign_section_boundaries(
+            sorted_toc, start_lookup=_toc_start, total_lines=total_lines
+        )
+        if not out_rows:
+            raise typer.BadParameter("Could not determine section boundaries from TOC.")
+        return _write_acrf_sections(
+            source_md=source_md,
+            destination_dir=destination_dir,
+            lines=lines,
+            out_rows=out_rows,
+            write_manifest=write_manifest,
+            split_strategy="toc",
+            total_lines=total_lines,
+        )
+
+    # Fallback: form inventory (aCRFs without a page TOC).
+    inventory = _parse_acrf_form_inventory(text)
+    if not inventory:
+        raise typer.BadParameter(
+            f"No TOC rows and no form inventory found in {source_md}."
+        )
+
+    def _inv_start(row: Dict[str, object]) -> Optional[int]:
+        code = str(row["code"])
+        raw_name = str(row["name"])
+        m = _TOC_CODE.search(raw_name)
+        form_name = raw_name[: m.start()].strip() if m else raw_name
+        return _find_form_section_start(lines, code, form_name)
+
+    out_rows = _assign_section_boundaries(
+        inventory, start_lookup=_inv_start, total_lines=total_lines
+    )
+    if not out_rows:
+        raise typer.BadParameter(
+            "Could not determine section boundaries from form inventory."
+        )
+    return _write_acrf_sections(
+        source_md=source_md,
+        destination_dir=destination_dir,
+        lines=lines,
+        out_rows=out_rows,
+        write_manifest=write_manifest,
+        split_strategy="form_inventory",
+        total_lines=total_lines,
+    )
 
 
 def run_acrf_summarize_sections(
@@ -473,6 +606,52 @@ def run_extract(
             "--opendataloader-only requires --opendataloader-ocr (or omit --no-opendataloader-ocr)."
         )
 
+    cost_cm = cost_usage.session(study_id, output_dir, step="extract-inputs")
+    cost_cm.__enter__()
+    try:
+        _run_extract_work(
+            study_id=study_id,
+            protocol_blob=protocol_blob,
+            acrf_blob=acrf_blob,
+            output_dir=output_dir,
+            model_id=model_id,
+            sas_ttl=sas_ttl,
+            upload=upload,
+            skip_acrf=skip_acrf,
+            skip_protocol=skip_protocol,
+            upload_only=upload_only,
+            run_opendataloader_ocr=run_opendataloader_ocr,
+            opendataloader_only=opendataloader_only,
+            debug_blob=debug_blob,
+            log_callback=log_callback,
+            _log=_log,
+        )
+    finally:
+        try:
+            cost_usage.print_cost_summary(cost_usage.load_artifact(study_id, output_dir))
+        except Exception:  # noqa: BLE001
+            pass
+        cost_cm.__exit__(None, None, None)
+
+
+def _run_extract_work(
+    *,
+    study_id: str,
+    protocol_blob: Optional[str],
+    acrf_blob: Optional[str],
+    output_dir: Path,
+    model_id: Optional[str],
+    sas_ttl: int,
+    upload: bool,
+    skip_acrf: bool,
+    skip_protocol: bool,
+    upload_only: bool,
+    run_opendataloader_ocr: bool,
+    opendataloader_only: bool,
+    debug_blob: bool,
+    log_callback: Optional[Callable[[str], None]],
+    _log: Callable[[str], None],
+) -> None:
     bs = blob_io.blob_service_from_env()
     container = blob_io.container_from_env()
     protocol_resolved = protocol_blob or paths.raw_protocol_blob(study_id)
@@ -1160,6 +1339,24 @@ app.add_typer(protocol_app, name="protocol")
 app.add_typer(acrf_app, name="acrf")
 app.add_typer(ui_app, name="ui")
 app.add_typer(v2_app, name="v2")
+
+cost_app = typer.Typer(help="Cost usage analysis for LLM and Document Intelligence.", no_args_is_help=True)
+app.add_typer(cost_app, name="cost")
+
+
+@cost_app.command("show")
+def cmd_cost_show(
+    study_id: str = typer.Option(..., "--study-id", envvar="STUDY_ID"),
+    output_dir: Path = typer.Option(Path("output"), "--output-dir", "-o"),
+) -> None:
+    """Print cumulative cost usage totals and per-step breakdown for a study."""
+    path = paths.local_pipeline_cost_usage_json(study_id, output_dir)
+    if not path.is_file():
+        typer.echo(f"No cost usage artifact at {path}", err=True)
+        raise typer.Exit(code=1)
+    artifact = cost_usage.load_artifact(study_id, output_dir)
+    cost_usage.print_cost_breakdown(artifact)
+
 
 
 @ui_app.command("step-api")

@@ -242,6 +242,11 @@ def local_pipeline_quality_metrics_json(study_id: str, output_dir: Path) -> Path
     return local_final_dir(study_id, output_dir) / "pipeline_quality_metrics.json"
 
 
+def local_pipeline_cost_usage_json(study_id: str, output_dir: Path) -> Path:
+    """Cumulative LLM + Document Intelligence cost usage for a study."""
+    return local_pipeline_v2_dir(study_id, output_dir) / "pipeline_cost_usage.json"
+
+
 def local_rules_dir(study_id: str, output_dir: Path) -> Path:
     return local_pipeline_v2_dir(study_id, output_dir) / "rules"
 

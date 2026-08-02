@@ -65,9 +65,13 @@ export function StepRunPanel({
       </div>
       {runMessage ? <p className="step1-status">{runMessage}</p> : null}
       {runError ? <p className="step1-error">{runError}</p> : null}
-      {stepId === "acrf-split-toc" && runError.includes("No TOC rows found") ? (
+      {stepId === "acrf-split-toc" &&
+      (runError.includes("No TOC rows and no form inventory found") ||
+        runError.includes("Could not determine section boundaries from form inventory")) ? (
         <p className="step1-note">
-          Recovery: go to Step 1, select <strong>Auto (recommended)</strong>, re-run extraction, then run this step again.
+          Recovery: this aCRF needs a page TOC or a Form OID inventory table in the extracted markdown.
+          Re-run Step 1 with <strong>Auto (recommended)</strong>, or check that form sections use headings like{" "}
+          <code>## IC - Informed Consent</code>.
         </p>
       ) : null}
     </section>
