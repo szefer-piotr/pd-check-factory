@@ -84,7 +84,7 @@ function UploadSlotCard({
         <span>{uploaded ? "Replace file" : "Choose file"}</span>
         <input
           type="file"
-          accept=".pdf,application/pdf"
+          accept=".pdf,.xls,.xlsx,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
           disabled={disabled}
           onChange={(event) => onFileChange(event.target.files?.[0] ?? null)}
         />
@@ -220,7 +220,9 @@ export function UploadStepPage({
       <header className="pipeline-step-header">
         <div>
           <h1>Upload documents</h1>
-          <p className="pipeline-step-description">Upload protocol and annotated CRF PDFs.</p>
+          <p className="pipeline-step-description">
+            Upload protocol PDF and annotated CRF (aCRF) as PDF, XLS, or XLSX.
+          </p>
         </div>
       </header>
 
@@ -239,7 +241,7 @@ export function UploadStepPage({
           <span className="upload-check" aria-hidden="true">
             ✓
           </span>
-          Both protocol and aCRF are in blob storage. The Upload step is complete — continue to the next step.
+          Protocol and aCRF documents are in blob storage. The Upload step is complete — continue to the next step.
         </div>
       ) : null}
 
@@ -259,7 +261,7 @@ export function UploadStepPage({
               onUpload={() => void handleUpload("protocol")}
             />
             <UploadSlotCard
-              title="aCRF PDF"
+              title="aCRF (PDF/XLS/XLSX)"
               uploaded={acrfUploaded}
               fileName={acrfName || "acrf.pdf"}
               size={acrfSize}

@@ -42,3 +42,4 @@ local.settings.json
 
 # DI Layout / extraction artifacts
 output/
+test_output/

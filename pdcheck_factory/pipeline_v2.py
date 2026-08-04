@@ -402,6 +402,29 @@ def step1_acrf_summary_text(
     return merged
 
 
+def step1_acrf_summary_xls(
+    study_id: str,
+    output_dir: Path,
+    *,
+    workbook_bytes: bytes,
+    file_format: str,
+) -> Dict[str, Any]:
+    """Deterministic aCRF summary builder for `.xls/.xlsx` workbooks."""
+
+    from pdcheck_factory.acrf_xls_extract import build_acrf_summary_text_merged_from_workbook_bytes
+
+    summary = build_acrf_summary_text_merged_from_workbook_bytes(
+        workbook_bytes=workbook_bytes,
+        file_format=file_format,
+        study_id=study_id,
+    )
+
+    out = paths.local_acrf_summary_text_merged(study_id, output_dir)
+    write_json(out, summary)
+    study_artifact_sync.mirror_upload_path(study_id, output_dir, out)
+    return summary
+
+
 def step_acrf_field_dictionary(study_id: str, output_dir: Path) -> Dict[str, Any]:
     summary = read_json(paths.local_acrf_summary_text_merged(study_id, output_dir))
     dictionary = acrf_field_dictionary.build_field_dictionary(study_id=study_id, summary_obj=summary)

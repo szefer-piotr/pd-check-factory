@@ -336,13 +336,30 @@ class UiStepService:
                 pass
         return False
 
+    def _acrf_source_type(self, study_id: str) -> str:
+        manifest = self._read_upload_manifest_obj(study_id)
+        t = str(manifest.get("acrfSourceType") or "pdf").strip().lower()
+        if t not in {"pdf", "xls", "xlsx"}:
+            t = "pdf"
+        return t
+
+    def _is_xls_acrf_mode(self, study_id: str) -> bool:
+        return self._acrf_source_type(study_id) in {"xls", "xlsx"}
+
     def _step_artifact_complete(self, study_id: str, step_id: str) -> bool:
         p = self._study_paths(study_id)
         if step_id == "extract-inputs":
+            # XLS/XLSX aCRFs are summarized deterministically; no acrf markdown is generated.
+            # In that mode, only protocol extraction is required before continuing.
+            if self._is_xls_acrf_mode(study_id):
+                return p.protocol_source.exists()
             return p.protocol_source.exists() and p.acrf_source.exists()
         if step_id == "index-protocol":
             return p.paragraph_index.exists()
         if step_id == "acrf-split-toc":
+            # For XLS mode, `acrf-split-toc` is intentionally skipped.
+            if self._is_xls_acrf_mode(study_id):
+                return True
             return p.acrf_sections_toc_dir.exists() and any(p.acrf_sections_toc_dir.glob("*.md"))
         if step_id == "acrf-summary-text":
             return p.acrf_summary_text_merged.exists()
@@ -384,6 +401,9 @@ class UiStepService:
             step_id: "done" if self._step_artifact_complete(study_id, step_id) else "pending"
             for step_id in STEP_ORDER
         }
+        if self._is_xls_acrf_mode(study_id):
+            # Ensure dependency checks unlock downstream steps.
+            statuses["acrf-split-toc"] = "skipped"
         versions = pipeline_v2.list_import_versions(study_id, self.output_dir)
         if len(versions.get("imports", [])) < 2:
             statuses["merge-pd-spec-imports"] = "skipped"
@@ -744,9 +764,16 @@ class UiStepService:
         obj = self._read_upload_manifest_obj(study_id)
         protocol = str(obj.get("protocolFileName") or "").strip()
         acrf = str(obj.get("acrfFileName") or "").strip()
+        acrf_source_type = str(obj.get("acrfSourceType") or "pdf").strip().lower()
+        if acrf_source_type not in {"pdf", "xls", "xlsx"}:
+            acrf_source_type = "pdf"
         return {
             "protocolFileName": protocol or "protocol.pdf",
-            "acrfFileName": acrf or "acrf.pdf",
+            "acrfFileName": acrf
+            or {
+                "xls": "acrf.xls",
+                "xlsx": "acrf.xlsx",
+            }.get(acrf_source_type, "acrf.pdf"),
         }
 
     def _sanitize_reference_filename(self, file_name: str) -> str:
@@ -783,6 +810,8 @@ class UiStepService:
         *,
         protocol_file_name: str | None = None,
         acrf_file_name: str | None = None,
+        acrf_source_type: str | None = None,
+        acrf_file_format: str | None = None,
         protocol_size: int | None = None,
         acrf_size: int | None = None,
         entry_mode: str | None = None,
@@ -799,6 +828,21 @@ class UiStepService:
         active_step_artifacts: Dict[str, str] | None = None,
     ) -> Dict[str, Any]:
         existing = self._read_upload_manifest_obj(study_id)
+        resolved_acrf_source_type = (
+            acrf_source_type
+            if acrf_source_type is not None
+            else existing.get("acrfSourceType")
+        )
+        resolved_acrf_source_type = str(resolved_acrf_source_type or "pdf").strip().lower()
+        if resolved_acrf_source_type not in {"pdf", "xls", "xlsx"}:
+            resolved_acrf_source_type = "pdf"
+
+        resolved_acrf_file_format = (
+            acrf_file_format
+            if acrf_file_format is not None
+            else existing.get("acrfFileFormat") or resolved_acrf_source_type
+        )
+        resolved_acrf_file_format = str(resolved_acrf_file_format or resolved_acrf_source_type).strip().lower()
         resolved_pd_spec_import_mode = (
             None
             if clear_pd_spec_import_mode
@@ -815,6 +859,8 @@ class UiStepService:
             or existing.get("protocolFileName")
             or "protocol.pdf",
             "acrfFileName": acrf_file_name or existing.get("acrfFileName") or "acrf.pdf",
+            "acrfSourceType": resolved_acrf_source_type,
+            "acrfFileFormat": resolved_acrf_file_format,
             "uploadedAt": datetime.now(timezone.utc).isoformat(),
             "entryMode": entry_mode or existing.get("entryMode") or ENTRY_MODE_EXTRACTED,
             "activeDeviationsSource": active_deviations_source
@@ -880,12 +926,23 @@ class UiStepService:
         try:
             blob_service = blob_io.blob_service_from_env()
             container = blob_io.container_from_env()
-            blob_path = paths.raw_protocol_blob(study_id) if role == "protocol" else paths.raw_acrf_blob(study_id)
-            return blob_io.blob_exists(
-                blob_service=blob_service,
-                container_name=container,
-                blob_path=blob_path,
-            )
+            if role == "protocol":
+                candidates = [paths.raw_protocol_blob(study_id)]
+            else:
+                # Support aCRF uploaded as either PDF or spreadsheet.
+                candidates = [
+                    paths.raw_acrf_pdf_blob(study_id),
+                    paths.raw_acrf_xls_blob(study_id),
+                    paths.raw_acrf_xlsx_blob(study_id),
+                ]
+            for blob_path in candidates:
+                if blob_io.blob_exists(
+                    blob_service=blob_service,
+                    container_name=container,
+                    blob_path=blob_path,
+                ):
+                    return True
+            return False
         except Exception:  # noqa: BLE001
             return False
 
@@ -896,6 +953,13 @@ class UiStepService:
             if role == "protocol"
             else paths.raw_acrf_reference_blob(study_id, safe_name)
         )
+        ext = Path(file_name or "").suffix.lower()
+        content_type = "application/pdf"
+        if role == "acrf":
+            if ext == ".xls":
+                content_type = "application/vnd.ms-excel"
+            elif ext == ".xlsx":
+                content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         blob_service = blob_io.blob_service_from_env()
         container = blob_io.container_from_env()
         blob_io.upload_blob_bytes(
@@ -903,7 +967,7 @@ class UiStepService:
             container_name=container,
             blob_path=blob_path,
             data=data,
-            content_type="application/pdf",
+            content_type=content_type,
         )
         return blob_path
 
@@ -950,6 +1014,10 @@ class UiStepService:
         if pd_spec_uploaded:
             self._read_pd_spec_workbook_bytes(study_id)
 
+        acrf_source_type = str(manifest.get("acrfSourceType") or "pdf").strip().lower()
+        if acrf_source_type not in {"pdf", "xls", "xlsx"}:
+            acrf_source_type = "pdf"
+
         def slot(role: str, uploaded: bool) -> Dict[str, Any]:
             if role == "pdSpec":
                 return {
@@ -960,12 +1028,22 @@ class UiStepService:
                 }
             name_key = "protocolFileName" if role == "protocol" else "acrfFileName"
             size_key = "protocolSize" if role == "protocol" else "acrfSize"
-            default_name = "protocol.pdf" if role == "protocol" else "acrf.pdf"
+            if role == "protocol":
+                default_name = "protocol.pdf"
+            else:
+                default_name = {
+                    "xls": "acrf.xls",
+                    "xlsx": "acrf.xlsx",
+                }.get(acrf_source_type, "acrf.pdf")
             return {
                 "uploaded": uploaded,
                 "fileName": str(manifest.get(name_key) or default_name),
                 "size": int(manifest.get(size_key) or 0) if uploaded else 0,
-                "blob": paths.raw_protocol_blob(study_id) if role == "protocol" else paths.raw_acrf_blob(study_id),
+                "blob": (
+                    paths.raw_protocol_blob(study_id)
+                    if role == "protocol"
+                    else paths.raw_acrf_blob_for_source_type(study_id, acrf_source_type)
+                ),
             }
 
         p = self._study_paths(study_id)
@@ -2414,11 +2492,22 @@ class UiStepService:
         blob_service = blob_io.blob_service_from_env()
         container = blob_io.container_from_env()
         protocol_blob = paths.raw_protocol_blob(study_id)
-        acrf_blob = paths.raw_acrf_blob(study_id)
         protocol_name = (protocol_file_name or "").strip() or "protocol.pdf"
         acrf_name = (acrf_file_name or "").strip() or "acrf.pdf"
         protocol_size: int | None = None
         acrf_size: int | None = None
+        acrf_ext = Path(acrf_name).suffix.lower()
+        acrf_source_type = "pdf"
+        if acrf_ext == ".xls":
+            acrf_source_type = "xls"
+        elif acrf_ext == ".xlsx":
+            acrf_source_type = "xlsx"
+        acrf_blob = paths.raw_acrf_blob_for_source_type(study_id, acrf_source_type)
+        acrf_content_type = "application/pdf"
+        if acrf_source_type == "xls":
+            acrf_content_type = "application/vnd.ms-excel"
+        elif acrf_source_type == "xlsx":
+            acrf_content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
         if protocol_bytes:
             blob_io.upload_blob_bytes(
@@ -2437,7 +2526,7 @@ class UiStepService:
                 container_name=container,
                 blob_path=acrf_blob,
                 data=acrf_bytes,
-                content_type="application/pdf",
+                content_type=acrf_content_type,
             )
             self._upload_reference_copy(study_id, "acrf", acrf_bytes, acrf_name)
             acrf_size = len(acrf_bytes)
@@ -2446,6 +2535,8 @@ class UiStepService:
             study_id,
             protocol_file_name=protocol_name if protocol_bytes else None,
             acrf_file_name=acrf_name if acrf_bytes else None,
+            acrf_source_type=acrf_source_type if acrf_bytes else None,
+            acrf_file_format=acrf_source_type if acrf_bytes else None,
             protocol_size=protocol_size,
             acrf_size=acrf_size,
         )
@@ -2523,7 +2614,7 @@ class UiStepService:
                     model_id=None,
                     sas_ttl=int(os.getenv("DI_SAS_TTL_MINUTES", "15")),
                     upload=True,
-                    skip_acrf=False,
+                    skip_acrf=self._is_xls_acrf_mode(study_id),
                     skip_protocol=False,
                     upload_only=False,
                     run_opendataloader_ocr=run_odl,
@@ -2576,6 +2667,9 @@ class UiStepService:
         from pdcheck_factory.cli import run_extract
 
         if not force:
+            if self._is_xls_acrf_mode(study_id):
+                # XLS/XLSX aCRFs don’t have extractable markdown; always skip `acrf`.
+                skip_acrf = True
             p = self._study_paths(study_id)
             if skip_acrf and p.protocol_source.exists():
                 return
@@ -2716,35 +2810,69 @@ class UiStepService:
         try:
             from pdcheck_factory.cli import run_acrf_split_toc
 
-            p = self._study_paths(study_id)
-            if not p.acrf_source.exists():
-                self._run_partial_extract(
+            if self._is_xls_acrf_mode(study_id):
+                acrf_source_type = self._acrf_source_type(study_id)
+                blob_path = paths.raw_acrf_blob_for_source_type(study_id, acrf_source_type)
+
+                blob_service = blob_io.blob_service_from_env()
+                container = blob_io.container_from_env()
+                workbook_bytes = blob_io.download_blob_bytes(
+                    blob_service=blob_service,
+                    container_name=container,
+                    blob_path=blob_path,
+                )
+
+                result = pipeline_v2.step1_acrf_summary_xls(
                     study_id,
-                    skip_protocol=True,
-                    skip_acrf=False,
-                    log_prefix="acrf",
+                    self.output_dir,
+                    workbook_bytes=workbook_bytes,
+                    file_format=acrf_source_type,
                 )
-                p = self._study_paths(study_id)
-
-            if not p.acrf_sections_toc_dir.exists() or not any(p.acrf_sections_toc_dir.glob("*.md")):
-                if not p.acrf_source.exists():
-                    raise UiApiError("STEP_BLOCKED", f"Missing aCRF source markdown: {p.acrf_source}", 409)
-                count, _manifest_path = run_acrf_split_toc(
-                    source_md=p.acrf_source,
-                    destination_dir=p.acrf_sections_toc_dir,
-                    write_manifest=True,
+                summary = (
+                    f"aCRF ready (deterministic XLS route): merged summary with "
+                    f"{len(result.get('datasets', []))} datasets."
                 )
-                study_artifact_sync.mirror_upload_directory(study_id, self.output_dir, p.acrf_sections_toc_dir)
-                self._append_pipeline_log(study_id, f"Split aCRF into {count} sections")
-
-            if not p.acrf_summary_text_merged.exists():
-                result = pipeline_v2.step1_acrf_summary_text(study_id, self.output_dir)
-                summary_path = paths.local_acrf_summary_text_merged(study_id, self.output_dir)
-                study_artifact_sync.mirror_upload_path(study_id, self.output_dir, summary_path)
-                summary = f"aCRF ready: merged summary with {len(result.get('datasets', []))} datasets."
+                self._append_pipeline_log(study_id, summary)
             else:
-                summary = "aCRF already summarized."
-            self._append_pipeline_log(study_id, summary)
+                p = self._study_paths(study_id)
+                if not p.acrf_source.exists():
+                    self._run_partial_extract(
+                        study_id,
+                        skip_protocol=True,
+                        skip_acrf=False,
+                        log_prefix="acrf",
+                    )
+                    p = self._study_paths(study_id)
+
+                if not p.acrf_sections_toc_dir.exists() or not any(p.acrf_sections_toc_dir.glob("*.md")):
+                    if not p.acrf_source.exists():
+                        raise UiApiError(
+                            "STEP_BLOCKED",
+                            f"Missing aCRF source markdown: {p.acrf_source}",
+                            409,
+                        )
+                    count, _manifest_path = run_acrf_split_toc(
+                        source_md=p.acrf_source,
+                        destination_dir=p.acrf_sections_toc_dir,
+                        write_manifest=True,
+                    )
+                    study_artifact_sync.mirror_upload_directory(
+                        study_id, self.output_dir, p.acrf_sections_toc_dir
+                    )
+                    self._append_pipeline_log(study_id, f"Split aCRF into {count} sections")
+
+                if not p.acrf_summary_text_merged.exists():
+                    result = pipeline_v2.step1_acrf_summary_text(study_id, self.output_dir)
+                    summary_path = paths.local_acrf_summary_text_merged(study_id, self.output_dir)
+                    study_artifact_sync.mirror_upload_path(
+                        study_id, self.output_dir, summary_path
+                    )
+                    summary = (
+                        f"aCRF ready: merged summary with {len(result.get('datasets', []))} datasets."
+                    )
+                else:
+                    summary = "aCRF already summarized."
+                self._append_pipeline_log(study_id, summary)
             self._write_pipeline_run_state(
                 study_id,
                 status="done",
@@ -3275,6 +3403,14 @@ class UiStepService:
                         "overwrite_version": resolved_overwrite,
                         "derived_from": None,
                     }
+                elif step_id == "acrf-summary-text":
+                    manifest = self._read_upload_manifest_obj(study_id)
+                    t = str(manifest.get("acrfSourceType") or "pdf").strip().lower()
+                    if t == "xlsx":
+                        t = "xls"
+                    if t not in {"pdf", "xls"}:
+                        t = "pdf"
+                    register_kwargs = {"source_versions": {"acrf-summary-text": t}}
                 new_version = step_artifact_versions.register_version_after_run(
                     study_id, self.output_dir, step_id, **register_kwargs
                 )
@@ -3315,25 +3451,58 @@ class UiStepService:
             result = pipeline_v2.step2_protocol_paragraph_index(study_id, self.output_dir)
             summary = f"Indexed {len(result.get('paragraphs', []))} protocol paragraphs."
         elif step_id == "acrf-split-toc":
-            from pdcheck_factory.cli import run_acrf_split_toc
+            if self._is_xls_acrf_mode(study_id):
+                summary = "acrf-split-toc skipped for XLS/XLSX aCRF."
+            else:
+                from pdcheck_factory.cli import run_acrf_split_toc
 
-            p = self._study_paths(study_id)
-            if not p.acrf_source.exists():
-                raise UiApiError("STEP_BLOCKED", f"Missing aCRF source markdown: {p.acrf_source}", 409)
-            count, _manifest_path = run_acrf_split_toc(
-                source_md=p.acrf_source,
-                destination_dir=p.acrf_sections_toc_dir,
-                write_manifest=True,
-            )
-            summary = f"Split aCRF markdown into {count} TOC section files."
-            study_artifact_sync.mirror_upload_directory(study_id, self.output_dir, p.acrf_sections_toc_dir)
+                p = self._study_paths(study_id)
+                if not p.acrf_source.exists():
+                    raise UiApiError(
+                        "STEP_BLOCKED",
+                        f"Missing aCRF source markdown: {p.acrf_source}",
+                        409,
+                    )
+                count, _manifest_path = run_acrf_split_toc(
+                    source_md=p.acrf_source,
+                    destination_dir=p.acrf_sections_toc_dir,
+                    write_manifest=True,
+                )
+                summary = f"Split aCRF markdown into {count} TOC section files."
+                study_artifact_sync.mirror_upload_directory(
+                    study_id, self.output_dir, p.acrf_sections_toc_dir
+                )
         elif step_id == "acrf-summary-text":
-            result = pipeline_v2.step1_acrf_summary_text(
-                study_id,
-                self.output_dir,
-                progress_callback=progress_callback,
-            )
-            summary = f"Merged aCRF summary text with {len(result.get('datasets', []))} datasets."
+            if self._is_xls_acrf_mode(study_id):
+                acrf_source_type = self._acrf_source_type(study_id)
+                blob_path = paths.raw_acrf_blob_for_source_type(study_id, acrf_source_type)
+
+                blob_service = blob_io.blob_service_from_env()
+                container = blob_io.container_from_env()
+                workbook_bytes = blob_io.download_blob_bytes(
+                    blob_service=blob_service,
+                    container_name=container,
+                    blob_path=blob_path,
+                )
+
+                result = pipeline_v2.step1_acrf_summary_xls(
+                    study_id,
+                    self.output_dir,
+                    workbook_bytes=workbook_bytes,
+                    file_format=acrf_source_type,
+                )
+                summary = (
+                    f"Deterministic XLS aCRF summary merged with {len(result.get('datasets', []))} datasets."
+                )
+            else:
+                result = pipeline_v2.step1_acrf_summary_text(
+                    study_id,
+                    self.output_dir,
+                    progress_callback=progress_callback,
+                )
+                summary = (
+                    f"Merged aCRF summary text with {len(result.get('datasets', []))} datasets."
+                )
         elif step_id == "acrf-field-dictionary":
             result = pipeline_v2.step_acrf_field_dictionary(study_id, self.output_dir)
             summary = (

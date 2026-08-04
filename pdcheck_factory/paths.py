@@ -9,7 +9,30 @@ def raw_protocol_blob(study_id: str) -> str:
 
 
 def raw_acrf_blob(study_id: str) -> str:
+    # Legacy helper (PDF aCRF).
+    return raw_acrf_pdf_blob(study_id)
+
+
+def raw_acrf_pdf_blob(study_id: str) -> str:
     return f"raw/{study_id}/acrf.pdf"
+
+
+def raw_acrf_xls_blob(study_id: str) -> str:
+    return f"raw/{study_id}/acrf.xls"
+
+
+def raw_acrf_xlsx_blob(study_id: str) -> str:
+    return f"raw/{study_id}/acrf.xlsx"
+
+
+def raw_acrf_blob_for_source_type(study_id: str, acrf_source_type: str) -> str:
+    """Map `acrfSourceType` to the correct raw blob path."""
+    t = str(acrf_source_type or "").strip().lower()
+    if t == "xls":
+        return raw_acrf_xls_blob(study_id)
+    if t == "xlsx":
+        return raw_acrf_xlsx_blob(study_id)
+    return raw_acrf_pdf_blob(study_id)
 
 
 def study_blob_list_prefixes(study_id: str) -> List[str]:

@@ -407,6 +407,8 @@ export function StudyPipelineView({
             shortLabel: "aCRF",
             inputId: "pipeline-acrf-file",
             slot: acrfSlot,
+            accept:
+              ".pdf,.xls,.xlsx,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             preprocessLine: preprocessLine(pipeline.preprocess.acrf, acrfSlot.status === "uploaded"),
             previewLabel: acrfPreviewReady ? "Preview markdown" : "Preview after preparation",
             previewDisabled: !acrfPreviewReady,
