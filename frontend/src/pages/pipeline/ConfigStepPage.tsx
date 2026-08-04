@@ -71,7 +71,7 @@ export function ConfigStepPage({
               placeholder="e.g. Focus on visit-window deviations"
             />
           </label>
-          <button type="button" onClick={onSave}>
+          <button type="button" className="button button-primary" onClick={onSave}>
             Save configuration
           </button>
         </Stack>

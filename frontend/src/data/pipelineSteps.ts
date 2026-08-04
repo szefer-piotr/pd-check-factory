@@ -1,3 +1,4 @@
+/** @deprecated Stale metadata — live step list is frontend/src/pipeline/pipelineSteps.ts */
 import type { PipelineStepDefinition } from "../types/pipeline";
 
 export const PIPELINE_STEPS: PipelineStepDefinition[] = [

@@ -573,7 +573,7 @@ class UiStepService:
             ):
                 acrf_context = ""
                 try:
-                    acrf_context = pipeline_v2._acrf_field_dictionary_text(study_id, self.output_dir)[:50000]
+                    acrf_context = pipeline_v2._acrf_field_dictionary_text(study_id, self.output_dir)
                 except Exception:  # noqa: BLE001
                     acrf_context = ""
                 kept, audit_items = per_rule_dedup.deduplicate_deviations_per_rule(
@@ -4504,6 +4504,184 @@ class UiStepService:
         rules_obj["rules"] = next_rules
         self._save_rules(study_id, rules_obj)
         return {"studyId": study_id, "deletedRuleId": rid, "stepStatuses": self._step_statuses(study_id)}
+
+    def _rules_chat_state_path(self, study_id: str) -> Path:
+        return paths.local_review_dir(study_id, self.output_dir) / "rules_chat_state.json"
+
+    def _load_rules_chat_state(self, study_id: str) -> Dict[str, Any]:
+        chat_path = self._rules_chat_state_path(study_id)
+        if chat_path.is_file():
+            return read_json(chat_path)
+        return {
+            "schema_version": "1.0.0",
+            "study_id": study_id,
+            "updated_at": "",
+            "messages": [],
+        }
+
+    def _save_rules_chat_state(self, study_id: str, chat_obj: Dict[str, Any]) -> None:
+        chat_obj["updated_at"] = datetime.now(timezone.utc).isoformat()
+        write_json(self._rules_chat_state_path(study_id), chat_obj)
+        self._mirror_upload(study_id, self._rules_chat_state_path(study_id))
+
+    def get_rules_chat(self, study_id: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        chat_obj = self._load_rules_chat_state(study_id)
+        rules_obj = self._load_rules(study_id)
+        return {
+            "studyId": study_id,
+            "messages": list(chat_obj.get("messages", []))[-40:],
+            "ruleCount": len(list(rules_obj.get("rules", []))),
+            "activeVersion": (self._read_upload_manifest_obj(study_id).get("activeStepArtifacts") or {}).get(
+                "extract-rules"
+            ),
+        }
+
+    def refine_rules_chat(
+        self,
+        *,
+        study_id: str,
+        message: str,
+        apply: bool = True,
+        llm_deployment: str | None = None,
+    ) -> Dict[str, Any]:
+        """Discuss the whole rules list; optionally apply LLM edits as a new extract-rules version."""
+        study_id = self._require_study_id(study_id)
+        comment = str(message or "").strip()
+        if not comment:
+            raise UiApiError("VALIDATION_ERROR", "message is required", 400)
+
+        rules_obj = self._load_rules(study_id)
+        rules = list(rules_obj.get("rules", []))
+        chat_obj = self._load_rules_chat_state(study_id)
+        messages = list(chat_obj.get("messages", []))
+        messages.append(
+            {
+                "role": "dm",
+                "text": comment,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+
+        from pdcheck_factory import llm
+
+        compact_rules = [
+            {
+                "rule_id": str(rule.get("rule_id", "")),
+                "title": str(rule.get("title", "")),
+                "text": str(rule.get("text", "")),
+                "paragraph_refs": list(rule.get("paragraph_refs") or []),
+            }
+            for rule in rules
+        ]
+        history = [
+            {"role": str(m.get("role", "")), "text": str(m.get("text", ""))}
+            for m in messages[-12:]
+        ]
+        system = (
+            "You help edit a protocol deviation rule list. "
+            "Reply with ONLY a JSON object: "
+            '{"assistant_message": string, "rules": [{"rule_id","title","text","paragraph_refs":[]}...]}. '
+            "Return the full updated rules array when the user asks for changes. "
+            "Preserve rule_id values when editing existing rules. "
+            "Only invent new rule_id values for newly added rules (pattern R###). "
+            "If the user is only asking a question, keep rules identical to the input."
+        )
+        user = (
+            f"Current rules JSON:\n{json.dumps(compact_rules, ensure_ascii=True)}\n\n"
+            f"Recent chat:\n{json.dumps(history, ensure_ascii=True)}\n\n"
+            f"User request:\n{comment}"
+        )
+
+        version: str | None = None
+        applied = False
+        try:
+            with (
+                llm.use_deployment(llm_deployment),
+                cost_usage.session(study_id, self.output_dir, step="rules-chat"),
+            ):
+                raw = llm.chat_text_repairs(
+                    system=system,
+                    user=user,
+                    validate_reply=lambda text: None
+                    if text.strip().startswith("{")
+                    else "Reply must be a JSON object",
+                    label="rules-chat",
+                )
+            parsed_obj: Dict[str, Any]
+            try:
+                start = raw.find("{")
+                end = raw.rfind("}")
+                parsed_obj = json.loads(raw[start : end + 1] if start >= 0 and end > start else raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Model did not return valid JSON: {exc}") from exc
+
+            assistant_text = str(parsed_obj.get("assistant_message") or "").strip() or "Processed your message."
+            next_rules_raw = parsed_obj.get("rules")
+            if not isinstance(next_rules_raw, list):
+                next_rules_raw = compact_rules
+
+            next_rules: List[Dict[str, Any]] = []
+            for item in next_rules_raw:
+                if not isinstance(item, dict):
+                    continue
+                next_rules.append(
+                    self._normalized_rule_payload(
+                        {
+                            "rule_id": item.get("rule_id"),
+                            "title": item.get("title"),
+                            "text": item.get("text"),
+                            "paragraph_refs": item.get("paragraph_refs") or [],
+                        }
+                    )
+                )
+
+            messages.append(
+                {
+                    "role": "assistant",
+                    "text": assistant_text,
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            chat_obj["messages"] = messages[-40:]
+            self._save_rules_chat_state(study_id, chat_obj)
+
+            if apply and next_rules:
+                rules_obj["rules"] = next_rules
+                rules_obj["generated_at"] = datetime.now(timezone.utc).isoformat()
+                self._save_rules(study_id, rules_obj)
+                version = step_artifact_versions.register_version_after_run(
+                    study_id,
+                    self.output_dir,
+                    "extract-rules",
+                    derived_from={"operation": "rules-chat"},
+                    version_mode="new",
+                )
+                manifest = self._read_upload_manifest_obj(study_id)
+                active_map = dict(manifest.get("activeStepArtifacts") or {})
+                active_map["extract-rules"] = version
+                self._write_upload_manifest(study_id, active_step_artifacts=active_map)
+                applied = True
+        except Exception as exc:
+            messages.append(
+                {
+                    "role": "assistant",
+                    "text": f"Rules chat failed: {exc}",
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            chat_obj["messages"] = messages[-40:]
+            self._save_rules_chat_state(study_id, chat_obj)
+            raise UiApiError("REFINE_FAILED", str(exc), 500) from exc
+
+        return {
+            "studyId": study_id,
+            "messages": list(chat_obj.get("messages", []))[-40:],
+            "applied": applied,
+            "version": version,
+            "ruleCount": len(list(self._load_rules(study_id).get("rules", []))),
+            "stepStatuses": self._step_statuses(study_id),
+        }
 
     def get_step7_deviation_chat(self, study_id: str, deviation_id: str) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)

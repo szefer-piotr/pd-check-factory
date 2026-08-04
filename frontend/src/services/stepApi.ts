@@ -1133,6 +1133,48 @@ export async function fetchStep7DeviationChat(studyId: string, deviationId: stri
   return parseApiResponse<Step7DeviationChatResponse>(response);
 }
 
+export interface RulesChatResponse {
+  studyId: string;
+  messages: Step7ChatMessage[];
+  ruleCount: number;
+  activeVersion?: string | null;
+}
+
+export interface RulesChatRefineResponse {
+  studyId: string;
+  messages: Step7ChatMessage[];
+  applied: boolean;
+  version: string | null;
+  ruleCount: number;
+  stepStatuses: Record<string, StepStatus>;
+}
+
+export async function fetchRulesChat(studyId: string): Promise<RulesChatResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/rules/chat`
+  );
+  return parseApiResponse<RulesChatResponse>(response);
+}
+
+export async function refineRulesChat(
+  studyId: string,
+  options: { message: string; apply?: boolean; llmDeployment?: string }
+): Promise<RulesChatRefineResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/rules/refine`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        message: options.message,
+        apply: options.apply !== false,
+        llmDeployment: options.llmDeployment
+      })
+    }
+  );
+  return parseApiResponse<RulesChatRefineResponse>(response);
+}
+
 export interface Step7EnrichmentDetailResponse {
   studyId: string;
   deviationId: string;

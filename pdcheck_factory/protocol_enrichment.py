@@ -23,8 +23,6 @@ from pdcheck_factory.deviation_contract import (
 from pdcheck_factory.pd_spec_import import parse_pd_spec_xlsx
 from pdcheck_factory.prompt_loader import load_prompt
 
-_PROTOCOL_MAX_CHARS = 180000
-_ACRF_SUMMARY_MAX_CHARS = 50000
 _ARTIFACT_SCHEMA_VERSION = "1.1.0"
 
 
@@ -107,7 +105,7 @@ def _run_protocol_grounding(
     valid_ids: Set[str],
 ) -> Dict[str, Any]:
     fields = _common_user_fields(study_id=study_id, deviation=deviation)
-    fields["protocol_paragraphs"] = protocol_paragraphs[:_PROTOCOL_MAX_CHARS]
+    fields["protocol_paragraphs"] = protocol_paragraphs
 
     def _validate(reply: str) -> Optional[str]:
         if text_parse.BEGIN_GROUNDING not in (reply or ""):
@@ -165,7 +163,7 @@ def _run_acrf_grounding(
         protocol_grounding.get("data_support_note", "") or ""
     )
     fields["protocol_supporting_paragraphs"] = _format_supporting_paragraphs(refs, index_obj)
-    fields["acrf_summary"] = acrf_summary[:_ACRF_SUMMARY_MAX_CHARS]
+    fields["acrf_summary"] = acrf_summary
 
     def _validate(reply: str) -> Optional[str]:
         if text_parse.BEGIN_ACRF_GROUNDING not in (reply or ""):

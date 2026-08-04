@@ -1,3 +1,4 @@
+/** @deprecated Standalone export step removed — export lives on ReviewStepPage. */
 import { useEffect, useState } from "react";
 import { Card } from "../../components/layout/Card";
 import { Stack } from "../../components/layout/Stack";

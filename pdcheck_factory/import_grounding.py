@@ -89,7 +89,7 @@ def ground_imported_deviation(
         classification=pd_spec_field(deviation, "classification"),
         deviation_text=deviation.get("text", ""),
         paragraph_candidates=candidate_text or "(no candidates)",
-        acrf_summary=acrf_summary[:50000],
+        acrf_summary=acrf_summary,
     )
 
     def _validate(reply: str) -> Optional[str]:

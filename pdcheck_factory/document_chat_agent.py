@@ -317,7 +317,7 @@ class Step7DocumentChatAgent:
     ) -> ChatAnswerDraft:
         context_mode = "full_document" if use_full_document else "reference_sentences_only"
         full_block = (
-            f"Full numbered protocol document:\n{full_document[:160000]}"
+            f"Full numbered protocol document:\n{full_document}"
             if use_full_document
             else ""
         )
@@ -331,7 +331,7 @@ class Step7DocumentChatAgent:
                 rule_text=str(rule_row.get("text", "")),
                 reference_sentences=_format_reference_sentences(reference_sentences),
                 full_document_block=full_block,
-                acrf_summary=acrf_summary[:50000],
+                acrf_summary=acrf_summary,
                 user_question=user_question,
             ),
             response_model=ChatAnswerDraft,
@@ -361,8 +361,8 @@ class Step7DocumentChatAgent:
                 rule_title=str(rule_row.get("title", "")),
                 rule_text=str(rule_row.get("text", "")),
                 reference_sentences=_format_reference_sentences(reference_sentences),
-                full_document=full_document[:160000],
-                acrf_summary=acrf_summary[:50000],
+                full_document=full_document,
+                acrf_summary=acrf_summary,
                 user_question=user_question,
             ),
             response_model=DeviationDraft,
@@ -386,8 +386,8 @@ class Step7DocumentChatAgent:
                 study_id=study_id,
                 output_kind=output_kind,
                 user_question=user_question,
-                evidence_pack=json.dumps(evidence_pack, ensure_ascii=False, indent=2)[:120000],
-                draft_output=draft_output[:80000],
+                evidence_pack=json.dumps(evidence_pack, ensure_ascii=False, indent=2),
+                draft_output=draft_output,
             ),
             response_model=VerificationResult,
             validator=lambda d: [],
@@ -492,10 +492,10 @@ class Step7DocumentChatAgent:
                 "title": rule_row.get("title"),
                 "text": rule_row.get("text"),
             },
-            "acrf_summary_excerpt": acrf_summary[:20000],
+            "acrf_summary_excerpt": acrf_summary,
         }
         if use_full:
-            evidence_pack["full_document_excerpt"] = full_document[:80000]
+            evidence_pack["full_document_excerpt"] = full_document
 
         if decision.action == "generate_deviation_from_full_document":
             draft = self.generate_deviation_draft(

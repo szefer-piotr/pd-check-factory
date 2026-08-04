@@ -293,7 +293,7 @@ def _build_pseudo_logic_item(
     classification: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     dictionary_obj = _acrf_field_dictionary(study_id, output_dir)
-    acrf_summary = _acrf_field_dictionary_text(study_id, output_dir)[:50000]
+    acrf_summary = _acrf_field_dictionary_text(study_id, output_dir)
     programmability = str((classification or {}).get("programmability", "manual")).strip().lower()
     manual_or_programmable = _normalize_manual_or_programmable(
         str((classification or {}).get("manual_or_programmable", "Manual") or "")
@@ -372,7 +372,7 @@ def step1_acrf_summary_text(
             study_id=study_id,
             section_id=section_id,
             section_path=section_id.replace("_", " "),
-            section_markdown=section_md.read_text(encoding="utf-8")[:90000],
+            section_markdown=section_md.read_text(encoding="utf-8"),
         )
         reply = llm.chat_text_repairs(
             system=system,
@@ -473,7 +473,7 @@ def step3_extract_rules(
         user=load_prompt("rules_v2_user").format(
             study_id=study_id,
             now=_iso_now(),
-            protocol_paragraphs=numbered[:180000],
+            protocol_paragraphs=numbered,
             additional_instructions=extra,
         ),
         validate_reply=_validate_rules_reply,
@@ -560,8 +560,8 @@ def step4_5_extract_deviations(
     rules_obj = read_json(paths.local_rules_parsed_json(study_id, output_dir))
     index_obj = read_json(paths.local_protocol_paragraph_index_json(study_id, output_dir))
     valid_ids = {p["paragraph_id"] for p in index_obj.get("paragraphs", [])}
-    protocol_paragraphs = _numbered_protocol_text(index_obj)[:180000]
-    acrf_summary = _acrf_field_dictionary_text(study_id, output_dir)[:50000]
+    protocol_paragraphs = _numbered_protocol_text(index_obj)
+    acrf_summary = _acrf_field_dictionary_text(study_id, output_dir)
     extra = additional_instructions.strip() or "(none)"
     system = load_prompt("deviations_v2_system")
     user_t = load_prompt("deviations_v2_user")
@@ -704,7 +704,7 @@ def step_deduplicate_checks(
         rules_obj=rules_obj,
         deviations_obj=deviations_obj,
         normalized_obj=normalized_obj,
-        acrf_context=_acrf_field_dictionary_text(study_id, output_dir)[:50000],
+        acrf_context=_acrf_field_dictionary_text(study_id, output_dir),
     )
     rule_errs = validate(rules_out, load_schema("rules_parsed_v2.schema.json"))
     if rule_errs:
@@ -1091,8 +1091,8 @@ def revise_text_with_comment(
             original_text=original_text,
             paragraph_refs=", ".join(paragraph_refs),
             dm_comment=dm_comment,
-            protocol_paragraphs=protocol_paragraphs[:160000],
-            acrf_summary=acrf_summary[:50000],
+            protocol_paragraphs=protocol_paragraphs,
+            acrf_summary=acrf_summary,
         ),
         validate_reply=_revision_validate,
         max_repairs=2,
@@ -1494,8 +1494,8 @@ def merge_imported_deviation_snapshots(
         study_id=study_id,
         prior_version=prior_v,
         new_version=new_v,
-        prior_snapshot=json.dumps(prior_obj, ensure_ascii=False, indent=2)[:120000],
-        new_snapshot=json.dumps(new_obj, ensure_ascii=False, indent=2)[:120000],
+        prior_snapshot=json.dumps(prior_obj, ensure_ascii=False, indent=2),
+        new_snapshot=json.dumps(new_obj, ensure_ascii=False, indent=2),
     )
 
     def _validate_merge(reply: str) -> Optional[str]:

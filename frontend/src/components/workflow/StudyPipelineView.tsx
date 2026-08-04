@@ -1,3 +1,4 @@
+/** @deprecated Not mounted by PipelineApp — superseded by Study setup + ProcessingStepPage. */
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PreprocessStatus, UseStudyPipelineStateResult } from "../../hooks/useStudyPipelineState";
 import type { DocumentUploadState } from "../../hooks/useStudyPipelineState";

@@ -5,12 +5,11 @@ import { PipelineLogDrawer } from "../../components/pipeline/PipelineLogDrawer";
 import { DocumentPreviewModal, type DocumentPreviewKind } from "../../components/workflow/DocumentPreviewModal";
 import { LlmProgressBar } from "../../components/workflow/LlmProgressBar";
 import { usePipelineRunState } from "../../hooks/usePipelineRunState";
+import { usePipelineJobs } from "../../jobs/PipelineJobContext";
 import {
   fetchStep1Preview,
   fetchStep1UploadStatus,
   fetchStepPreview,
-  preprocessAcrf,
-  preprocessProtocol,
   uploadStep1File,
   type Step1UploadStatusResponse,
   type StepStatus
@@ -31,6 +30,10 @@ interface ProcessingStepPageProps {
   onProcessingCompleteChange?: (complete: boolean) => void;
   onRunActiveChange?: (active: boolean) => void;
   onRefreshSummary?: () => Promise<void>;
+  /** Hide page header when composed inside Study setup. */
+  embedded?: boolean;
+  /** Hide local log drawer; use global activity panel instead. */
+  hideLocalActivity?: boolean;
 }
 
 interface UploadSlotCardProps {
@@ -150,9 +153,9 @@ function UploadSlotCard({
         />
       </label>
       {selectedFile ? <p className="upload-card-pending">Selected: {selectedFile.name}</p> : null}
-      <button type="button" disabled={!selectedFile || disabled} onClick={onUpload}>
-        {uploading ? "Uploading…" : uploaded ? `Re-upload ${title}` : `Upload ${title}`}
-      </button>
+                      <button type="button" className="button button-primary" disabled={!selectedFile || disabled} onClick={onUpload}>
+                        {uploading ? "Uploading…" : uploaded ? `Re-upload ${title}` : `Upload ${title}`}
+                      </button>
 
       {uploaded ? (
         <div className="processing-slot-status">
@@ -172,7 +175,7 @@ function UploadSlotCard({
               <button
                 key={button.label}
                 type="button"
-                className="secondary upload-card-preview-btn"
+                className="button button-secondary upload-card-preview-btn"
                 disabled={button.disabled}
                 onClick={button.onClick}
               >
@@ -180,7 +183,7 @@ function UploadSlotCard({
               </button>
             ))}
             {canReprocess ? (
-              <button type="button" className="secondary" disabled={reprocessDisabled} onClick={onReprocess}>
+              <button type="button" className="button button-secondary" disabled={reprocessDisabled} onClick={onReprocess}>
                 Re-process
               </button>
             ) : null}
@@ -214,8 +217,11 @@ export function ProcessingStepPage({
   onStatusesChange,
   onProcessingCompleteChange,
   onRunActiveChange,
-  onRefreshSummary
+  onRefreshSummary,
+  embedded = false,
+  hideLocalActivity = false
 }: ProcessingStepPageProps): JSX.Element {
+  const jobs = usePipelineJobs();
   const [protocolFile, setProtocolFile] = useState<File | null>(null);
   const [acrfFile, setAcrfFile] = useState<File | null>(null);
   const [error, setError] = useState("");
@@ -328,15 +334,17 @@ export function ProcessingStepPage({
       setError("");
       setMessage(slot === "protocol" ? "Preparing protocol (extract + index)…" : "Preparing aCRF…");
       try {
-        const run = slot === "protocol" ? preprocessProtocol : preprocessAcrf;
-        const result = await run(trimmed, { force: true });
-        onStatusesChange(result.stepStatuses);
+        if (slot === "protocol") {
+          await jobs.runPreprocessProtocol(trimmed, true);
+        } else {
+          await jobs.runPreprocessAcrf(trimmed, true);
+        }
         if (slot === "protocol") {
           setProtocolPreprocess("done");
         } else {
           setAcrfPreprocess("done");
         }
-        setMessage(result.message);
+        setMessage(slot === "protocol" ? "Protocol preprocess finished." : "aCRF preprocess finished.");
         await refreshStatus();
       } catch (preprocessError) {
         if (slot === "protocol") {
@@ -353,7 +361,7 @@ export function ProcessingStepPage({
         drainRef.current();
       }
     },
-    [onStatusesChange, refreshStatus, studyId]
+    [jobs, refreshStatus, studyId]
   );
 
   const enqueuePreprocess = useCallback(
@@ -569,30 +577,45 @@ export function ProcessingStepPage({
           : "idle";
 
   return (
-    <div className="pipeline-step-page">
-      <div className="pipeline-step-layout">
+    <div className={`pipeline-step-page ${embedded ? "pipeline-step-page-embedded" : ""}`}>
+      <div className={hideLocalActivity ? "pipeline-step-layout pipeline-step-layout-single" : "pipeline-step-layout"}>
         <div className="pipeline-step-main">
           <Stack gap="md">
-            <header className="pipeline-step-header">
-              <div>
-                <h1>Process documents</h1>
-                <p className="pipeline-step-description">
-                  Upload protocol and aCRF. Each file is processed end-to-end automatically (extract, index, and
-                  aCRF summary as needed).
-                </p>
+            {!embedded ? (
+              <header className="pipeline-step-header">
+                <div>
+                  <h1>Process documents</h1>
+                  <p className="pipeline-step-description">
+                    Upload protocol and aCRF. Each file is processed end-to-end automatically (extract, index, and
+                    aCRF summary as needed).
+                  </p>
+                </div>
+                <span className={`pipeline-step-badge pipeline-step-badge-${pageStatus}`}>
+                  {pageStatus === "running"
+                    ? "Running"
+                    : pageStatus === "failed"
+                      ? "Failed"
+                      : bothReady
+                        ? "Complete"
+                        : "Pending"}
+                </span>
+              </header>
+            ) : (
+              <div className="study-setup-section-head">
+                <h2>Documents &amp; extractions</h2>
+                <span className={`pipeline-step-badge pipeline-step-badge-${pageStatus}`}>
+                  {pageStatus === "running"
+                    ? "Running"
+                    : pageStatus === "failed"
+                      ? "Failed"
+                      : bothReady
+                        ? "Complete"
+                        : "Pending"}
+                </span>
               </div>
-              <span className={`pipeline-step-badge pipeline-step-badge-${pageStatus}`}>
-                {pageStatus === "running"
-                  ? "Running"
-                  : pageStatus === "failed"
-                    ? "Failed"
-                    : bothReady
-                      ? "Complete"
-                      : "Pending"}
-              </span>
-            </header>
+            )}
 
-            {isPreprocessActive ? (
+            {!hideLocalActivity && isPreprocessActive ? (
               <div className="pipeline-run-banner" role="status">
                 Processing in progress — do not close the browser.
               </div>
@@ -603,7 +626,7 @@ export function ProcessingStepPage({
 
             {statusLoading ? (
               <div className="upload-rail-banner" role="status" aria-live="polite">
-                <span className="upload-spinner" aria-hidden="true" />
+                <span className="spinner spinner-sm" aria-hidden="true" />
                 <span>Checking blob storage…</span>
               </div>
             ) : null}
@@ -613,7 +636,7 @@ export function ProcessingStepPage({
                 <span className="upload-check" aria-hidden="true">
                   ✓
                 </span>
-                Protocol and aCRF are prepared. Continue to Extract rules when ready.
+                Protocol and aCRF are prepared. Continue to Generate PD when ready.
               </div>
             ) : null}
 
@@ -696,11 +719,11 @@ export function ProcessingStepPage({
                   />
                 </div>
 
-                {runState.llmProgress ? <LlmProgressBar progress={runState.llmProgress} /> : null}
+                {!hideLocalActivity && runState.llmProgress ? <LlmProgressBar progress={runState.llmProgress} /> : null}
 
                 <button
                   type="button"
-                  className="secondary"
+                  className="button button-secondary"
                   disabled={busy || !studyId.trim()}
                   onClick={() => {
                     setStatusLoading(true);
@@ -723,7 +746,9 @@ export function ProcessingStepPage({
           </Stack>
         </div>
 
-        <PipelineLogDrawer logs={runState.logs} active={isPreprocessActive || runState.status === "running"} />
+        {!hideLocalActivity ? (
+          <PipelineLogDrawer logs={runState.logs} active={isPreprocessActive || runState.status === "running"} />
+        ) : null}
       </div>
 
       <DocumentPreviewModal

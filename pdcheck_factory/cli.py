@@ -1026,11 +1026,9 @@ def _load_acrf_contexts(
     acrf = _optional_acrf_markdown(study_id, output_dir)
     if acrf and not acrf_summary_context:
         acrf_chars_total = len(acrf.strip())
-        acrf_chars_used = min(acrf_chars_total, llm_mod.STEP1_ACRF_MAX_CHARS)
-        pct_used = ((acrf_chars_used / acrf_chars_total) * 100.0) if acrf_chars_total else 0.0
         print(
-            f"[{caller}] Including raw aCRF context (truncated by LLM layer): "
-            f"{acrf_chars_used}/{acrf_chars_total} chars ({pct_used:.1f}%)."
+            f"[{caller}] Including full raw aCRF context: "
+            f"{acrf_chars_total} chars."
         )
     elif not acrf:
         print(f"[{caller}] No aCRF source.md found; protocol-only prompts.")

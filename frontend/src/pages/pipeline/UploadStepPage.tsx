@@ -1,3 +1,4 @@
+/** @deprecated Not mounted by PipelineApp — use ProcessingStepPage via Study setup. */
 import { useEffect, useState } from "react";
 import { Card } from "../../components/layout/Card";
 import { Stack } from "../../components/layout/Stack";

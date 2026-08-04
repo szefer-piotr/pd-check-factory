@@ -18,10 +18,6 @@ from pdcheck_factory.json_util import load_schema, validate
 from pdcheck_factory.prompt_loader import load_prompt
 from pdcheck_factory.protocol_markdown import format_section_for_prompt, validate_step1_output
 
-STEP1_ACRF_MAX_CHARS = 60000
-STEP1_SECTION_PROMPT_MAX_CHARS = 160000
-ACRF_SECTION_PROMPT_MAX_CHARS = 120000
-
 _deployment_override: ContextVar[str | None] = ContextVar("llm_deployment_override", default=None)
 _pipeline_log_callback: ContextVar[Callable[[str], None] | None] = ContextVar(
     "llm_pipeline_log_callback", default=None
@@ -149,6 +145,58 @@ def use_pipeline_log(callback: Callable[[str], None] | None) -> Iterator[None]:
 STEP1_TEXT_SCHEMA_VERSION = "3.0.0"
 
 
+def _emit_llm_log(message: str) -> None:
+    print(message)
+    callback = _pipeline_log_callback.get()
+    if callback is not None:
+        callback(message)
+
+
+def _prompt_size_stats(messages: List[Dict[str, str]]) -> Dict[str, int]:
+    """Character counts for monitoring context pressure (approx_tokens ≈ chars/4)."""
+    by_role: Dict[str, int] = {}
+    total = 0
+    for message in messages:
+        content = message.get("content") or ""
+        n = len(content)
+        role = str(message.get("role") or "unknown")
+        by_role[role] = by_role.get(role, 0) + n
+        total += n
+    return {
+        "messages": len(messages),
+        "system_chars": by_role.get("system", 0),
+        "user_chars": by_role.get("user", 0),
+        "assistant_chars": by_role.get("assistant", 0),
+        "total_chars": total,
+        "approx_tokens": total // 4,
+    }
+
+
+def _log_prompt_sizes(
+    *,
+    label: str,
+    messages: List[Dict[str, str]],
+    attempt: int | None = None,
+    max_attempts: int | None = None,
+    log_prefix: str = "llm-prompt",
+) -> None:
+    stats = _prompt_size_stats(messages)
+    attempt_part = ""
+    if attempt is not None and max_attempts is not None:
+        attempt_part = f" attempt={attempt}/{max_attempts}"
+    message = (
+        f"[{log_prefix}] "
+        f"label={label!r}{attempt_part} "
+        f"messages={stats['messages']} "
+        f"system_chars={stats['system_chars']} "
+        f"user_chars={stats['user_chars']} "
+        f"assistant_chars={stats['assistant_chars']} "
+        f"total_chars={stats['total_chars']} "
+        f"approx_tokens={stats['approx_tokens']}"
+    )
+    _emit_llm_log(message)
+
+
 def _log_chat_usage(
     resp: Any,
     deployment: str,
@@ -173,10 +221,7 @@ def _log_chat_usage(
         f"prompt_tokens={prompt_tokens} completion_tokens={completion_tokens} "
         f"total_tokens={total_tokens}"
     )
-    print(message)
-    callback = _pipeline_log_callback.get()
-    if callback is not None:
-        callback(message)
+    _emit_llm_log(message)
     from pdcheck_factory import cost_usage
 
     cost_usage.record_llm_usage(
@@ -208,12 +253,24 @@ def chat_text_repairs(
     ]
     last = ""
     for attempt in range(max_repairs + 1):
+        _log_prompt_sizes(
+            label=label,
+            messages=messages,
+            attempt=attempt + 1,
+            max_attempts=max_repairs + 1,
+        )
         resp = client.chat.completions.create(
             model=deployment,
             messages=messages,
             **_chat_completion_kwargs(deployment),
         )
-        _log_chat_usage(resp, deployment, label)
+        _log_chat_usage(
+            resp,
+            deployment,
+            label,
+            attempt=attempt + 1,
+            max_attempts=max_repairs + 1,
+        )
         last = (resp.choices[0].message.content or "").strip()
         err = validate_reply(last)
         if err is None:
@@ -246,6 +303,12 @@ def chat_json(
     ]
 
     for attempt in range(max_repairs + 1):
+        _log_prompt_sizes(
+            label="json",
+            messages=messages,
+            attempt=attempt + 1,
+            max_attempts=max_repairs + 1,
+        )
         resp = client.beta.chat.completions.parse(
             model=deployment,
             messages=messages,
@@ -318,8 +381,6 @@ def extract_protocol_section_step1(
     section: Dict[str, Any],
     acrf_markdown: Optional[str] = None,
     acrf_summary_context: Optional[str] = None,
-    acrf_max_chars: int = STEP1_ACRF_MAX_CHARS,
-    section_prompt_max_chars: int = STEP1_SECTION_PROMPT_MAX_CHARS,
 ) -> Dict[str, Any]:
     """
     Step 1 text pipeline: rules block → per-rule deviations → programmability → pseudo-SQL.
@@ -334,21 +395,9 @@ def extract_protocol_section_step1(
     valid_ids: set[str] = {str(s["id"]) for s in sentences if s.get("id")}
 
     numbered = format_section_for_prompt(section)
-    if len(numbered) > section_prompt_max_chars:
-        numbered = (
-            numbered[: section_prompt_max_chars]
-            + "\n\n[TRUNCATED: section text exceeded character budget]\n"
-        )
-
     section_path_json = json.dumps(section["section_path"], ensure_ascii=False)
 
-    acrf_excerpt = ""
-    if acrf_markdown:
-        frag = acrf_markdown.strip()
-        if len(frag) > acrf_max_chars:
-            frag = frag[:acrf_max_chars] + "\n\n[TRUNCATED aCRF]\n"
-        acrf_excerpt = frag
-
+    acrf_excerpt = (acrf_markdown or "").strip()
     summary_block = (acrf_summary_context or "").strip() or (
         "(No merged aCRF summary JSON available; infer conservatively from excerpt only.)"
     )
@@ -716,17 +765,11 @@ def summarize_acrf_section(
     acrf_section_id: str,
     acrf_section_path: List[str],
     section_markdown: str,
-    section_prompt_max_chars: int = ACRF_SECTION_PROMPT_MAX_CHARS,
 ) -> Dict[str, Any]:
     """Summarize one aCRF section into dataset/column/value metadata."""
     schema = load_schema("acrf_section_summary.schema.json")
     now = datetime.now(timezone.utc).isoformat()
     section_body = section_markdown.strip()
-    if len(section_body) > section_prompt_max_chars:
-        section_body = (
-            section_body[:section_prompt_max_chars]
-            + "\n\n[TRUNCATED: aCRF section exceeded character budget]\n"
-        )
 
     system = load_prompt("acrf_section_summary_system")
     user = load_prompt("acrf_section_summary_user").format(

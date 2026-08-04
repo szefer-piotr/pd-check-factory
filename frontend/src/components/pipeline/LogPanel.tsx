@@ -19,11 +19,29 @@ function formatTs(ts: string): string {
 }
 
 export function LogPanel({ logs, active, className = "" }: LogPanelProps): JSX.Element {
-  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
+  const stickToBottomRef = useRef(true);
 
   useEffect(() => {
-    if (active && bottomRef.current) {
-      bottomRef.current.scrollIntoView({ behavior: "smooth" });
+    const el = bodyRef.current;
+    if (!el) {
+      return;
+    }
+    const onScroll = (): void => {
+      const remaining = el.scrollHeight - el.scrollTop - el.clientHeight;
+      stickToBottomRef.current = remaining < 48;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (!el || !active) {
+      return;
+    }
+    if (stickToBottomRef.current) {
+      el.scrollTop = el.scrollHeight;
     }
   }, [active, logs.length]);
 
@@ -33,9 +51,9 @@ export function LogPanel({ logs, active, className = "" }: LogPanelProps): JSX.E
         <span>Activity log</span>
         {active ? <span className="log-panel-live">Live</span> : null}
       </div>
-      <div className="log-panel-body">
+      <div className="log-panel-body" ref={bodyRef}>
         {logs.length === 0 ? (
-          <p className="log-panel-empty">No log entries yet. Run the step to see progress.</p>
+          <p className="log-panel-empty">No log entries yet. Run a step to see progress.</p>
         ) : (
           logs.map((line, index) => (
             <div key={`${line.ts}-${index}`} className={`log-panel-line log-panel-line-${line.level}`}>
@@ -44,7 +62,6 @@ export function LogPanel({ logs, active, className = "" }: LogPanelProps): JSX.E
             </div>
           ))
         )}
-        <div ref={bottomRef} />
       </div>
     </div>
   );

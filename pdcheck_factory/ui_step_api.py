@@ -268,6 +268,8 @@ class StepApiHandler(BaseHTTPRequestHandler):
             elif tail.startswith("step7/deviations/") and tail.endswith("/chat"):
                 deviation_id = tail[len("step7/deviations/") : -len("/chat")]
                 data = self.service.get_step7_deviation_chat(study_id, deviation_id)
+            elif tail == "step7/rules/chat":
+                data = self.service.get_rules_chat(study_id)
             elif tail.startswith("steps/") and tail.endswith("/preview"):
                 step_id = tail[len("steps/") : -len("/preview")]
                 qs = parse_qs(parsed.query)
@@ -348,6 +350,8 @@ class StepApiHandler(BaseHTTPRequestHandler):
             elif tail.startswith("step7/deviations/") and tail.endswith("/refine"):
                 deviation_id = tail[len("step7/deviations/") : -len("/refine")]
                 data = self._parse_step7_refine(study_id, deviation_id)
+            elif tail == "step7/rules/refine":
+                data = self._parse_rules_refine(study_id)
             elif tail == "step7/deviations/import":
                 data = self._parse_step7_deviation_import(study_id)
             elif tail == "step7/deviations":
@@ -612,6 +616,20 @@ class StepApiHandler(BaseHTTPRequestHandler):
             run_revision_cycle=bool(payload.get("runRevisionCycle", True)),
             also_generate_pseudo=bool(payload.get("alsoPseudo", False)),
             review_source=review_source,
+            llm_deployment=llm_deployment,
+        )
+
+    def _parse_rules_refine(self, study_id: str) -> Dict[str, Any]:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length <= 0:
+            raise UiApiError("BAD_JSON", "Missing JSON body", 400)
+        payload = parse_json_body(self.rfile.read(length))
+        llm_deployment = str(payload.get("llmDeployment", "") or "") or None
+        apply = payload.get("apply")
+        return self.service.refine_rules_chat(
+            study_id=study_id,
+            message=str(payload.get("message", "")),
+            apply=True if apply is None else bool(apply),
             llm_deployment=llm_deployment,
         )
 

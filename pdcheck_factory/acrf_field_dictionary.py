@@ -130,15 +130,15 @@ def build_field_dictionary(
     }
 
 
-def compact_dictionary_for_prompt(dictionary_obj: Dict[str, Any], *, max_chars: int = 50000) -> str:
+def compact_dictionary_for_prompt(dictionary_obj: Dict[str, Any]) -> str:
+    """Serialize the full field dictionary for LLM prompts (never truncated)."""
     import json
 
     compact = {
         "datasets": dictionary_obj.get("datasets", []),
         "field_index_keys": sorted(dictionary_obj.get("field_index", {}).keys()),
     }
-    text = json.dumps(compact, ensure_ascii=False, indent=2)
-    return text[:max_chars]
+    return json.dumps(compact, ensure_ascii=False, indent=2)
 
 
 def lookup_field(dictionary_obj: Dict[str, Any], dataset_name: str, column_name: str) -> Dict[str, str] | None:

@@ -22,9 +22,14 @@ import {
 import type { PipelineStepDef } from "../../pipeline/pipelineSteps";
 import type { PipelinePreviewItem } from "../../types/pipeline";
 
+/** @deprecated Prefer GeneratePdStepPage — kept for reference / tests. */
+type BackendRunStepDef = PipelineStepDef & {
+  backendStepId?: string;
+};
+
 interface BackendRunStepPageProps {
   studyId: string;
-  step: PipelineStepDef;
+  step: BackendRunStepDef;
   settings: StudySettings;
   defaultDeployment: string;
   backendStatuses: Record<string, StepStatus>;
