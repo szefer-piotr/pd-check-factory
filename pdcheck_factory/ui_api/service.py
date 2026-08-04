@@ -1058,6 +1058,7 @@ class UiStepService:
             "acrfPreprocessed": p.acrf_summary_text_merged.exists(),
             "processingCoreComplete": self._processing_core_complete(study_id),
             "processingComplete": self._processing_complete(study_id),
+            "acrfSourceType": acrf_source_type,
             "stepStatuses": self._step_statuses(study_id),
         }
 
@@ -1076,6 +1077,53 @@ class UiStepService:
                 "Upload the aCRF PDF before preprocessing.",
                 409,
             )
+
+    def _assert_pipeline_idle(self, study_id: str) -> None:
+        state = self._read_pipeline_run_state(study_id)
+        if str(state.get("status") or "").strip().lower() == "running":
+            current = str(state.get("currentSubStepId") or state.get("currentStage") or "another step")
+            raise UiApiError(
+                "PIPELINE_BUSY",
+                f"Pipeline is already running ({current}). Wait for it to finish or retry.",
+                409,
+            )
+
+    @staticmethod
+    def _unlink_path(path: Path) -> None:
+        try:
+            if path.is_file():
+                path.unlink()
+            elif path.is_dir():
+                shutil.rmtree(path)
+        except OSError:
+            pass
+
+    def _clear_protocol_preprocess_artifacts(self, study_id: str) -> None:
+        p = self._study_paths(study_id)
+        self._unlink_path(p.protocol_source)
+        self._unlink_path(p.paragraph_index)
+        self._unlink_path(paths.local_protocol_paragraphs_md(study_id, self.output_dir))
+
+    def _clear_acrf_preprocess_artifacts(self, study_id: str) -> None:
+        p = self._study_paths(study_id)
+        if not self._is_xls_acrf_mode(study_id):
+            self._unlink_path(p.acrf_source)
+            self._unlink_path(p.acrf_sections_toc_dir)
+        self._unlink_path(p.acrf_summary_text_merged)
+        dictionary = paths.local_acrf_field_dictionary_json(study_id, self.output_dir)
+        self._unlink_path(dictionary)
+
+    def _acrf_summary_deployment_for_preprocess(self, study_id: str) -> str:
+        active_run = self._active_run_entry(study_id)
+        settings = (active_run or {}).get("settings") or {}
+        deployment = str(settings.get("acrfSummaryDeployment") or "").strip()
+        if deployment:
+            return deployment
+        raise UiApiError(
+            "CONFIG_REQUIRED",
+            "Save model configuration (aCRF summary deployment) before preparing a PDF aCRF.",
+            409,
+        )
 
     def _assert_both_uploads_ready(self, study_id: str) -> None:
         status = self.get_step1_upload_status(study_id)
@@ -2704,9 +2752,14 @@ class UiStepService:
         extractions_root = paths.local_study_root(study_id, self.output_dir) / "extractions"
         study_artifact_sync.mirror_upload_directory(study_id, self.output_dir, extractions_root)
 
-    def preprocess_protocol(self, study_id: str) -> Dict[str, Any]:
+    def preprocess_protocol(self, study_id: str, *, force: bool = False) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         self._assert_protocol_upload_ready(study_id)
+        self._assert_pipeline_idle(study_id)
+
+        if force:
+            self._clear_protocol_preprocess_artifacts(study_id)
+            self._append_pipeline_log(study_id, "Cleared protocol preprocess artifacts for forced re-run")
 
         p = self._study_paths(study_id)
         if p.paragraph_index.exists():
@@ -2730,6 +2783,7 @@ class UiStepService:
             error="",
             startedAt=datetime.now(timezone.utc).isoformat(),
             finishedAt="",
+            llmProgress=None,
         )
         self._append_pipeline_log(study_id, "Starting protocol preprocess")
 
@@ -2741,7 +2795,9 @@ class UiStepService:
                     skip_protocol=False,
                     skip_acrf=True,
                     log_prefix="protocol",
+                    force=force,
                 )
+                p = self._study_paths(study_id)
             if not p.paragraph_index.exists():
                 result = pipeline_v2.step2_protocol_paragraph_index(study_id, self.output_dir)
                 index_path = paths.local_protocol_paragraph_index_json(study_id, self.output_dir)
@@ -2778,9 +2834,14 @@ class UiStepService:
             "stepStatuses": status["stepStatuses"],
         }
 
-    def preprocess_acrf(self, study_id: str) -> Dict[str, Any]:
+    def preprocess_acrf(self, study_id: str, *, force: bool = False) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         self._assert_acrf_upload_ready(study_id)
+        self._assert_pipeline_idle(study_id)
+
+        if force:
+            self._clear_acrf_preprocess_artifacts(study_id)
+            self._append_pipeline_log(study_id, "Cleared aCRF preprocess artifacts for forced re-run")
 
         p = self._study_paths(study_id)
         if p.acrf_summary_text_merged.exists():
@@ -2795,22 +2856,31 @@ class UiStepService:
                 "stepStatuses": status["stepStatuses"],
             }
 
+        is_xls = self._is_xls_acrf_mode(study_id)
+        llm_deployment: str | None = None
+        if not is_xls:
+            llm_deployment = self._acrf_summary_deployment_for_preprocess(study_id)
+
         self._write_pipeline_run_state(
             study_id,
             status="running",
             currentStage="acrf_split",
             currentSubStepId="preprocess-acrf",
-            message="Preparing aCRF (extract + split + summary)…",
+            message="Preparing aCRF (extract + split + summary)…"
+            if not is_xls
+            else "Preparing aCRF (deterministic XLS summary)…",
             error="",
             startedAt=datetime.now(timezone.utc).isoformat(),
             finishedAt="",
+            llmProgress=None,
         )
         self._append_pipeline_log(study_id, "Starting aCRF preprocess")
 
         try:
+            from pdcheck_factory import cost_usage, llm
             from pdcheck_factory.cli import run_acrf_split_toc
 
-            if self._is_xls_acrf_mode(study_id):
+            if is_xls:
                 acrf_source_type = self._acrf_source_type(study_id)
                 blob_path = paths.raw_acrf_blob_for_source_type(study_id, acrf_source_type)
 
@@ -2841,6 +2911,7 @@ class UiStepService:
                         skip_protocol=True,
                         skip_acrf=False,
                         log_prefix="acrf",
+                        force=force,
                     )
                     p = self._study_paths(study_id)
 
@@ -2862,7 +2933,21 @@ class UiStepService:
                     self._append_pipeline_log(study_id, f"Split aCRF into {count} sections")
 
                 if not p.acrf_summary_text_merged.exists():
-                    result = pipeline_v2.step1_acrf_summary_text(study_id, self.output_dir)
+                    progress_callback = self._make_llm_progress_callback(study_id)
+
+                    def _pipeline_log(message: str) -> None:
+                        self._append_pipeline_log(study_id, message)
+
+                    with (
+                        llm.use_deployment(llm_deployment),
+                        llm.use_pipeline_log(_pipeline_log),
+                        cost_usage.session(study_id, self.output_dir, step="acrf-summary-text"),
+                    ):
+                        result = pipeline_v2.step1_acrf_summary_text(
+                            study_id,
+                            self.output_dir,
+                            progress_callback=progress_callback,
+                        )
                     summary_path = paths.local_acrf_summary_text_merged(study_id, self.output_dir)
                     study_artifact_sync.mirror_upload_path(
                         study_id, self.output_dir, summary_path

@@ -1751,6 +1751,47 @@ body {
   color: var(--text-muted);
 }
 
+.processing-slot-status {
+  display: grid;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--border-subtle);
+}
+
+.processing-checklist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 0.35rem;
+}
+
+.processing-checklist li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+}
+
+.processing-checklist-state {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  text-transform: capitalize;
+}
+
+.processing-slot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.dep-chip-running {
+  background: var(--accent-soft, #e8f0fe);
+  color: var(--accent, #1a56db);
+  border-color: var(--accent, #1a56db);
+}
+
 .pipeline-action-tiles {
   display: grid;
   gap: var(--space-md);

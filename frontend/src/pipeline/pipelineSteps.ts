@@ -3,11 +3,7 @@
 export type PipelineStepId =
   | "study"
   | "config"
-  | "upload"
-  | "extract-pdfs"
-  | "index-protocol"
-  | "acrf-split"
-  | "acrf-summary"
+  | "processing"
   | "extract-rules"
   | "extract-deviations"
   | "review"
@@ -40,43 +36,11 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
     description: "Choose Azure OpenAI deployments for extraction and aCRF summary."
   },
   {
-    id: "upload",
-    route: "upload",
-    title: "Upload documents",
-    shortTitle: "Upload",
-    description: "Upload protocol and annotated CRF PDFs."
-  },
-  {
-    id: "extract-pdfs",
-    route: "extract-pdfs",
-    title: "Extract PDF text",
-    shortTitle: "Extract PDFs",
-    description: "Run Azure Document Intelligence layout analysis on both PDFs.",
-    backendStepId: "extract-inputs"
-  },
-  {
-    id: "index-protocol",
-    route: "index-protocol",
-    title: "Index protocol",
-    shortTitle: "Index",
-    description: "Build paragraph-level index (p1, p2, …) from protocol markdown.",
-    backendStepId: "index-protocol"
-  },
-  {
-    id: "acrf-split",
-    route: "acrf-split",
-    title: "Split aCRF sections",
-    shortTitle: "aCRF split",
-    description: "Split aCRF markdown into TOC section files.",
-    backendStepId: "acrf-split-toc"
-  },
-  {
-    id: "acrf-summary",
-    route: "acrf-summary",
-    title: "aCRF summary",
-    shortTitle: "aCRF summary",
-    description: "Merge dataset and column hints from aCRF sections.",
-    backendStepId: "acrf-summary-text"
+    id: "processing",
+    route: "processing",
+    title: "Process documents",
+    shortTitle: "Processing",
+    description: "Upload protocol and aCRF, then run extract, index, and aCRF summary end-to-end."
   },
   {
     id: "extract-rules",
@@ -116,6 +80,15 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
     description: "Review estimated Azure OpenAI and Document Intelligence spend for this study."
   }
 ];
+
+/** Legacy hash routes from the multi-step upload/extract wizard. */
+export const LEGACY_PROCESSING_ROUTES = new Set([
+  "upload",
+  "extract-pdfs",
+  "index-protocol",
+  "acrf-split",
+  "acrf-summary"
+]);
 
 export function pipelineStepByRoute(route: string): PipelineStepDef | undefined {
   return PIPELINE_STEPS.find((step) => step.route === route);

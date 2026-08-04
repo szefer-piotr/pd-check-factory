@@ -318,6 +318,7 @@ export interface Step1UploadStatusResponse {
   acrfPreprocessed?: boolean;
   processingCoreComplete?: boolean;
   processingComplete?: boolean;
+  acrfSourceType?: "pdf" | "xls" | "xlsx";
   stepStatuses: Record<string, StepStatus>;
 }
 
@@ -899,18 +900,33 @@ export async function fetchStep1UploadStatus(studyId: string): Promise<Step1Uplo
   return parseApiResponse<Step1UploadStatusResponse>(response);
 }
 
-export async function preprocessProtocol(studyId: string): Promise<PreprocessResponse> {
+export async function preprocessProtocol(
+  studyId: string,
+  options?: { force?: boolean }
+): Promise<PreprocessResponse> {
   const response = await fetch(
     `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/preprocess/protocol`,
-    { method: "POST" }
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force: options?.force === true })
+    }
   );
   return parseApiResponse<PreprocessResponse>(response);
 }
 
-export async function preprocessAcrf(studyId: string): Promise<PreprocessResponse> {
-  const response = await fetch(`${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/preprocess/acrf`, {
-    method: "POST"
-  });
+export async function preprocessAcrf(
+  studyId: string,
+  options?: { force?: boolean }
+): Promise<PreprocessResponse> {
+  const response = await fetch(
+    `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/preprocess/acrf`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ force: options?.force === true })
+    }
+  );
   return parseApiResponse<PreprocessResponse>(response);
 }
 

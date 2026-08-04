@@ -11,7 +11,6 @@ import {
   fetchStepArtifactVersions,
   fetchStepPreview,
   runStep,
-  runStep1Extraction,
   setActiveStepArtifact,
   VERSIONED_BACKEND_STEP_IDS,
   type LlmProgress,
@@ -34,7 +33,7 @@ interface BackendRunStepPageProps {
   onRunActiveChange: (active: boolean) => void;
 }
 
-const PREVIEW_STEP_IDS = new Set(["extract-rules", "extract-deviations", "acrf-summary"]);
+const PREVIEW_STEP_IDS = new Set(["extract-rules", "extract-deviations"]);
 
 type VersionChoiceDialog = {
   matchingVersion: string;
@@ -156,10 +155,7 @@ export function BackendRunStepPage({
     setLocalError("");
     setDedupeMessage("");
     try {
-      if (step.id === "extract-pdfs") {
-        const result = await runStep1Extraction(studyId.trim(), "document_intelligence", { force: true });
-        onStatusesChange(result.stepStatuses);
-      } else if (isExtractDeviations) {
+      if (isExtractDeviations) {
         const plan = await fetchExtractDeviationsVersionPlan(studyId.trim());
         if (plan.matchingVersion) {
           setVersionChoice({ matchingVersion: plan.matchingVersion });

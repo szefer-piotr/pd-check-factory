@@ -328,9 +328,19 @@ class StepApiHandler(BaseHTTPRequestHandler):
             elif tail == "upload-pd-spec":
                 data = self._parse_upload_pd_spec(study_id)
             elif tail == "preprocess/protocol":
-                data = self.service.preprocess_protocol(study_id)
+                length = int(self.headers.get("Content-Length", "0"))
+                force = False
+                if length > 0:
+                    payload = parse_json_body(self.rfile.read(length))
+                    force = bool(payload.get("force", False))
+                data = self.service.preprocess_protocol(study_id, force=force)
             elif tail == "preprocess/acrf":
-                data = self.service.preprocess_acrf(study_id)
+                length = int(self.headers.get("Content-Length", "0"))
+                force = False
+                if length > 0:
+                    payload = parse_json_body(self.rfile.read(length))
+                    force = bool(payload.get("force", False))
+                data = self.service.preprocess_acrf(study_id, force=force)
             elif tail == "active-deviations-source":
                 data = self._parse_active_deviations_source(study_id)
             elif tail == "active-step-artifact":

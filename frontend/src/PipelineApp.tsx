@@ -4,11 +4,12 @@ import { BackendRunStepPage } from "./pages/pipeline/BackendRunStepPage";
 import { ConfigStepPage } from "./pages/pipeline/ConfigStepPage";
 import { CostAnalysisStepPage } from "./pages/pipeline/CostAnalysisStepPage";
 import { ExportStepPage } from "./pages/pipeline/ExportStepPage";
+import { ProcessingStepPage } from "./pages/pipeline/ProcessingStepPage";
 import { ReviewStepPage } from "./pages/pipeline/ReviewStepPage";
 import { StudyStepPage } from "./pages/pipeline/StudyStepPage";
-import { UploadStepPage } from "./pages/pipeline/UploadStepPage";
 import {
   PIPELINE_STEPS,
+  LEGACY_PROCESSING_ROUTES,
   pipelineStepById,
   pipelineStepIndex,
   type PipelineStepId
@@ -31,7 +32,7 @@ function stepComplete(
   ctx: {
     studyId: string;
     hasAppliedSettings: boolean;
-    bothUploaded: boolean;
+    processingComplete: boolean;
     backendStatuses: Record<string, StepStatus>;
   }
 ): boolean {
@@ -44,8 +45,8 @@ function stepComplete(
       return Boolean(ctx.studyId.trim());
     case "config":
       return ctx.hasAppliedSettings;
-    case "upload":
-      return ctx.bothUploaded;
+    case "processing":
+      return ctx.processingComplete;
     case "review":
     case "export":
     case "cost-analysis":
@@ -59,7 +60,7 @@ export function PipelineApp(): JSX.Element {
   const [currentStepId, setCurrentStepId] = useState<PipelineStepId>(() => parsePipelineHash(window.location.hash));
   const [studyId, setStudyId] = useState("");
   const [backendStatuses, setBackendStatuses] = useState<Record<string, StepStatus>>({});
-  const [bothUploaded, setBothUploaded] = useState(false);
+  const [processingComplete, setProcessingComplete] = useState(false);
   const [isRunActive, setIsRunActive] = useState(false);
   const [llmDeployments, setLlmDeployments] = useState<OpenAiDeploymentOption[]>([]);
   const [defaultDeployment, setDefaultDeployment] = useState("");
@@ -95,8 +96,16 @@ export function PipelineApp(): JSX.Element {
   }, []);
 
   useEffect(() => {
-    if (summary?.uploads) {
-      setBothUploaded(summary.bothUploaded);
+    const trimmed = window.location.hash.replace(/^#\/?/, "").trim();
+    const route = trimmed.split("?")[0]?.split("/")[0] ?? "";
+    if (LEGACY_PROCESSING_ROUTES.has(route)) {
+      navigateToPipelineStep("processing");
+    }
+  }, [currentStepId]);
+
+  useEffect(() => {
+    if (summary?.preprocess) {
+      setProcessingComplete(Boolean(summary.preprocess.protocol && summary.preprocess.acrf));
     }
     if (summary?.stepStatuses) {
       setBackendStatuses(summary.stepStatuses);
@@ -152,10 +161,10 @@ export function PipelineApp(): JSX.Element {
     () => ({
       studyId,
       hasAppliedSettings,
-      bothUploaded,
+      processingComplete,
       backendStatuses
     }),
-    [backendStatuses, bothUploaded, hasAppliedSettings, studyId]
+    [backendStatuses, hasAppliedSettings, processingComplete, studyId]
   );
 
   const canNavigateTo = useCallback(
@@ -231,7 +240,7 @@ export function PipelineApp(): JSX.Element {
     try {
       const result = await resetStudy(studyId.trim());
       setBackendStatuses(result.stepStatuses);
-      setBothUploaded(false);
+      setProcessingComplete(false);
       setResetMessage(result.message);
       navigateToPipelineStep("study");
     } catch (resetErr) {
@@ -265,12 +274,13 @@ export function PipelineApp(): JSX.Element {
             defaultDeployment={defaultDeployment}
           />
         );
-      case "upload":
+      case "processing":
         return (
-          <UploadStepPage
+          <ProcessingStepPage
             studyId={studyId}
             onStatusesChange={setBackendStatuses}
-            onBothUploadedChange={setBothUploaded}
+            onProcessingCompleteChange={setProcessingComplete}
+            onRunActiveChange={setIsRunActive}
             onRefreshSummary={refreshSummary}
           />
         );

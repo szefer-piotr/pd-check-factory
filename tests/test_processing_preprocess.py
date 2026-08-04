@@ -205,3 +205,82 @@ def test_preprocess_protocol_skips_when_already_indexed(tmp_path: Path, monkeypa
     assert result.get("skipped") is True
     assert called["extract"] is False
     assert "already" in result["message"].lower()
+
+
+def test_preprocess_protocol_force_reindexes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "PREPROTO-FORCE"
+    proto_md = paths.local_extraction_layout(study_id, "protocol", tmp_path) / "rendered" / "source.md"
+    proto_md.parent.mkdir(parents=True, exist_ok=True)
+    proto_md.write_text("# Protocol\n\nParagraph one.", encoding="utf-8")
+    index_path = paths.local_protocol_paragraph_index_json(study_id, tmp_path)
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    index_path.write_text('{"paragraphs": []}', encoding="utf-8")
+
+    monkeypatch.setattr(service, "_assert_protocol_upload_ready", lambda _sid: None)
+    monkeypatch.setattr(
+        service,
+        "_run_partial_extract",
+        lambda *_a, **_k: proto_md.write_text("# Protocol\n\nParagraph one.", encoding="utf-8"),
+    )
+
+    result = service.preprocess_protocol(study_id, force=True)
+    assert result.get("skipped") is not True
+    assert index_path.is_file()
+    assert "indexed" in result["message"].lower() or "Protocol" in result["message"]
+
+
+def test_preprocess_rejects_when_pipeline_busy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pdcheck_factory.ui_api.service import UiApiError
+
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "PREPROTO-BUSY"
+    monkeypatch.setattr(service, "_assert_protocol_upload_ready", lambda _sid: None)
+    monkeypatch.setattr(
+        service,
+        "_read_pipeline_run_state",
+        lambda _sid: {
+            "status": "running",
+            "currentSubStepId": "preprocess-acrf",
+            "currentStage": "acrf_split",
+        },
+    )
+
+    with pytest.raises(UiApiError) as exc_info:
+        service.preprocess_protocol(study_id)
+    assert exc_info.value.code == "PIPELINE_BUSY"
+
+
+def test_preprocess_acrf_requires_config_for_pdf(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from pdcheck_factory.ui_api.service import UiApiError
+
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "PREACRF-CFG"
+    monkeypatch.setattr(service, "_assert_acrf_upload_ready", lambda _sid: None)
+    monkeypatch.setattr(service, "_is_xls_acrf_mode", lambda _sid: False)
+    monkeypatch.setattr(service, "_active_run_entry", lambda _sid: None)
+
+    with pytest.raises(UiApiError) as exc_info:
+        service.preprocess_acrf(study_id)
+    assert exc_info.value.code == "CONFIG_REQUIRED"
+
+
+def test_upload_status_includes_acrf_source_type(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "STATUS-ACRF-TYPE"
+    monkeypatch.setattr(service, "_blob_has_upload", lambda _sid, role: True)
+    monkeypatch.setattr(service, "_blob_has_pd_spec_workbook", lambda _sid: False)
+    monkeypatch.setattr(
+        service,
+        "_read_upload_manifest_obj",
+        lambda _sid: {
+            "protocolFileName": "protocol.pdf",
+            "acrfFileName": "acrf.xlsx",
+            "acrfSourceType": "xlsx",
+            "protocolSize": 10,
+            "acrfSize": 20,
+        },
+    )
+
+    status = service.get_step1_upload_status(study_id)
+    assert status["acrfSourceType"] == "xlsx"

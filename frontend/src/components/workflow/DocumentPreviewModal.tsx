@@ -1,9 +1,11 @@
 import { MarkdownPreview } from "./MarkdownPreview";
+import { AcrfSummaryPreview } from "./preview/AcrfSummaryPreview";
 import { DeviationsPreview } from "./preview/DeviationsPreview";
 import type { ExtendedDeviationPreviewRow } from "./preview/DeviationsPreview";
 import { SpreadsheetPreview } from "./preview/SpreadsheetPreview";
+import type { AcrfSummaryPreviewRow } from "../../utils/previewFormat";
 
-export type DocumentPreviewKind = "markdown" | "table" | "spreadsheet";
+export type DocumentPreviewKind = "markdown" | "table" | "spreadsheet" | "acrf-summary";
 
 interface DocumentPreviewModalProps {
   open: boolean;
@@ -13,6 +15,7 @@ interface DocumentPreviewModalProps {
   tableRows?: ExtendedDeviationPreviewRow[];
   spreadsheetColumns?: string[];
   spreadsheetRows?: Array<Record<string, string>>;
+  acrfSummaryRows?: AcrfSummaryPreviewRow[];
   isLoading?: boolean;
   error?: string;
   onClose: () => void;
@@ -26,6 +29,7 @@ export function DocumentPreviewModal({
   tableRows = [],
   spreadsheetColumns = [],
   spreadsheetRows = [],
+  acrfSummaryRows = [],
   isLoading = false,
   error = "",
   onClose
@@ -73,6 +77,13 @@ export function DocumentPreviewModal({
               <SpreadsheetPreview columns={spreadsheetColumns} rows={spreadsheetRows} />
             ) : (
               <p className="step7-muted">No rows found in this specification source.</p>
+            )
+          ) : null}
+          {!isLoading && !error && kind === "acrf-summary" ? (
+            acrfSummaryRows.length > 0 ? (
+              <AcrfSummaryPreview rows={acrfSummaryRows} />
+            ) : (
+              <p className="step7-muted">No aCRF summary datasets found yet. Run aCRF preparation first.</p>
             )
           ) : null}
         </div>
