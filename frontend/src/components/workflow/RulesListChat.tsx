@@ -160,11 +160,33 @@ export function RulesListChat({
             />
             <button
               type="button"
-              className="button button-primary step7-chatgpt-send"
+              className="step7-chatgpt-send"
               disabled={isSending || !input.trim()}
               onClick={() => void handleSend()}
+              aria-busy={isSending}
+              title="Send"
             >
-              {isSending ? <span className="spinner spinner-sm" aria-hidden /> : "Send"}
+              <span className="visually-hidden">{isSending ? "Sending" : "Send"}</span>
+              {isSending ? (
+                <span className="step7-chatgpt-send-spinner" aria-hidden />
+              ) : (
+                <svg
+                  className="step7-chatgpt-send-icon"
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  aria-hidden
+                >
+                  <path
+                    d="m5 12 7-9 11 14-11 3L5 12Z"
+                    stroke="currentColor"
+                    strokeWidth="2"
+                    strokeLinejoin="round"
+                    fill="rgba(255,255,255,0.08)"
+                  />
+                </svg>
+              )}
             </button>
           </div>
           <p className="step7-chatgpt-composer-hint">Enter to send · Shift+Enter new line · applies as a new version</p>

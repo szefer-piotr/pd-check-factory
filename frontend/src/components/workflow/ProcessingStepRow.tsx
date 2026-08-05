@@ -85,7 +85,7 @@ export function ProcessingStepRow({
           Re-run
         </button>
         <button
-          className="button button-optional"
+          className="button button-secondary"
           type="button"
           disabled={previewLoading}
           onClick={onPreview}

@@ -365,7 +365,7 @@ export function Step7DeviationDrawer({
           {isEnrichedReview ? (
             <>
               <button
-                className="button button-step7-subtle button-step7-subtle-accent"
+                className="button button-secondary"
                 type="button"
                 disabled={!canAcceptEnriched || isReviewFinalized}
                 title={
@@ -381,7 +381,7 @@ export function Step7DeviationDrawer({
                 Accept enriched
               </button>
               <button
-                className="button button-step7-subtle button-step7-subtle-accent"
+                className="button button-secondary"
                 type="button"
                 disabled={isReviewFinalized}
                 title={
@@ -393,7 +393,7 @@ export function Step7DeviationDrawer({
                 Keep original
               </button>
               <button
-                className="button button-step7-subtle button-step7-subtle-danger"
+                className="button button-danger"
                 type="button"
                 disabled={isReviewFinalized}
                 title={reviewFinalizedTitle ?? "Reject this deviation"}
@@ -405,14 +405,14 @@ export function Step7DeviationDrawer({
           ) : (
             <>
               <button
-                className="button button-step7-subtle button-step7-subtle-accent"
+                className="button button-secondary"
                 type="button"
                 onClick={() => void handleStatusUpdate("accepted")}
               >
                 Accept
               </button>
               <button
-                className="button button-step7-subtle button-step7-subtle-danger"
+                className="button button-danger"
                 type="button"
                 onClick={() => void handleStatusUpdate("rejected")}
               >
@@ -420,8 +420,8 @@ export function Step7DeviationDrawer({
               </button>
             </>
           )}
-          <button className="button button-ghost" type="button" onClick={onClose} aria-label="Close">
-            Close
+          <button className="button button-ghost button-icon" type="button" onClick={onClose} aria-label="Close">
+            ×
           </button>
         </div>
       </header>
@@ -855,7 +855,7 @@ export function Step7DeviationDrawer({
                   </p>
                 ) : null}
                 <button
-                  className="button button-optional"
+                  className="button button-secondary"
                   type="button"
                   onClick={() => void handleGeneratePseudo()}
                   disabled={row.status !== "accepted" || isSending}

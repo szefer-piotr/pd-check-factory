@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   createStep7Deviation,
   createStep7Rule,
@@ -41,6 +41,10 @@ interface Step7ReviewPanelProps {
   hideSourceSelector?: boolean;
   /** Extract pipeline UI: list, accept-all, and deviation drawer only. */
   minimal?: boolean;
+  exportAcceptedCount?: number;
+  exportTotalCount?: number;
+  exporting?: boolean;
+  onExport?: () => void;
 }
 
 const EMPTY_DEVIATION_FORM: Step7DeviationPayload = {
@@ -83,7 +87,11 @@ export function Step7ReviewPanel({
   chatDeployment,
   onChatDeploymentChange,
   hideSourceSelector = false,
-  minimal = false
+  minimal = false,
+  exportAcceptedCount,
+  exportTotalCount,
+  exporting = false,
+  onExport
 }: Step7ReviewPanelProps): JSX.Element {
   const [rows, setRows] = useState<Step7DeviationRow[]>([]);
   const [isLoading, setIsLoading] = useState(false);
@@ -106,6 +114,12 @@ export function Step7ReviewPanel({
   const [reviewSources, setReviewSources] = useState<Step7ReviewSourceOption[]>([]);
   const [reviewSource, setReviewSource] = useState<Step7ReviewSource>("generated");
   const [sourcesLoading, setSourcesLoading] = useState(false);
+  const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+
+  const onStepStatusesChangeRef = useRef(onStepStatusesChange);
+  onStepStatusesChangeRef.current = onStepStatusesChange;
+  const onRowsChangeRef = useRef(onRowsChange);
+  onRowsChangeRef.current = onRowsChange;
 
   const selectedRow = useMemo(
     () => rows.find((row) => row.deviation_id === selectedId) ?? null,
@@ -115,8 +129,8 @@ export function Step7ReviewPanel({
   const groups = useMemo(() => groupDeviationsByRule(rows), [rows]);
 
   useEffect(() => {
-    onRowsChange?.(rows);
-  }, [rows, onRowsChange]);
+    onRowsChangeRef.current?.(rows);
+  }, [rows]);
 
   const statusCounts = useMemo(() => {
     const counts = { pending: 0, to_review: 0, accepted: 0, rejected: 0 };
@@ -137,34 +151,53 @@ export function Step7ReviewPanel({
       : "";
 
   useEffect(() => {
+    let cancelled = false;
+    setHasLoadedOnce(false);
     async function loadSources(): Promise<void> {
       if (!studyId.trim()) {
         setReviewSources([]);
         setRows([]);
+        setIsLoading(false);
+        setSourcesLoading(false);
         return;
       }
       setSourcesLoading(true);
+      setIsLoading(true);
       setError("");
       try {
         const sourcesResponse = await fetchStep7ReviewSources(studyId.trim());
+        if (cancelled) {
+          return;
+        }
         setReviewSources(sourcesResponse.sources);
         const selected = sourcesResponse.selectedSource;
         setReviewSource(selected);
-        setIsLoading(true);
         const deviationsResponse = await fetchStep7Deviations(studyId.trim(), selected);
+        if (cancelled) {
+          return;
+        }
         setRows(deviationsResponse.rows);
-        onStepStatusesChange(deviationsResponse.stepStatuses);
+        setHasLoadedOnce(true);
+        onStepStatusesChangeRef.current(deviationsResponse.stepStatuses);
       } catch (loadError) {
+        if (cancelled) {
+          return;
+        }
         setReviewSources([]);
         setRows([]);
         setError(loadError instanceof Error ? loadError.message : "Unable to load review sources.");
       } finally {
-        setSourcesLoading(false);
-        setIsLoading(false);
+        if (!cancelled) {
+          setSourcesLoading(false);
+          setIsLoading(false);
+        }
       }
     }
     void loadSources();
-  }, [studyId, onStepStatusesChange]);
+    return () => {
+      cancelled = true;
+    };
+  }, [studyId]);
 
   async function handleReviewSourceChange(nextSource: Step7ReviewSource): Promise<void> {
     if (!studyId.trim() || nextSource === reviewSource) {
@@ -178,7 +211,7 @@ export function Step7ReviewPanel({
       await setStep7ReviewDisplaySource(studyId.trim(), nextSource);
       const response = await fetchStep7Deviations(studyId.trim(), nextSource);
       setRows(response.rows);
-      onStepStatusesChange(response.stepStatuses);
+      onStepStatusesChangeRef.current(response.stepStatuses);
     } catch (switchError) {
       setError(switchError instanceof Error ? switchError.message : "Unable to switch review source.");
     } finally {
@@ -403,20 +436,22 @@ export function Step7ReviewPanel({
         </p>
       )}
 
-      <div className="step7-summary-bar">
-        <span className="chip">
-          Total <strong>{rows.length}</strong>
-        </span>
-        <span className="chip">
-          Accepted <strong>{statusCounts.accepted}</strong>
-        </span>
-        <span className="chip">
-          To review <strong>{statusCounts.to_review}</strong>
-        </span>
-        <span className="chip">
-          Rejected <strong>{statusCounts.rejected}</strong>
-        </span>
-      </div>
+      {!minimal ? (
+        <div className="step7-summary-bar">
+          <span className="chip">
+            Total <strong>{rows.length}</strong>
+          </span>
+          <span className="chip">
+            Accepted <strong>{statusCounts.accepted}</strong>
+          </span>
+          <span className="chip">
+            To review <strong>{statusCounts.to_review}</strong>
+          </span>
+          <span className="chip">
+            Rejected <strong>{statusCounts.rejected}</strong>
+          </span>
+        </div>
+      ) : null}
 
       {error ? <p className="step1-error">{error}</p> : null}
       {mutationStatus ? <p className="step1-status">{mutationStatus}</p> : null}
@@ -431,26 +466,64 @@ export function Step7ReviewPanel({
           Reviewing <strong>{activeSourceMeta.label}</strong>. Changes apply only to this dataset.
         </p>
       ) : null}
-      {isLoading ? <p className="step7-muted">Loading deviations...</p> : null}
+      {isLoading && !hasLoadedOnce ? <p className="step7-muted">Loading deviations...</p> : null}
 
       {minimal ? (
         <div className="step7-toolbar step7-toolbar-minimal">
-          <button
-            className="button button-optional"
-            type="button"
-            onClick={() => void handleAcceptAll()}
-            disabled={isBulkAccepting || isLoading || acceptAllCount === 0 || !studyId.trim()}
-          >
-            {isBulkAccepting ? "Accepting..." : `Accept all (${acceptAllCount})`}
-          </button>
-          <button
-            className="button button-optional"
-            type="button"
-            onClick={() => void handleGenerateAllPseudoLogic()}
-            disabled={isBulkGenerating || isBulkAccepting || acceptedCount === 0 || !studyId.trim()}
-          >
-            {isBulkGenerating ? "Generating..." : `Generate all pseudo (${acceptedCount})`}
-          </button>
+          <div className="step7-toolbar-counts" aria-label="Deviation counts">
+            <span className="chip">
+              Total <strong>{rows.length}</strong>
+            </span>
+            <span className="chip">
+              Accepted <strong>{statusCounts.accepted}</strong>
+            </span>
+            <span className="chip">
+              To review <strong>{statusCounts.to_review}</strong>
+            </span>
+            <span className="chip">
+              Rejected <strong>{statusCounts.rejected}</strong>
+            </span>
+          </div>
+          <div className="step7-toolbar-actions">
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={() => void handleAcceptAll()}
+              disabled={isBulkAccepting || isLoading || acceptAllCount === 0 || !studyId.trim()}
+            >
+              {isBulkAccepting ? "Accepting..." : `Accept all (${acceptAllCount})`}
+            </button>
+            <button
+              className="button button-secondary"
+              type="button"
+              onClick={() => void handleGenerateAllPseudoLogic()}
+              disabled={isBulkGenerating || isBulkAccepting || acceptedCount === 0 || !studyId.trim()}
+            >
+              {isBulkGenerating ? "Generating..." : `Generate all pseudo (${acceptedCount})`}
+            </button>
+            {onExport ? (
+              <button
+                type="button"
+                className="button button-primary"
+                disabled={exporting || (exportAcceptedCount ?? acceptedCount) === 0}
+                onClick={onExport}
+                title={
+                  (exportAcceptedCount ?? acceptedCount) === 0
+                    ? "Accept deviations before exporting"
+                    : `Export ${exportAcceptedCount ?? acceptedCount} / ${exportTotalCount ?? rows.length} accepted`
+                }
+              >
+                {exporting ? (
+                  <>
+                    <span className="spinner spinner-sm" aria-hidden />
+                    Exporting…
+                  </>
+                ) : (
+                  "Download CSV"
+                )}
+              </button>
+            ) : null}
+          </div>
         </div>
       ) : (
       <div className="step7-toolbar">
@@ -463,7 +536,7 @@ export function Step7ReviewPanel({
           {isExporting ? "Generating Excel..." : "Generate Excel"}
         </button>
         <button
-          className="button button-optional"
+          className="button button-secondary"
           type="button"
           onClick={() => void handleExportCodingWorkbook()}
           disabled={isExporting || isExportingCoding || isLoading || !studyId.trim()}
@@ -471,7 +544,7 @@ export function Step7ReviewPanel({
           {isExportingCoding ? "Generating Company PDS..." : "Generate Company PDS"}
         </button>
         <button
-          className="button button-optional"
+          className="button button-secondary"
           type="button"
           onClick={() => void handleAcceptAll()}
           disabled={isBulkAccepting || isLoading || acceptAllCount === 0 || !studyId.trim()}
@@ -488,7 +561,7 @@ export function Step7ReviewPanel({
               : `Accept all (${acceptAllCount})`}
         </button>
         <button
-          className="button button-optional"
+          className="button button-secondary"
           type="button"
           onClick={() => void handleGenerateAllPseudoLogic()}
           disabled={isBulkGenerating || isBulkAccepting || acceptedCount === 0}
@@ -519,7 +592,7 @@ export function Step7ReviewPanel({
                 <input className="input" placeholder="rule_id" value={deviationForm.rule_id} onChange={(e) => setDeviationForm((p) => ({ ...p, rule_id: e.target.value }))} />
                 <input className="input" placeholder="refs (p1, p2)" value={refsToText(deviationForm.paragraph_refs)} onChange={(e) => setDeviationForm((p) => ({ ...p, paragraph_refs: refsFromText(e.target.value) }))} />
                 <textarea className="step7-chat-input" placeholder="deviation text" value={deviationForm.text} onChange={(e) => setDeviationForm((p) => ({ ...p, text: e.target.value }))} />
-                <button className="button button-optional" type="button" onClick={() => void handleAddDeviation()} disabled={!deviationForm.deviation_id || !deviationForm.rule_id || !deviationForm.text}>
+                <button className="button button-secondary" type="button" onClick={() => void handleAddDeviation()} disabled={!deviationForm.deviation_id || !deviationForm.rule_id || !deviationForm.text}>
                   Add deviation
                 </button>
               </div>
@@ -528,12 +601,12 @@ export function Step7ReviewPanel({
                 <input className="input" placeholder="rule_id" value={ruleForm.rule_id} onChange={(e) => setRuleForm((p) => ({ ...p, rule_id: e.target.value }))} />
                 <input className="input" placeholder="title" value={ruleForm.title} onChange={(e) => setRuleForm((p) => ({ ...p, title: e.target.value }))} />
                 <textarea className="step7-chat-input" placeholder="rule text" value={ruleForm.text} onChange={(e) => setRuleForm((p) => ({ ...p, text: e.target.value }))} />
-                <button className="button button-optional" type="button" onClick={() => void handleAddRule()} disabled={!ruleForm.rule_id}>
+                <button className="button button-secondary" type="button" onClick={() => void handleAddRule()} disabled={!ruleForm.rule_id}>
                   Add rule
                 </button>
               </div>
               <div className="step7-form-grid">
-                <label className="button button-optional" htmlFor="step7-import-workbook">
+                <label className="button button-secondary" htmlFor="step7-import-workbook">
                   Choose Excel
                 </label>
                 <input
@@ -543,7 +616,7 @@ export function Step7ReviewPanel({
                   accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                   onChange={(event) => setWorkbookFile(event.target.files?.[0] ?? null)}
                 />
-                <button className="button button-optional" type="button" onClick={() => void handleImportWorkbook()} disabled={!workbookFile}>
+                <button className="button button-secondary" type="button" onClick={() => void handleImportWorkbook()} disabled={!workbookFile}>
                   Import deviations
                 </button>
               </div>
@@ -567,27 +640,38 @@ export function Step7ReviewPanel({
         <LlmProgressBar progress={bulkLlmProgress} />
       ) : null}
 
-      <div className={`step7-layout ${selectedRow ? "" : "step7-layout-no-drawer"}`}>
-        <Step7RuleGroups
-          groups={groups}
-          selectedId={selectedId}
-          onSelect={setSelectedId}
-          isBulkGeneratingPseudo={isBulkGenerating}
-        />
-        {selectedRow ? (
-          <Step7DeviationDrawer
-            studyId={studyId}
-            reviewSource={reviewSource}
-            row={selectedRow}
-            onClose={() => setSelectedId(null)}
-            onRowUpdated={handleRowUpdated}
-            onStepStatusesChange={onStepStatusesChange}
-            llmDeployments={llmDeployments}
-            deploymentsLoading={deploymentsLoading}
-            chatDeployment={chatDeployment}
-            onChatDeploymentChange={onChatDeploymentChange}
+      <div className="step7-layout step7-layout-kit">
+        <div className="step7-list-pane">
+          <Step7RuleGroups
+            groups={groups}
+            selectedId={selectedId}
+            onSelect={setSelectedId}
+            isBulkGeneratingPseudo={isBulkGenerating}
           />
-        ) : null}
+        </div>
+        <div className="step7-reading-pane">
+          {selectedRow ? (
+            <Step7DeviationDrawer
+              studyId={studyId}
+              reviewSource={reviewSource}
+              row={selectedRow}
+              onClose={() => setSelectedId(null)}
+              onRowUpdated={handleRowUpdated}
+              onStepStatusesChange={onStepStatusesChange}
+              llmDeployments={llmDeployments}
+              deploymentsLoading={deploymentsLoading}
+              chatDeployment={chatDeployment}
+              onChatDeploymentChange={onChatDeploymentChange}
+            />
+          ) : (
+            <div className="step7-reading-empty" aria-live="polite">
+              <p className="step7-reading-empty-title">Select a deviation</p>
+              <p className="step7-muted">
+                Choose a message from the list to review details and chat with the assistant.
+              </p>
+            </div>
+          )}
+        </div>
       </div>
     </section>
   );

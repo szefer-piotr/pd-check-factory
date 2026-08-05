@@ -1,10 +1,8 @@
-import { useEffect, useState } from "react";
-import { Card } from "../../components/layout/Card";
+import { useCallback, useEffect, useState } from "react";
 import { Stack } from "../../components/layout/Stack";
 import { Step7ReviewPanel } from "../../components/workflow/Step7ReviewPanel";
 import {
   exportStep7DeviationsCodingCsv,
-  fetchStep7Deviations,
   setStep7ReviewDisplaySource,
   type OpenAiDeploymentOption,
   type Step7DeviationRow,
@@ -36,32 +34,37 @@ export function ReviewStepPage({
 
   useEffect(() => {
     if (!studyId.trim()) {
-      return;
-    }
-    void setStep7ReviewDisplaySource(studyId.trim(), "generated").then(() => setReady(true));
-  }, [studyId]);
-
-  useEffect(() => {
-    if (!studyId.trim() || !ready) {
-      setRows([]);
+      setReady(false);
       return;
     }
     let cancelled = false;
-    void fetchStep7Deviations(studyId.trim(), "generated")
-      .then((result) => {
+    setReady(false);
+    void setStep7ReviewDisplaySource(studyId.trim(), "generated")
+      .then(() => {
         if (!cancelled) {
-          setRows(result.rows);
+          setReady(true);
         }
       })
       .catch(() => {
         if (!cancelled) {
-          setRows([]);
+          setReady(true);
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [ready, studyId]);
+  }, [studyId]);
+
+  const handleRowsChange = useCallback((nextRows: Step7DeviationRow[]) => {
+    setRows(nextRows);
+  }, []);
+
+  const handleStatusesChange = useCallback(
+    (statuses: Record<string, StepStatus>) => {
+      onStatusesChange(statuses);
+    },
+    [onStatusesChange]
+  );
 
   const acceptedCount = rows.filter((row) => row.status === "accepted").length;
 
@@ -102,53 +105,27 @@ export function ReviewStepPage({
           </div>
         </header>
 
-        <Card>
-          <Stack gap="sm">
-            <h2 className="study-setup-section-head" style={{ margin: 0 }}>
-              Export
-            </h2>
-            <p>
-              Accepted (included in CSV): <strong>{acceptedCount}</strong> / {rows.length}
-            </p>
-            {exportError ? <p className="pipeline-error">{exportError}</p> : null}
-            {exportMessage ? <p className="pipeline-message">{exportMessage}</p> : null}
-            {acceptedCount === 0 ? (
-              <p className="pipeline-hint">Accept deviations below before exporting.</p>
-            ) : null}
-            <button
-              type="button"
-              className="button button-primary"
-              disabled={exporting || acceptedCount === 0}
-              onClick={() => void handleExport()}
-            >
-              {exporting ? (
-                <>
-                  <span className="spinner spinner-sm" aria-hidden />
-                  Exporting…
-                </>
-              ) : (
-                "Download company PD Specs CSV"
-              )}
-            </button>
-          </Stack>
-        </Card>
+        {exportError ? <p className="pipeline-error">{exportError}</p> : null}
+        {exportMessage ? <p className="pipeline-message">{exportMessage}</p> : null}
 
         {ready ? (
           <Step7ReviewPanel
             studyId={studyId}
-            onStepStatusesChange={(statuses) => {
-              onStatusesChange(statuses);
-              void fetchStep7Deviations(studyId.trim(), "generated").then((result) => setRows(result.rows));
-            }}
+            onStepStatusesChange={handleStatusesChange}
+            onRowsChange={handleRowsChange}
             llmDeployments={llmDeployments}
             deploymentsLoading={deploymentsLoading}
             chatDeployment={chatDeployment}
             onChatDeploymentChange={onChatDeploymentChange}
             hideSourceSelector
             minimal
+            exportAcceptedCount={acceptedCount}
+            exportTotalCount={rows.length}
+            exporting={exporting}
+            onExport={() => void handleExport()}
           />
         ) : (
-          <p>Loading review data…</p>
+          <p className="step7-muted">Loading review data…</p>
         )}
       </div>
     </Stack>

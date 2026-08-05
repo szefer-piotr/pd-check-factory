@@ -28,7 +28,7 @@ export function ConfigStepPage({
       <div className="pipeline-step-page">
       <header className="pipeline-step-header">
         <div>
-          <h1>Model configuration</h1>
+          <h2>Model configuration</h2>
           <p className="pipeline-step-description">
             Choose Azure OpenAI deployments. PDF extraction uses Document Intelligence only.
           </p>

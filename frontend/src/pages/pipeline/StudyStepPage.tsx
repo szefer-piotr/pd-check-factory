@@ -259,7 +259,7 @@ export function StudyStepPage({ studyId, onStudyIdChange, onCreated }: StudyStep
       <div className="pipeline-step-page">
       <header className="pipeline-step-header">
         <div>
-          <h1>Study</h1>
+          <h2>Study</h2>
           <p className="pipeline-step-description">
             Create a new study or select an existing folder from blob storage. Selecting a study downloads
             pipeline artifacts and checkpoints.
@@ -297,7 +297,12 @@ export function StudyStepPage({ studyId, onStudyIdChange, onCreated }: StudyStep
               placeholder="e.g. TARA-002-201"
             />
           </label>
-          <button type="button" onClick={() => void handleCreate()} disabled={Boolean(loadingStudyId) || isCreating}>
+          <button
+            type="button"
+            className="button button-primary"
+            onClick={() => void handleCreate()}
+            disabled={Boolean(loadingStudyId) || isCreating}
+          >
             {isCreating ? "Creating…" : "Create study"}
           </button>
         </Stack>
@@ -309,7 +314,7 @@ export function StudyStepPage({ studyId, onStudyIdChange, onCreated }: StudyStep
           <div className="pipeline-step-actions">
             <button
               type="button"
-              className="secondary"
+              className="button button-secondary"
               disabled={loading || loadingStudyId !== null || isWiping}
               onClick={() => {
                 setLoading(true);

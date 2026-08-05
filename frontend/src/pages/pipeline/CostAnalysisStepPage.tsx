@@ -78,7 +78,12 @@ export function CostAnalysisStepPage({ studyId }: CostAnalysisStepPageProps): JS
               Rates are configurable estimates, not Azure invoice amounts.
             </p>
           </div>
-          <button type="button" className="secondary" disabled={!studyId.trim() || loading} onClick={() => void load()}>
+          <button
+            type="button"
+            className="button button-secondary"
+            disabled={!studyId.trim() || loading}
+            onClick={() => void load()}
+          >
             {loading ? "Refreshing…" : "Refresh"}
           </button>
         </header>
