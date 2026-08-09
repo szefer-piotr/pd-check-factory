@@ -11,14 +11,14 @@ export function navigateToStep(step: string, _options?: Record<string, string>):
     return;
   }
   if (step.includes("extract-rules") || step === "rules") {
-    navigateToPipelineStep("generate-pd", { subStep: "rules" });
+    navigateToPipelineStep("rules");
     return;
   }
   if (step.includes("extract-deviations") || step === "deviations") {
-    navigateToPipelineStep("generate-pd", { subStep: "deviations" });
+    navigateToPipelineStep("deviations");
     return;
   }
-  navigateToPipelineStep("review");
+  navigateToPipelineStep("deviations");
 }
 
 export function buildHash(step: string, _options?: Record<string, string>): string {
@@ -29,10 +29,10 @@ export function buildHash(step: string, _options?: Record<string, string>): stri
     return "#/study-setup/processing";
   }
   if (step.includes("extract-rules") || step === "rules") {
-    return "#/generate-pd/rules";
+    return "#/rules";
   }
   if (step.includes("extract-deviations") || step === "deviations") {
-    return "#/generate-pd/deviations";
+    return "#/deviations";
   }
-  return "#/review";
+  return "#/deviations";
 }

@@ -1,18 +1,15 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Page } from "./components/layout/Page";
 import { ActivityPanel } from "./components/pipeline/ActivityPanel";
 import { ToastStack } from "./components/pipeline/ToastStack";
 import { CostAnalysisStepPage } from "./pages/pipeline/CostAnalysisStepPage";
-import { GeneratePdStepPage } from "./pages/pipeline/GeneratePdStepPage";
-import { ReviewStepPage } from "./pages/pipeline/ReviewStepPage";
+import { DeviationsStepPage } from "./pages/pipeline/DeviationsStepPage";
+import { RulesStepPage } from "./pages/pipeline/RulesStepPage";
 import { StudySetupStepPage } from "./pages/pipeline/StudySetupStepPage";
 import { PipelineJobProvider, usePipelineJobs } from "./jobs/PipelineJobContext";
 import {
-  GENERATE_PD_CHILDREN,
   PIPELINE_STEPS,
-  pipelineStepById,
   pipelineStepIndex,
-  type GeneratePdSubStep,
   type PipelineStepId,
   type StudySetupSection
 } from "./pipeline/pipelineSteps";
@@ -28,6 +25,7 @@ import {
   applyStudyRun,
   fetchOpenAiDeployments,
   fetchStepStatuses,
+  fetchStudyRuns,
   patchStudyManifest,
   resetStudy,
   type OpenAiDeploymentOption,
@@ -46,12 +44,9 @@ function stepComplete(
   switch (stepId) {
     case "study-setup":
       return Boolean(ctx.studyId.trim()) && ctx.hasAppliedSettings && ctx.processingComplete;
-    case "generate-pd":
-      return (
-        ctx.backendStatuses["extract-rules"] === "done" &&
-        ctx.backendStatuses["extract-deviations"] === "done"
-      );
-    case "review":
+    case "rules":
+      return ctx.backendStatuses["extract-rules"] === "done";
+    case "deviations":
     case "cost-analysis":
       return ctx.backendStatuses["extract-deviations"] === "done";
     default:
@@ -79,6 +74,7 @@ function PipelineAppInner(): JSX.Element {
     appliedSettings,
     updateDraftSettings,
     applySettings,
+    loadAppliedSettings,
     hasAppliedSettings
   } = useStudySettings(studyId);
 
@@ -88,11 +84,67 @@ function PipelineAppInner(): JSX.Element {
   );
 
   const chatDeployment = draftSettings.chatDeployment || defaultDeployment;
+  const defaultDeploymentRef = useRef(defaultDeployment);
+  defaultDeploymentRef.current = defaultDeployment;
 
   const { summary, refresh: refreshSummary } = useStudySummary(studyId, {
     enabled: Boolean(studyId.trim()),
     pollMs: jobs.isRunActive ? 3000 : 0
   });
+
+  useEffect(() => {
+    const id = studyId.trim();
+    if (!id) {
+      return;
+    }
+    let cancelled = false;
+
+    async function restoreSettingsFromStudy(): Promise<void> {
+      try {
+        const runs = await fetchStudyRuns(id);
+        if (cancelled) {
+          return;
+        }
+        const active =
+          runs.runs.find((run) => run.runId === runs.activeRunId) ?? runs.runs[0] ?? null;
+        const raw = active?.settings;
+        if (!raw) {
+          return;
+        }
+        const extractionDeployment = String(raw.extractionDeployment || "").trim();
+        const acrfSummaryDeployment = String(raw.acrfSummaryDeployment || "").trim();
+        const chatDeploymentValue = String(raw.chatDeployment || "").trim();
+        const instructions = String(raw.extractionLlmInstructions || "");
+        if (!extractionDeployment && !acrfSummaryDeployment && !chatDeploymentValue && !instructions.trim()) {
+          return;
+        }
+        loadAppliedSettings(
+          applyDefaultDeployments(
+            {
+              extractorChoice:
+                raw.extractorChoice === "both" ||
+                raw.extractorChoice === "opendataloader" ||
+                raw.extractorChoice === "document_intelligence"
+                  ? raw.extractorChoice
+                  : "document_intelligence",
+              extractionLlmInstructions: instructions,
+              extractionDeployment,
+              acrfSummaryDeployment,
+              chatDeployment: chatDeploymentValue
+            },
+            defaultDeploymentRef.current
+          )
+        );
+      } catch {
+        // Keep whatever local/session settings we already have.
+      }
+    }
+
+    void restoreSettingsFromStudy();
+    return () => {
+      cancelled = true;
+    };
+  }, [studyId, loadAppliedSettings]);
 
   useEffect(() => {
     const syncRoute = (): void => {
@@ -117,7 +169,6 @@ function PipelineAppInner(): JSX.Element {
       return;
     }
     const desired = pipelineHashForStep(route.stepId, {
-      subStep: route.subStep,
       section: route.section,
       studyId
     });
@@ -126,7 +177,7 @@ function PipelineAppInner(): JSX.Element {
     } else if (studyId && !parsePipelineHash(window.location.hash).studyId) {
       window.history.replaceState(null, "", desired);
     }
-  }, [route.section, route.stepId, route.subStep, studyId]);
+  }, [route.section, route.stepId, studyId]);
 
   useEffect(() => {
     if (summary?.preprocess) {
@@ -211,7 +262,7 @@ function PipelineAppInner(): JSX.Element {
 
   function handleNavigate(
     stepId: PipelineStepId,
-    options: { subStep?: GeneratePdSubStep; section?: StudySetupSection } = {}
+    options: { section?: StudySetupSection } = {}
   ): void {
     if (!canNavigateTo(stepId)) {
       return;
@@ -242,6 +293,7 @@ function PipelineAppInner(): JSX.Element {
         extractorChoice: "document_intelligence",
         extractionDeployment: normalized.extractionDeployment || defaultDeployment,
         acrfSummaryDeployment: normalized.acrfSummaryDeployment || defaultDeployment,
+        chatDeployment: normalized.chatDeployment || defaultDeployment,
         extractionLlmInstructions: normalized.extractionLlmInstructions
       }
     });
@@ -293,6 +345,7 @@ function PipelineAppInner(): JSX.Element {
             onSettingsChange={updateDraftSettings}
             onSaveConfig={() => void handleSaveConfig()}
             configSaved={hasAppliedSettings}
+            processingComplete={processingComplete}
             deployments={llmDeployments}
             deploymentsLoading={deploymentsLoading}
             defaultDeployment={defaultDeployment}
@@ -302,31 +355,26 @@ function PipelineAppInner(): JSX.Element {
             onStudyCreated={() => handleNavigate("study-setup", { section: "config" })}
           />
         );
-      case "generate-pd":
+      case "rules":
         return (
-          <GeneratePdStepPage
+          <RulesStepPage
             studyId={studyId}
-            subStep={route.subStep ?? "rules"}
             settings={effectiveSettings}
             defaultDeployment={defaultDeployment}
             backendStatuses={backendStatuses}
             onStatusesChange={setBackendStatuses}
-            llmDeployments={llmDeployments}
-            deploymentsLoading={deploymentsLoading}
             chatDeployment={chatDeployment}
-            onChatDeploymentChange={(value) => updateDraftSettings({ chatDeployment: value })}
-            onSubStepChange={(subStep) => handleNavigate("generate-pd", { subStep })}
           />
         );
-      case "review":
+      case "deviations":
         return (
-          <ReviewStepPage
+          <DeviationsStepPage
             studyId={studyId}
+            settings={effectiveSettings}
+            defaultDeployment={defaultDeployment}
+            backendStatuses={backendStatuses}
             onStatusesChange={setBackendStatuses}
-            llmDeployments={llmDeployments}
-            deploymentsLoading={deploymentsLoading}
             chatDeployment={chatDeployment}
-            onChatDeploymentChange={(value) => updateDraftSettings({ chatDeployment: value })}
           />
         );
       case "cost-analysis":
@@ -340,6 +388,7 @@ function PipelineAppInner(): JSX.Element {
             onSettingsChange={updateDraftSettings}
             onSaveConfig={() => void handleSaveConfig()}
             configSaved={hasAppliedSettings}
+            processingComplete={processingComplete}
             deployments={llmDeployments}
             deploymentsLoading={deploymentsLoading}
             defaultDeployment={defaultDeployment}
@@ -351,8 +400,6 @@ function PipelineAppInner(): JSX.Element {
         );
     }
   }
-
-  const currentStep = pipelineStepById(route.stepId) ?? PIPELINE_STEPS[0];
 
   return (
     <Page>
@@ -412,50 +459,17 @@ function PipelineAppInner(): JSX.Element {
                       type="button"
                       className={`pipeline-sidebar-item ${active ? "active" : ""} ${done ? "done" : ""}`}
                       disabled={!enabled}
-                      onClick={() =>
-                        handleNavigate(
-                          step.id,
-                          step.id === "generate-pd" ? { subStep: route.subStep ?? "rules" } : undefined
-                        )
-                      }
+                      onClick={() => handleNavigate(step.id)}
                     >
                       <span className="pipeline-sidebar-title">{step.shortTitle}</span>
                       <span className="pipeline-sidebar-state">
                         {done ? "Done" : active ? "Current" : "Pending"}
                       </span>
                     </button>
-                    {step.id === "generate-pd" && active ? (
-                      <ul className="pipeline-sidebar-children">
-                        {GENERATE_PD_CHILDREN.map((child) => {
-                          const childDone = backendStatuses[child.backendStepId] === "done";
-                          const childActive = (route.subStep ?? "rules") === child.id;
-                          return (
-                            <li key={child.id}>
-                              <button
-                                type="button"
-                                className={`pipeline-sidebar-item pipeline-sidebar-child ${childActive ? "active" : ""} ${childDone ? "done" : ""}`}
-                                onClick={() => handleNavigate("generate-pd", { subStep: child.id })}
-                              >
-                                <span className="pipeline-sidebar-title">{child.shortTitle}</span>
-                                <span className="pipeline-sidebar-state">{childDone ? "Done" : "Pending"}</span>
-                              </button>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    ) : null}
                   </li>
                 );
               })}
             </ol>
-
-            {route.stepId === "generate-pd" ? (
-              <div className="pipeline-sidebar-meta">
-                <p className="pipeline-sidebar-meta-title">Current</p>
-                <p className="pipeline-sidebar-meta-body">{currentStep.title}</p>
-                <p className="pipeline-hint">Artifact versions and previews live beside the work surface.</p>
-              </div>
-            ) : null}
           </nav>
 
           <main className="pipeline-main">{renderStep()}</main>

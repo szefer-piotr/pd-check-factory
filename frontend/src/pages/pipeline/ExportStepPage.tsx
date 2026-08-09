@@ -1,4 +1,4 @@
-/** @deprecated Standalone export step removed — export lives on ReviewStepPage. */
+/** @deprecated Standalone export step removed — export lives on DeviationsStepPage. */
 import { useEffect, useState } from "react";
 import { Card } from "../../components/layout/Card";
 import { Stack } from "../../components/layout/Stack";

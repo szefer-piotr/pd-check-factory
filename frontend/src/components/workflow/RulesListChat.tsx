@@ -1,36 +1,35 @@
 import { useEffect, useRef, useState } from "react";
-import { LlmDeploymentSelect } from "../ui/LlmDeploymentSelect";
 import {
   fetchRulesChat,
   refineRulesChat,
-  type OpenAiDeploymentOption,
   type Step7ChatMessage,
   type StepStatus
 } from "../../services/stepApi";
+import { ChatSendIcon } from "./ChatSendIcon";
 
 interface RulesListChatProps {
   studyId: string;
-  llmDeployments: OpenAiDeploymentOption[];
-  deploymentsLoading: boolean;
   chatDeployment: string;
-  onChatDeploymentChange: (value: string) => void;
   onApplied: (statuses: Record<string, StepStatus>) => void;
+}
+
+function formatChatTime(ts: string): string {
+  try {
+    return new Intl.DateTimeFormat(undefined, { timeStyle: "short", dateStyle: "short" }).format(new Date(ts));
+  } catch {
+    return "";
+  }
 }
 
 export function RulesListChat({
   studyId,
-  llmDeployments,
-  deploymentsLoading,
   chatDeployment,
-  onChatDeploymentChange,
   onApplied
 }: RulesListChatProps): JSX.Element {
   const [messages, setMessages] = useState<Step7ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isSending, setIsSending] = useState(false);
   const [error, setError] = useState("");
-  const [ruleCount, setRuleCount] = useState(0);
-  const [version, setVersion] = useState<string | null>(null);
   const [listRevision, setListRevision] = useState<number | undefined>(undefined);
   const threadRef = useRef<HTMLDivElement | null>(null);
 
@@ -43,8 +42,6 @@ export function RulesListChat({
       .then((result) => {
         if (!cancelled) {
           setMessages(result.messages);
-          setRuleCount(result.ruleCount);
-          setVersion(result.activeVersion ?? null);
           if (typeof result.listRevision === "number") {
             setListRevision(result.listRevision);
           }
@@ -83,12 +80,8 @@ export function RulesListChat({
         expectedRevision: listRevision
       });
       setMessages(result.messages);
-      setRuleCount(result.ruleCount);
       if (typeof result.listRevision === "number") {
         setListRevision(result.listRevision);
-      }
-      if (result.version) {
-        setVersion(result.version);
       }
       if (result.applied) {
         onApplied(result.stepStatuses);
@@ -101,106 +94,82 @@ export function RulesListChat({
   }
 
   return (
-    <section className="rules-list-chat step7-chatgpt-shell" aria-label="Rules list chat">
-      <header className="step7-chatgpt-head">
-        <div className="step7-chatgpt-head-text">
-          <h5 className="step7-chatgpt-title">Rules discussion</h5>
-          <p className="step7-chatgpt-sub">
-            Chat about the whole rule list. Applied edits create a new Rules artifact version.
-            {ruleCount ? ` · ${ruleCount} rules` : ""}
-            {version ? ` · ${version}` : ""}
-          </p>
-        </div>
-      </header>
+    <aside className="step7-drawer step7-drawer-chat-only" aria-label="Rules list chat">
+      {error ? <p className="step1-error step7-drawer-error">{error}</p> : null}
 
-      {error ? <p className="pipeline-error">{error}</p> : null}
-
-      <div className="step7-chatgpt-thread" ref={threadRef}>
-        {messages.length === 0 ? (
-          <div className="step7-chatgpt-empty">
-            <p className="step7-chatgpt-empty-title">No messages yet</p>
-            <p className="step7-chatgpt-empty-hint">
-              Ask about rules, edit title/text/paragraph refs, or add/remove a rule by id. Category,
-              programmability, and deviation merges belong in a deviation&apos;s chat.
-            </p>
-          </div>
-        ) : (
-          messages.map((message, index) => {
-            const isUser = message.role === "dm" || message.role === "user";
-            return (
-              <div
-                key={`${message.ts}-${index}`}
-                className={`step7-chatgpt-turn step7-chatgpt-turn-${isUser ? "user" : "assistant"}`}
-              >
-                <span className="step7-chatgpt-role">{isUser ? "You" : "Assistant"}</span>
-                <div className={`step7-chatgpt-bubble step7-chatgpt-bubble-${isUser ? "user" : "assistant"}`}>
-                  <p className="step7-chatgpt-bubble-text">{message.text}</p>
-                </div>
-              </div>
-            );
-          })
-        )}
-      </div>
-
-      <footer className="step7-chatgpt-footer">
-        <LlmDeploymentSelect
-          id="rules-chat-llm-deployment"
-          label="Chat model"
-          value={chatDeployment}
-          deployments={llmDeployments}
-          isLoading={deploymentsLoading}
-          onChange={onChatDeploymentChange}
-        />
-        <div className="step7-chatgpt-composer-area">
-          <div className="step7-chatgpt-composer">
-            <textarea
-              className="step7-chatgpt-input"
-              rows={3}
-              value={input}
-              disabled={isSending}
-              placeholder="Describe changes to the rule list…"
-              onChange={(event) => setInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  void handleSend();
-                }
-              }}
-            />
-            <button
-              type="button"
-              className="step7-chatgpt-send"
-              disabled={isSending || !input.trim()}
-              onClick={() => void handleSend()}
-              aria-busy={isSending}
-              title="Send"
-            >
-              <span className="visually-hidden">{isSending ? "Sending" : "Send"}</span>
-              {isSending ? (
-                <span className="step7-chatgpt-send-spinner" aria-hidden />
-              ) : (
-                <svg
-                  className="step7-chatgpt-send-icon"
-                  width="20"
-                  height="20"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  aria-hidden
+      <section className="step7-drawer-chat-block step7-chatgpt-shell" aria-label="Rules discussion">
+        <div
+          ref={threadRef}
+          className="step7-chatgpt-thread"
+          role="log"
+          aria-label="Chat transcript"
+          aria-live="polite"
+        >
+          {messages.length === 0 ? (
+            <div className="step7-chatgpt-empty">
+              <p className="step7-chatgpt-empty-title">No messages yet</p>
+              <p className="step7-chatgpt-empty-hint">
+                Ask about rules, edit title/text/paragraph refs, or add/remove a rule by id. Applied
+                edits create a new Rules artifact version. Category, programmability, and deviation
+                merges belong in a deviation&apos;s chat.
+              </p>
+            </div>
+          ) : (
+            messages.map((message, index) => {
+              const isUser = message.role === "dm" || message.role === "user";
+              return (
+                <div
+                  key={`${message.ts}-${index}`}
+                  className={`step7-chatgpt-turn step7-chatgpt-turn-${isUser ? "user" : "assistant"}`}
                 >
-                  <path
-                    d="m5 12 7-9 11 14-11 3L5 12Z"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinejoin="round"
-                    fill="rgba(255,255,255,0.08)"
-                  />
-                </svg>
-              )}
-            </button>
-          </div>
-          <p className="step7-chatgpt-composer-hint">Enter to send · Shift+Enter new line · applies as a new version</p>
+                  <span className="step7-chatgpt-role">{isUser ? "You" : "Assistant"}</span>
+                  <div className={`step7-chatgpt-bubble step7-chatgpt-bubble-${isUser ? "user" : "assistant"}`}>
+                    <p className="step7-chatgpt-bubble-text">{message.text}</p>
+                  </div>
+                  {message.ts ? (
+                    <time className="step7-chatgpt-time" dateTime={message.ts}>
+                      {formatChatTime(message.ts)}
+                    </time>
+                  ) : null}
+                </div>
+              );
+            })
+          )}
         </div>
-      </footer>
-    </section>
+
+        <footer className="step7-chatgpt-footer">
+          <div className="step7-chatgpt-composer-area">
+            <div className="step7-chatgpt-composer">
+              <textarea
+                className="step7-chatgpt-input"
+                rows={2}
+                value={input}
+                disabled={isSending}
+                placeholder="Message the model..."
+                onChange={(event) => setInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    void handleSend();
+                  }
+                }}
+              />
+              <button
+                type="button"
+                className="step7-chatgpt-send"
+                disabled={isSending || !input.trim()}
+                onClick={() => void handleSend()}
+                aria-busy={isSending}
+                title="Send"
+              >
+                <span className="visually-hidden">{isSending ? "Sending" : "Send"}</span>
+                {isSending ? <span className="step7-chatgpt-send-spinner" aria-hidden /> : <ChatSendIcon />}
+              </button>
+            </div>
+            <p className="step7-chatgpt-composer-hint">Enter to send · Shift+Enter new line · applies as a new version</p>
+          </div>
+        </footer>
+      </section>
+    </aside>
   );
 }

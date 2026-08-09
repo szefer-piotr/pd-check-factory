@@ -1,10 +1,10 @@
-/** Top-level pipeline IA: Study setup → Generate PD → Review → Cost. */
+/** Top-level pipeline IA: Study setup → Rules → Deviations → Cost. */
 
-export type PipelineStepId = "study-setup" | "generate-pd" | "review" | "cost-analysis";
-
-export type GeneratePdSubStep = "rules" | "deviations";
+export type PipelineStepId = "study-setup" | "rules" | "deviations" | "cost-analysis";
 
 export type StudySetupSection = "study" | "config" | "processing";
+
+export type BackendExtractStepId = "extract-rules" | "extract-deviations";
 
 export interface PipelineStepDef {
   id: PipelineStepId;
@@ -12,15 +12,8 @@ export interface PipelineStepDef {
   title: string;
   shortTitle: string;
   description: string;
-}
-
-export interface GeneratePdChildDef {
-  id: GeneratePdSubStep;
-  route: string;
-  title: string;
-  shortTitle: string;
-  description: string;
-  backendStepId: "extract-rules" | "extract-deviations";
+  /** Backend extract step that marks this UI step complete (when set). */
+  backendStepId?: BackendExtractStepId;
 }
 
 export const PIPELINE_STEPS: PipelineStepDef[] = [
@@ -32,18 +25,20 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
     description: "Select a study, configure models, upload documents, and run extractions."
   },
   {
-    id: "generate-pd",
-    route: "generate-pd",
-    title: "Generate protocol deviations",
-    shortTitle: "Generate PD",
-    description: "Extract rules and deviations. Run each substep manually."
+    id: "rules",
+    route: "rules",
+    title: "Rules",
+    shortTitle: "Rules",
+    description: "Extract protocol rules, preview them, and discuss edits in chat.",
+    backendStepId: "extract-rules"
   },
   {
-    id: "review",
-    route: "review",
-    title: "Review deviations",
-    shortTitle: "Review",
-    description: "Discuss, accept, and export the current review state."
+    id: "deviations",
+    route: "deviations",
+    title: "Deviations",
+    shortTitle: "Deviations",
+    description: "Extract deviations, refine them with chat, and export the accepted set.",
+    backendStepId: "extract-deviations"
   },
   {
     id: "cost-analysis",
@@ -54,27 +49,11 @@ export const PIPELINE_STEPS: PipelineStepDef[] = [
   }
 ];
 
-export const GENERATE_PD_CHILDREN: GeneratePdChildDef[] = [
-  {
-    id: "rules",
-    route: "rules",
-    title: "Extract rules",
-    shortTitle: "Rules",
-    description: "Extract protocol rules with paragraph references.",
-    backendStepId: "extract-rules"
-  },
-  {
-    id: "deviations",
-    route: "deviations",
-    title: "Extract deviations",
-    shortTitle: "Deviations",
-    description: "Extract, classify, and consolidate protocol deviation candidates.",
-    backendStepId: "extract-deviations"
-  }
-];
-
 /** Legacy and collapsed routes that redirect into the new IA. */
-export const LEGACY_ROUTE_REDIRECTS: Record<string, { stepId: PipelineStepId; subStep?: GeneratePdSubStep; section?: StudySetupSection }> = {
+export const LEGACY_ROUTE_REDIRECTS: Record<
+  string,
+  { stepId: PipelineStepId; section?: StudySetupSection }
+> = {
   study: { stepId: "study-setup", section: "study" },
   config: { stepId: "study-setup", section: "config" },
   processing: { stepId: "study-setup", section: "processing" },
@@ -83,9 +62,10 @@ export const LEGACY_ROUTE_REDIRECTS: Record<string, { stepId: PipelineStepId; su
   "index-protocol": { stepId: "study-setup", section: "processing" },
   "acrf-split": { stepId: "study-setup", section: "processing" },
   "acrf-summary": { stepId: "study-setup", section: "processing" },
-  "extract-rules": { stepId: "generate-pd", subStep: "rules" },
-  "extract-deviations": { stepId: "generate-pd", subStep: "deviations" },
-  export: { stepId: "review" }
+  "extract-rules": { stepId: "rules" },
+  "extract-deviations": { stepId: "deviations" },
+  review: { stepId: "deviations" },
+  export: { stepId: "deviations" }
 };
 
 export const LEGACY_PROCESSING_ROUTES = new Set([
@@ -106,12 +86,4 @@ export function pipelineStepById(id: PipelineStepId): PipelineStepDef | undefine
 
 export function pipelineStepIndex(id: PipelineStepId): number {
   return PIPELINE_STEPS.findIndex((step) => step.id === id);
-}
-
-export function generatePdChildById(id: GeneratePdSubStep): GeneratePdChildDef | undefined {
-  return GENERATE_PD_CHILDREN.find((child) => child.id === id);
-}
-
-export function backendStepDefForSubStep(subStep: GeneratePdSubStep): GeneratePdChildDef {
-  return generatePdChildById(subStep) ?? GENERATE_PD_CHILDREN[0];
 }

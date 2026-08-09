@@ -88,6 +88,7 @@ export interface StudyRunSettings {
   extractionDeployment: string;
   acrfSummaryDeployment: string;
   extractionLlmInstructions: string;
+  chatDeployment?: string;
 }
 
 export interface StudyRunEntry {
@@ -649,6 +650,8 @@ export interface LoadStudyResponse {
   sync: SyncStudyResponse["sync"];
   summary: StudySummary;
   stepStatuses: Record<string, StepStatus>;
+  activeRunId?: string;
+  settings?: StudyRunSettings | null;
 }
 
 export interface DeleteAllStudiesResponse {

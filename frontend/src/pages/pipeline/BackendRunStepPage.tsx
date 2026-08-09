@@ -22,7 +22,7 @@ import {
 import type { PipelineStepDef } from "../../pipeline/pipelineSteps";
 import type { PipelinePreviewItem } from "../../types/pipeline";
 
-/** @deprecated Prefer GeneratePdStepPage — kept for reference / tests. */
+/** @deprecated Prefer RulesStepPage / DeviationsStepPage — kept for reference / tests. */
 type BackendRunStepDef = PipelineStepDef & {
   backendStepId?: string;
 };

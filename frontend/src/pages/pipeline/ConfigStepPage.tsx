@@ -30,10 +30,15 @@ export function ConfigStepPage({
         <div>
           <h2>Model configuration</h2>
           <p className="pipeline-step-description">
-            Choose Azure OpenAI deployments. PDF extraction uses Document Intelligence only.
+            Choose Azure OpenAI deployments. Saved values are stored with the study in blob and restored when you
+            select it. PDF extraction uses Document Intelligence only.
           </p>
         </div>
-        {saved ? <span className="pipeline-step-badge pipeline-step-badge-done">Saved</span> : null}
+        {saved ? (
+          <span className="pipeline-step-badge pipeline-step-badge-done">Saved</span>
+        ) : (
+          <span className="pipeline-step-badge">Required</span>
+        )}
       </header>
 
       <Card>

@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import type { Step7DeviationRow } from "../../services/stepApi";
 
 export type ManualOrProgrammable = NonNullable<Step7DeviationRow["manual_or_programmable"]>;
@@ -15,6 +15,8 @@ interface Step7RuleGroupsProps {
   selectedId: string | null;
   onSelect: (deviationId: string) => void;
   isBulkGeneratingPseudo?: boolean;
+  renderExpanded?: (row: Step7DeviationRow) => ReactNode;
+  emptyMessage?: string;
 }
 
 const PROG_SHORT_LABEL: Record<Exclude<ManualOrProgrammable, "">, string> = {
@@ -143,7 +145,9 @@ export function Step7RuleGroups({
   groups,
   selectedId,
   onSelect,
-  isBulkGeneratingPseudo = false
+  isBulkGeneratingPseudo = false,
+  renderExpanded,
+  emptyMessage = "No deviations to review."
 }: Step7RuleGroupsProps): JSX.Element {
   const selectedRowRef = useRef<HTMLDivElement | null>(null);
 
@@ -155,7 +159,7 @@ export function Step7RuleGroups({
   }, [selectedId]);
 
   if (groups.length === 0) {
-    return <p className="step7-muted">No deviations to review.</p>;
+    return <p className="step7-muted">{emptyMessage}</p>;
   }
 
   return (
@@ -172,31 +176,40 @@ export function Step7RuleGroups({
             </span>
           </summary>
           <ul className="step7-deviation-list" role="list">
-            {group.deviations.map((row) => (
-              <li key={row.deviation_id}>
-                <div
-                  ref={selectedId === row.deviation_id ? selectedRowRef : undefined}
-                  className={`step7-deviation-row ${selectedId === row.deviation_id ? "step7-deviation-row-selected" : ""}`}
-                  role="button"
-                  tabIndex={0}
-                  onClick={() => onSelect(row.deviation_id)}
-                  onKeyDown={(event) => {
-                    if (event.key === "Enter" || event.key === " ") {
-                      event.preventDefault();
-                      onSelect(row.deviation_id);
-                    }
-                  }}
-                >
-                  <span className="step7-deviation-id">{row.deviation_id}</span>
-                  <p className="step7-deviation-snippet">{row.deviation_text}</p>
-                  <div className="step7-deviation-row-trailing">
-                    <ProgrammabilityBadge row={row} />
-                    <PseudoIndicator row={row} isBulkGeneratingPseudo={isBulkGeneratingPseudo} />
-                    <span className={`step7-status step7-status-${row.status}`}>{row.status}</span>
-                  </div>
-                </div>
-              </li>
-            ))}
+            {group.deviations.map((row) => {
+              const isSelected = selectedId === row.deviation_id;
+              return (
+                <li key={row.deviation_id} className={isSelected ? "step7-deviation-item-selected" : undefined}>
+                  {isSelected ? (
+                    <div ref={selectedRowRef} className="step7-deviation-item-selected-inner">
+                      {renderExpanded ? renderExpanded(row) : null}
+                    </div>
+                  ) : (
+                    <div
+                      className="step7-deviation-row"
+                      role="button"
+                      tabIndex={0}
+                      aria-expanded={false}
+                      onClick={() => onSelect(row.deviation_id)}
+                      onKeyDown={(event) => {
+                        if (event.key === "Enter" || event.key === " ") {
+                          event.preventDefault();
+                          onSelect(row.deviation_id);
+                        }
+                      }}
+                    >
+                      <span className="step7-deviation-id">{row.deviation_id}</span>
+                      <p className="step7-deviation-snippet">{row.deviation_text}</p>
+                      <div className="step7-deviation-row-trailing">
+                        <ProgrammabilityBadge row={row} />
+                        <PseudoIndicator row={row} isBulkGeneratingPseudo={isBulkGeneratingPseudo} />
+                        <span className={`step7-status step7-status-${row.status}`}>{row.status}</span>
+                      </div>
+                    </div>
+                  )}
+                </li>
+              );
+            })}
           </ul>
         </details>
       ))}

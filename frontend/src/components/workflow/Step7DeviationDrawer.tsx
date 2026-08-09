@@ -1,48 +1,24 @@
 import { useEffect, useRef, useState } from "react";
 import {
-  acceptStep7DeviationEnriched,
-  fetchPdTaxonomy,
   fetchStep7DeviationChat,
-  fetchStep7EnrichmentDetail,
   generateStep7PseudoLogic,
   refineStep7Deviation,
-  updateStep7Deviation,
-  updateStep7DeviationStatus,
   type Step7ChatMessage,
-  type Step7DeviationPayload,
   type Step7DeviationRow,
-  type Step7EnrichmentDetailResponse,
   type Step7ReviewSource,
   type StepStatus
 } from "../../services/stepApi";
-import { getParagraphTextMap } from "../../services/paragraphCache";
-import type { OpenAiDeploymentOption } from "../../services/stepApi";
-import { LlmDeploymentSelect } from "../ui/LlmDeploymentSelect";
-import { ParagraphRefChip } from "../viewers/RefChip";
-import { navigateToStep } from "../../utils/hashRoute";
+import { ChatSendIcon } from "./ChatSendIcon";
 
 interface Step7DeviationDrawerProps {
   studyId: string;
   reviewSource: Step7ReviewSource;
   row: Step7DeviationRow | null;
-  onClose: () => void;
+  alsoPseudo: boolean;
+  chatDeployment: string;
+  chatRefreshKey?: number;
   onRowUpdated: (row: Step7DeviationRow) => void;
   onStepStatusesChange: (statuses: Record<string, StepStatus>) => void;
-  llmDeployments: OpenAiDeploymentOption[];
-  deploymentsLoading: boolean;
-  chatDeployment: string;
-  onChatDeploymentChange: (value: string) => void;
-}
-
-function refsToText(value: string[]): string {
-  return value.join(", ");
-}
-
-function refsFromText(value: string): string[] {
-  return value
-    .split(",")
-    .map((part) => part.trim())
-    .filter(Boolean);
 }
 
 function formatChatTime(ts: string): string {
@@ -53,101 +29,33 @@ function formatChatTime(ts: string): string {
   }
 }
 
-function EnrichmentBulletList({ title, items }: { title: string; items: string[] }): JSX.Element | null {
-  if (!items.length) {
-    return null;
-  }
-  return (
-    <>
-      <h6>{title}</h6>
-      <ul className="step7-enrichment-list">
-        {items.map((item, index) => (
-          <li key={`${title}-${index}`} className="step7-evidence-body">
-            {item}
-          </li>
-        ))}
-      </ul>
-    </>
-  );
-}
-
 export function Step7DeviationDrawer({
   studyId,
   reviewSource,
   row,
-  onClose,
-  onRowUpdated,
-  onStepStatusesChange,
-  llmDeployments,
-  deploymentsLoading,
+  alsoPseudo,
   chatDeployment,
-  onChatDeploymentChange
+  chatRefreshKey = 0,
+  onRowUpdated,
+  onStepStatusesChange
 }: Step7DeviationDrawerProps): JSX.Element | null {
   const [messages, setMessages] = useState<Step7ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
-  const [alsoPseudo, setAlsoPseudo] = useState(true);
   const [isSending, setIsSending] = useState(false);
-  const [isEditing, setIsEditing] = useState(false);
-  const [editForm, setEditForm] = useState<Step7DeviationPayload | null>(null);
   const [error, setError] = useState("");
   const [lastMissingCaveats, setLastMissingCaveats] = useState<string[]>([]);
   const [listRevision, setListRevision] = useState<number | undefined>(undefined);
-  const [enrichmentDetail, setEnrichmentDetail] = useState<Step7EnrichmentDetailResponse | null>(null);
-  const [enrichmentLoading, setEnrichmentLoading] = useState(false);
-  const [enrichmentError, setEnrichmentError] = useState("");
-  const [paragraphTexts, setParagraphTexts] = useState<Map<string, string>>(new Map());
-  const [taxonomy, setTaxonomy] = useState<Record<string, string[]>>({});
-
   const threadRef = useRef<HTMLDivElement>(null);
 
   const deviationId = row?.deviation_id ?? "";
-  const paragraphRefsKey = (row?.paragraph_refs ?? []).join(",");
-
-  useEffect(() => {
-    if (!studyId.trim() || !paragraphRefsKey) {
-      setParagraphTexts(new Map());
-      return;
-    }
-    let cancelled = false;
-    void getParagraphTextMap(studyId).then((map) => {
-      if (!cancelled) {
-        setParagraphTexts(map);
-      }
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [studyId, paragraphRefsKey]);
-
-  useEffect(() => {
-    let cancelled = false;
-    void fetchPdTaxonomy()
-      .then((payload) => {
-        if (!cancelled) {
-          setTaxonomy(payload.categories ?? {});
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setTaxonomy({});
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   useEffect(() => {
     if (!deviationId) {
       return;
     }
     setError("");
-    setIsEditing(false);
-    setEditForm(null);
     setChatInput("");
     setLastMissingCaveats([]);
-    setEnrichmentDetail(null);
-    setEnrichmentError("");
     async function loadChat(): Promise<void> {
       try {
         const chat = await fetchStep7DeviationChat(studyId.trim(), deviationId);
@@ -160,7 +68,7 @@ export function Step7DeviationDrawer({
       }
     }
     void loadChat();
-  }, [deviationId, studyId]);
+  }, [deviationId, studyId, chatRefreshKey]);
 
   useEffect(() => {
     const el = threadRef.current;
@@ -175,89 +83,6 @@ export function Step7DeviationDrawer({
   }
 
   const activeRow = row;
-
-  const originalText = (row.original_deviation_text ?? "").trim();
-  const showOriginalText =
-    reviewSource === "enriched_pd_spec" &&
-    Boolean(originalText) &&
-    originalText !== row.deviation_text.trim();
-
-  const isEnrichedReview = reviewSource === "enriched_pd_spec";
-  const suggestedText = (
-    row.suggested_deviation_text ??
-    enrichmentDetail?.suggested_deviation_text ??
-    enrichmentDetail?.improved_deviation_text ??
-    ""
-  ).trim();
-  const currentDeviationText = row.deviation_text.trim();
-  const isReviewFinalized = row.status === "accepted" || row.status === "rejected";
-  const canAcceptEnriched =
-    isEnrichedReview && Boolean(suggestedText) && suggestedText !== currentDeviationText;
-  const reviewFinalizedTitle = isReviewFinalized ? `Deviation is already ${row.status}` : undefined;
-
-  async function loadEnrichmentDetail(): Promise<void> {
-    if (reviewSource !== "enriched_pd_spec" || !deviationId) {
-      return;
-    }
-    setEnrichmentLoading(true);
-    setEnrichmentError("");
-    try {
-      const detail = await fetchStep7EnrichmentDetail(studyId.trim(), deviationId);
-      setEnrichmentDetail(detail);
-    } catch (err) {
-      setEnrichmentDetail(null);
-      setEnrichmentError(err instanceof Error ? err.message : "Failed to load enrichment details.");
-    } finally {
-      setEnrichmentLoading(false);
-    }
-  }
-
-  useEffect(() => {
-    if (reviewSource === "enriched_pd_spec" && deviationId) {
-      void loadEnrichmentDetail();
-    }
-  }, [deviationId, reviewSource, studyId]);
-
-  async function handleStatusUpdate(status: Step7DeviationRow["status"]): Promise<void> {
-    setError("");
-    try {
-      const updated = await updateStep7DeviationStatus(
-        studyId.trim(),
-        activeRow.deviation_id,
-        status,
-        undefined,
-        reviewSource
-      );
-      onRowUpdated(updated.row);
-      onStepStatusesChange(updated.stepStatuses);
-    } catch (updateError) {
-      setError(updateError instanceof Error ? updateError.message : "Unable to update status.");
-    }
-  }
-
-  async function handleAcceptEnriched(): Promise<void> {
-    if (!suggestedText) {
-      setError("No enriched deviation text is available to accept.");
-      return;
-    }
-    setError("");
-    try {
-      const updated = await acceptStep7DeviationEnriched(
-        studyId.trim(),
-        activeRow.deviation_id,
-        suggestedText,
-        reviewSource
-      );
-      onRowUpdated(updated.row);
-      onStepStatusesChange(updated.stepStatuses);
-    } catch (updateError) {
-      setError(updateError instanceof Error ? updateError.message : "Unable to accept enriched text.");
-    }
-  }
-
-  async function handleKeepOriginal(): Promise<void> {
-    await handleStatusUpdate("accepted");
-  }
 
   async function handleSend(): Promise<void> {
     const message = chatInput.trim();
@@ -306,579 +131,98 @@ export function Step7DeviationDrawer({
     }
   }
 
-  async function handleGeneratePseudo(): Promise<void> {
-    setIsSending(true);
-    setError("");
-    try {
-      const result = await generateStep7PseudoLogic(studyId.trim(), activeRow.deviation_id, reviewSource);
-      onRowUpdated(result.row);
-      onStepStatusesChange(result.stepStatuses);
-      try {
-        const refreshed = await fetchStep7DeviationChat(studyId.trim(), activeRow.deviation_id);
-        setMessages(refreshed.messages);
-      } catch {
-        /* preserve existing transcript */
-      }
-    } catch (generateError) {
-      setError(generateError instanceof Error ? generateError.message : "Unable to generate pseudo logic.");
-    } finally {
-      setIsSending(false);
-    }
-  }
-
-  async function handleSaveEdit(): Promise<void> {
-    if (!editForm) {
-      return;
-    }
-    setError("");
-    try {
-      const result = await updateStep7Deviation(studyId.trim(), activeRow.deviation_id, editForm, reviewSource);
-      onRowUpdated(result.row);
-      onStepStatusesChange(result.stepStatuses);
-      setIsEditing(false);
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : "Unable to save deviation.");
-    }
-  }
-
-  function startEdit(): void {
-    setIsEditing(true);
-    setEditForm({
-      deviation_id: activeRow.deviation_id,
-      rule_id: activeRow.rule_id,
-      text: activeRow.deviation_text,
-      paragraph_refs: activeRow.paragraph_refs,
-      data_support_note: activeRow.data_support_note,
-      dm_comment: activeRow.dm_comment,
-      status: activeRow.status,
-      protocol_deviation_category: activeRow.protocol_deviation_category ?? "",
-      protocol_deviation_sub_category: activeRow.protocol_deviation_sub_category ?? ""
-    });
-  }
-
-  const categoryOptions = Object.keys(taxonomy);
-  const subCategoryOptions =
-    editForm?.protocol_deviation_category && taxonomy[editForm.protocol_deviation_category]
-      ? taxonomy[editForm.protocol_deviation_category]
-      : [];
-
   return (
-    <aside className="step7-drawer" aria-label={`Deviation ${row.deviation_id}`}>
-      <header className="step7-drawer-header">
-        <div className="step7-drawer-titleblock">
-          <h4>{row.deviation_id}</h4>
-          <p className="step7-muted">{row.rule_title || row.rule_id}</p>
-        </div>
-        <div className="step7-drawer-header-actions">
-          {isEnrichedReview ? (
-            <>
-              <button
-                className="button button-secondary"
-                type="button"
-                disabled={!canAcceptEnriched || isReviewFinalized}
-                title={
-                  reviewFinalizedTitle ??
-                  (!suggestedText
-                    ? "No enriched text available"
-                    : !canAcceptEnriched
-                      ? "Enriched text is already applied"
-                      : "Replace working text with enriched suggestion and accept")
-                }
-                onClick={() => void handleAcceptEnriched()}
-              >
-                Accept enriched
-              </button>
-              <button
-                className="button button-secondary"
-                type="button"
-                disabled={isReviewFinalized}
-                title={
-                  reviewFinalizedTitle ??
-                  "Accept deviation with current text (original import or chat-refined)"
-                }
-                onClick={() => void handleKeepOriginal()}
-              >
-                Keep original
-              </button>
-              <button
-                className="button button-danger"
-                type="button"
-                disabled={isReviewFinalized}
-                title={reviewFinalizedTitle ?? "Reject this deviation"}
-                onClick={() => void handleStatusUpdate("rejected")}
-              >
-                Reject
-              </button>
-            </>
-          ) : (
-            <>
-              <button
-                className="button button-secondary"
-                type="button"
-                onClick={() => void handleStatusUpdate("accepted")}
-              >
-                Accept
-              </button>
-              <button
-                className="button button-danger"
-                type="button"
-                onClick={() => void handleStatusUpdate("rejected")}
-              >
-                Decline
-              </button>
-            </>
-          )}
-          <button className="button button-ghost button-icon" type="button" onClick={onClose} aria-label="Close">
-            ×
-          </button>
-        </div>
-      </header>
-
+    <aside className="step7-drawer step7-drawer-chat-only" aria-label={`Chat for ${row.deviation_id}`}>
       {error ? <p className="step1-error step7-drawer-error">{error}</p> : null}
 
-      <div className="step7-drawer-body">
-        <section className="step7-drawer-chat-block step7-chatgpt-shell" aria-label="Refinement chat">
-          <header className="step7-chatgpt-head">
-            <div className="step7-chatgpt-head-text">
-              <h5 className="step7-chatgpt-title">Messages</h5>
-              {messages.length === 0 ? (
-                <p className="step7-chatgpt-sub">Thread preview — new instructions will show up here.</p>
-              ) : (
-                <p
-                  className="step7-chatgpt-sub step7-chatgpt-preview-line"
-                  title={messages[messages.length - 1].text}
-                >
-                  <span className="step7-chatgpt-preview-label">Latest</span>
-                  {messages[messages.length - 1].text.replace(/\s+/g, " ").trim()}
-                </p>
-              )}
+      <section className="step7-drawer-chat-block step7-chatgpt-shell" aria-label="Refinement chat">
+        <div
+          ref={threadRef}
+          className="step7-chatgpt-thread"
+          role="log"
+          aria-label="Chat transcript"
+          aria-live="polite"
+        >
+          {messages.length === 0 ? (
+            <div className="step7-chatgpt-empty">
+              <p className="step7-chatgpt-empty-title">No messages yet</p>
+              <p className="step7-chatgpt-empty-hint">
+                Ask questions, rewrite text/notes, update status or category, or merge named
+                deviations. Split and bulk filter edits are not available here.
+              </p>
             </div>
-            <span className="step7-chatgpt-count" aria-label={`${messages.length} messages in thread`}>
-              {messages.length}
-            </span>
-          </header>
-
-          <div
-            ref={threadRef}
-            className="step7-chatgpt-thread"
-            role="log"
-            aria-label="Chat transcript"
-            aria-live="polite"
-          >
-            {messages.length === 0 ? (
-              <div className="step7-chatgpt-empty">
-                <p className="step7-chatgpt-empty-title">No messages yet</p>
-                <p className="step7-chatgpt-empty-hint">
-                  Ask questions, rewrite text/notes, update status or category, or merge named
-                  deviations. Split and bulk filter edits are not available here.
-                </p>
-              </div>
-            ) : (
-              messages.map((message, index) => {
-                const isUser = message.role === "dm";
-                const isLastAssistant =
-                  !isUser && index === messages.length - 1 && message.role === "assistant";
-                return (
+          ) : (
+            messages.map((message, index) => {
+              const isUser = message.role === "dm";
+              const isLastAssistant =
+                !isUser && index === messages.length - 1 && message.role === "assistant";
+              return (
+                <div
+                  key={`${message.ts}-${index}`}
+                  className={`step7-chatgpt-turn step7-chatgpt-turn-${isUser ? "user" : "assistant"}`}
+                >
+                  <span className="step7-chatgpt-role">{isUser ? "You" : "Assistant"}</span>
                   <div
-                    key={`${message.ts}-${index}`}
-                    className={`step7-chatgpt-turn step7-chatgpt-turn-${isUser ? "user" : "assistant"}`}
+                    className={`step7-chatgpt-bubble step7-chatgpt-bubble-${isUser ? "user" : "assistant"}`}
                   >
-                    <span className="step7-chatgpt-role">{isUser ? "You" : "Assistant"}</span>
-                    <div
-                      className={`step7-chatgpt-bubble step7-chatgpt-bubble-${isUser ? "user" : "assistant"}`}
-                    >
-                      <p className="step7-chatgpt-bubble-text">{message.text}</p>
-                    </div>
-                    {isLastAssistant && lastMissingCaveats.length > 0 ? (
-                      <p className="step7-chatgpt-composer-hint" role="note">
-                        Evidence caveats: {lastMissingCaveats.slice(0, 3).join("; ")}
-                      </p>
-                    ) : null}
-                    {message.ts ? (
-                      <time className="step7-chatgpt-time" dateTime={message.ts}>
-                        {formatChatTime(message.ts)}
-                      </time>
-                    ) : null}
+                    <p className="step7-chatgpt-bubble-text">{message.text}</p>
                   </div>
-                );
-              })
-            )}
-          </div>
-
-          <footer className="step7-chatgpt-footer">
-            <LlmDeploymentSelect
-              id="step7-chat-llm-deployment"
-              label="Chat model"
-              value={chatDeployment}
-              deployments={llmDeployments}
-              onChange={onChatDeploymentChange}
-              isLoading={deploymentsLoading}
-              disabled={isSending}
-            />
-            <label className="step7-chatgpt-option">
-              <input type="checkbox" checked={alsoPseudo} onChange={(event) => setAlsoPseudo(event.target.checked)} />
-              <span>Generate pseudo logic after refine (when accepted)</span>
-            </label>
-            <div className="step7-chatgpt-composer-area">
-              <div className="step7-chatgpt-composer">
-                <textarea
-                  className="step7-chatgpt-input"
-                  rows={2}
-                  value={chatInput}
-                  disabled={isSending}
-                  placeholder="Message the model..."
-                  onChange={(event) => setChatInput(event.target.value)}
-                  onKeyDown={(event) => {
-                    if (event.key !== "Enter") {
-                      return;
-                    }
-                    if (event.shiftKey) {
-                      return;
-                    }
-                    event.preventDefault();
-                    if (!chatInput.trim() || isSending) {
-                      return;
-                    }
-                    void handleSend();
-                  }}
-                />
-                <button
-                  className="step7-chatgpt-send"
-                  type="button"
-                  disabled={isSending || !chatInput.trim()}
-                  onClick={() => void handleSend()}
-                  aria-busy={isSending}
-                  title="Send"
-                >
-                  <span className="visually-hidden">{isSending ? "Sending" : "Send"}</span>
-                  {isSending ? (
-                    <span className="step7-chatgpt-send-spinner" aria-hidden />
-                  ) : (
-                    <svg
-                      className="step7-chatgpt-send-icon"
-                      width="20"
-                      height="20"
-                      viewBox="0 0 24 24"
-                      fill="none"
-                      aria-hidden
-                    >
-                      <path
-                        d="m5 12 7-9 11 14-11 3L5 12Z"
-                        stroke="currentColor"
-                        strokeWidth="2"
-                        strokeLinejoin="round"
-                        fill="rgba(255,255,255,0.08)"
-                      />
-                    </svg>
-                  )}
-                </button>
-              </div>
-              <p className="step7-chatgpt-composer-hint">Enter to send · Shift+Enter new line</p>
-            </div>
-          </footer>
-        </section>
-
-        <div className="step7-drawer-upper-scroll">
-          {reviewSource === "enriched_pd_spec" ? (
-            <details
-              className="step7-drawer-collapsible"
-              open
-              onToggle={(event) => {
-                if (event.currentTarget.open && !enrichmentDetail && !enrichmentLoading) {
-                  void loadEnrichmentDetail();
-                }
-              }}
-            >
-              <summary>Protocol enrichment</summary>
-              <div className="step7-drawer-collapsible-inner">
-                <div className="step7-evidence-panel">
-                  {enrichmentLoading ? <p className="step7-muted">Loading enrichment details…</p> : null}
-                  {enrichmentError ? <p className="step7-evidence-body">{enrichmentError}</p> : null}
-                  {!enrichmentLoading && !enrichmentError && enrichmentDetail ? (
-                    <>
-                      {enrichmentDetail.suggested_deviation_text ||
-                      enrichmentDetail.improved_deviation_text ? (
-                        <>
-                          <h6>Suggested deviation text</h6>
-                          <p className="step7-evidence-body">
-                            {enrichmentDetail.suggested_deviation_text ||
-                              enrichmentDetail.improved_deviation_text}
-                          </p>
-                        </>
-                      ) : null}
-                      {enrichmentDetail.original_deviation_text ? (
-                        <>
-                          <h6>Original imported text</h6>
-                          <p className="step7-evidence-body">{enrichmentDetail.original_deviation_text}</p>
-                        </>
-                      ) : null}
-                      {enrichmentDetail.paragraph_refs && enrichmentDetail.paragraph_refs.length > 0 ? (
-                        <p className="step7-muted">
-                          Protocol refs: {enrichmentDetail.paragraph_refs.join(", ")}
-                        </p>
-                      ) : null}
-                      {enrichmentDetail.enrichment_summary ? (
-                        <>
-                          <h6>Summary</h6>
-                          <p className="step7-evidence-body">{enrichmentDetail.enrichment_summary}</p>
-                        </>
-                      ) : null}
-                      {enrichmentDetail.enrichment_status ? (
-                        <p className="step7-muted">Status: {enrichmentDetail.enrichment_status}</p>
-                      ) : null}
-                      {enrichmentDetail.programmability_risk ? (
-                        <p className="step7-muted">Programmability risk: {enrichmentDetail.programmability_risk}</p>
-                      ) : null}
-                      <EnrichmentBulletList title="Assumptions" items={enrichmentDetail.assumptions} />
-                      <EnrichmentBulletList title="Caveats" items={enrichmentDetail.caveats} />
-                      <EnrichmentBulletList title="Data gaps" items={enrichmentDetail.data_gaps} />
-                      <EnrichmentBulletList title="Weak spots" items={enrichmentDetail.weak_spots} />
-                      <EnrichmentBulletList title="Suggested changes" items={enrichmentDetail.suggested_changes} />
-                      <EnrichmentBulletList title="Protocol conflicts" items={enrichmentDetail.protocol_conflicts} />
-                      {enrichmentDetail.improved_pseudo_logic_plain_english ? (
-                        <>
-                          <h6>Improved check logic (plain English)</h6>
-                          <p className="step7-evidence-body">{enrichmentDetail.improved_pseudo_logic_plain_english}</p>
-                        </>
-                      ) : null}
-                      {Object.keys(enrichmentDetail.enrichment_errors).length > 0 ? (
-                        <>
-                          <h6>Enrichment task errors</h6>
-                          <ul className="step7-enrichment-list">
-                            {Object.entries(enrichmentDetail.enrichment_errors).map(([task, message]) => (
-                              <li key={task} className="step7-evidence-body">
-                                <strong>{task}:</strong> {message}
-                              </li>
-                            ))}
-                          </ul>
-                        </>
-                      ) : null}
-                    </>
-                  ) : null}
-                  {!enrichmentLoading && !enrichmentError && !enrichmentDetail ? (
-                    <p className="step7-muted">
-                      {(row.enrichment_summary || row.enrichment_status)
-                        ? `${row.enrichment_status ? `Status: ${row.enrichment_status}. ` : ""}${row.enrichment_summary ?? ""}`
-                        : "Open to load enrichment audit details."}
+                  {isLastAssistant && lastMissingCaveats.length > 0 ? (
+                    <p className="step7-chatgpt-composer-hint" role="note">
+                      Evidence caveats: {lastMissingCaveats.slice(0, 3).join("; ")}
                     </p>
                   ) : null}
+                  {message.ts ? (
+                    <time className="step7-chatgpt-time" dateTime={message.ts}>
+                      {formatChatTime(message.ts)}
+                    </time>
+                  ) : null}
                 </div>
-              </div>
-            </details>
-          ) : null}
-
-          <details className="step7-drawer-collapsible">
-            <summary>Linked protocol paragraphs</summary>
-            <div className="step7-drawer-collapsible-inner">
-              <div className="step7-evidence-panel">
-                {(row.paragraph_refs ?? []).length === 0 ? (
-                  <p className="step7-evidence-body">No paragraph references.</p>
-                ) : (
-                  (row.paragraph_refs ?? []).map((refId) => (
-                    <div key={refId} className="step7-linked-paragraph">
-                      <ParagraphRefChip refId={refId} />
-                      <p className="step7-evidence-body">
-                        {paragraphTexts.get(refId) ?? "Paragraph text unavailable (run index-protocol)."}
-                      </p>
-                    </div>
-                  ))
-                )}
-                <div className="step7-chat-actions">
-                  <button
-                    className="button button-ghost"
-                    type="button"
-                    onClick={() => navigateToStep("upload", { tab: "protocol-pdf" })}
-                    title="Open the original protocol PDF viewer"
-                  >
-                    View protocol PDF
-                  </button>
-                  <button
-                    className="button button-ghost"
-                    type="button"
-                    onClick={() => navigateToStep("acrf-summary-text")}
-                    title="Open the aCRF dataset summaries"
-                  >
-                    View aCRF datasets
-                  </button>
-                </div>
-              </div>
-            </div>
-          </details>
-
-          <details className="step7-drawer-collapsible">
-            <summary>Supporting evidence</summary>
-            <div className="step7-drawer-collapsible-inner">
-              <div className="step7-evidence-panel">
-                <h6>Rule</h6>
-                <p className="step7-evidence-body">{row.rule_text || "No rule text."}</p>
-                <h6>Supporting sentences</h6>
-                {(row.supporting_sentences ?? []).length > 0 ? (
-                  (row.supporting_sentences ?? []).map((sentence) => (
-                    <p key={sentence.ref} className="step7-evidence-body">
-                      <strong>{sentence.ref}:</strong> {sentence.text || "—"}
-                    </p>
-                  ))
-                ) : (
-                  <p className="step7-evidence-body">None</p>
-                )}
-                <h6>Data support note</h6>
-                <p className="step7-evidence-body">{row.data_support_note || "None"}</p>
-              </div>
-            </div>
-          </details>
-
-          <details className="step7-drawer-collapsible" open>
-            <summary>Deviation text</summary>
-            <div className="step7-drawer-collapsible-inner">
-              {showOriginalText ? (
-                <div className="step7-drawer-original-text">
-                  <h6>Original (PD spec)</h6>
-                  <p className="step7-drawer-text step7-drawer-text-full">{originalText}</p>
-                </div>
-              ) : null}
-              {isEditing && editForm ? (
-                <div className="step7-form-grid">
-                  <textarea
-                    className="step7-chat-input"
-                    value={editForm.text}
-                    onChange={(event) =>
-                      setEditForm((previous) => (previous ? { ...previous, text: event.target.value } : previous))
-                    }
-                  />
-                  <input
-                    className="input"
-                    value={refsToText(editForm.paragraph_refs)}
-                    onChange={(event) =>
-                      setEditForm((previous) =>
-                        previous ? { ...previous, paragraph_refs: refsFromText(event.target.value) } : previous
-                      )
-                    }
-                    placeholder="paragraph refs"
-                  />
-                  <textarea
-                    className="step7-chat-input"
-                    value={editForm.data_support_note}
-                    onChange={(event) =>
-                      setEditForm((previous) =>
-                        previous ? { ...previous, data_support_note: event.target.value } : previous
-                      )
-                    }
-                    placeholder="data support note"
-                  />
-                  <label className="step7-muted">
-                    Category
-                    <select
-                      className="input"
-                      value={editForm.protocol_deviation_category ?? ""}
-                      onChange={(event) =>
-                        setEditForm((previous) =>
-                          previous
-                            ? {
-                                ...previous,
-                                protocol_deviation_category: event.target.value,
-                                protocol_deviation_sub_category: ""
-                              }
-                            : previous
-                        )
-                      }
-                    >
-                      <option value="">Select category</option>
-                      {categoryOptions.map((option) => (
-                        <option key={option} value={option}>
-                          {option}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="step7-muted">
-                    Sub-category
-                    <select
-                      className="input"
-                      value={editForm.protocol_deviation_sub_category ?? ""}
-                      onChange={(event) =>
-                        setEditForm((previous) =>
-                          previous
-                            ? { ...previous, protocol_deviation_sub_category: event.target.value }
-                            : previous
-                        )
-                      }
-                    >
-                      <option value="">Select sub-category</option>
-                      {subCategoryOptions.map((option) => (
-                        <option key={option} value={option}>
-                          {option}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <div className="step7-chat-actions">
-                    <button className="button button-primary" type="button" onClick={() => void handleSaveEdit()}>
-                      Save
-                    </button>
-                    <button className="button button-ghost" type="button" onClick={() => setIsEditing(false)}>
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <>
-                  <div className="step7-drawer-deviation-body">
-                    <p className="step7-drawer-text step7-drawer-text-full">{row.deviation_text}</p>
-                  </div>
-                  <button className="button button-ghost" type="button" onClick={startEdit}>
-                    Edit deviation
-                  </button>
-                </>
-              )}
-            </div>
-          </details>
-
-          <details className="step7-drawer-collapsible">
-            <summary>Pseudo logic</summary>
-            <div className="step7-drawer-collapsible-inner">
-              <div className="step7-pseudo-panel">
-                {row.pseudo_logic ? (
-                  <pre className="step7-drawer-code">{row.pseudo_logic}</pre>
-                ) : (
-                  <p className="step7-muted">Not generated yet.</p>
-                )}
-                {row.manual_or_programmable ? (
-                  <p className="step7-muted">
-                    <span
-                      className={`step7-pill step7-pill-${
-                        row.manual_or_programmable === "Programmable"
-                          ? "programmable"
-                          : row.manual_or_programmable === "Partially programmable"
-                            ? "partial"
-                            : "manual"
-                      }`}
-                    >
-                      {row.manual_or_programmable}
-                    </span>
-                    {row.programmability_note ? ` — ${row.programmability_note}` : null}
-                  </p>
-                ) : row.programmable !== null ? (
-                  <p className="step7-muted">
-                    <span className={`step7-pill step7-pill-${row.programmable ? "yes" : "no"}`}>
-                      programmable: {row.programmable ? "yes" : "no"}
-                    </span>
-                    {row.programmability_note ? ` — ${row.programmability_note}` : null}
-                  </p>
-                ) : null}
-                <button
-                  className="button button-secondary"
-                  type="button"
-                  onClick={() => void handleGeneratePseudo()}
-                  disabled={row.status !== "accepted" || isSending}
-                >
-                  Generate pseudo logic
-                </button>
-              </div>
-            </div>
-          </details>
+              );
+            })
+          )}
         </div>
 
-      </div>
+        <footer className="step7-chatgpt-footer">
+          <div className="step7-chatgpt-composer-area">
+            <div className="step7-chatgpt-composer">
+              <textarea
+                className="step7-chatgpt-input"
+                rows={2}
+                value={chatInput}
+                disabled={isSending}
+                placeholder="Message the model..."
+                onChange={(event) => setChatInput(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") {
+                    return;
+                  }
+                  if (event.shiftKey) {
+                    return;
+                  }
+                  event.preventDefault();
+                  if (!chatInput.trim() || isSending) {
+                    return;
+                  }
+                  void handleSend();
+                }}
+              />
+              <button
+                className="step7-chatgpt-send"
+                type="button"
+                disabled={isSending || !chatInput.trim()}
+                onClick={() => void handleSend()}
+                aria-busy={isSending}
+                title="Send"
+              >
+                <span className="visually-hidden">{isSending ? "Sending" : "Send"}</span>
+                {isSending ? <span className="step7-chatgpt-send-spinner" aria-hidden /> : <ChatSendIcon />}
+              </button>
+            </div>
+            <p className="step7-chatgpt-composer-hint">Enter to send · Shift+Enter new line</p>
+          </div>
+        </footer>
+      </section>
     </aside>
   );
 }

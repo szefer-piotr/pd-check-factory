@@ -265,6 +265,11 @@ export function StudyStepPage({ studyId, onStudyIdChange, onCreated }: StudyStep
             pipeline artifacts and checkpoints.
           </p>
         </div>
+        {studyId.trim() ? (
+          <span className="pipeline-step-badge pipeline-step-badge-done">Selected</span>
+        ) : (
+          <span className="pipeline-step-badge">Required</span>
+        )}
       </header>
 
       {error ? <p className="pipeline-error">{error}</p> : null}

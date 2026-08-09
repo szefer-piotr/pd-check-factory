@@ -26,6 +26,7 @@ export interface RulePreviewRow {
   rule_id: string;
   title: string;
   text: string;
+  paragraph_refs: string[];
 }
 
 export interface DeviationPreviewRow {
@@ -45,10 +46,15 @@ export function extractRulesFromJson(data: unknown): RulePreviewRow[] {
   const rules = extractArray(data, ["rules"]);
   return rules.map((item, index) => {
     const row = item as Record<string, unknown>;
+    const refsRaw = row.paragraph_refs ?? row.paragraph_references ?? [];
+    const paragraph_refs = Array.isArray(refsRaw)
+      ? refsRaw.map((ref) => String(ref).trim()).filter(Boolean)
+      : [];
     return {
       rule_id: String(row.rule_id ?? row.id ?? `rule-${index + 1}`),
       title: String(row.title ?? row.rule_title ?? ""),
-      text: String(row.text ?? "")
+      text: String(row.text ?? ""),
+      paragraph_refs
     };
   });
 }

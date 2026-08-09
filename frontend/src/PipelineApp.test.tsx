@@ -30,6 +30,7 @@ vi.mock("./services/stepApi", () => ({
   createStudy: vi.fn(),
   resetStudy: vi.fn(),
   applyStudyRun: vi.fn(),
+  fetchStudyRuns: vi.fn(async () => ({ studyId: "", activeRunId: "", runs: [] })),
   deleteAllStudies: vi.fn(),
   loadStudy: vi.fn(),
   preprocessProtocol: vi.fn(),
@@ -74,7 +75,10 @@ describe("PipelineApp", () => {
     render(<PipelineApp />);
     expect(screen.getByText("PD Check Pipeline")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Study setup" })).toBeInTheDocument();
+    expect(screen.getByRole("navigation", { name: "Study setup stages" })).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Pipeline steps" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Activity/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Rules/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Deviations/i })).toBeInTheDocument();
   });
 });

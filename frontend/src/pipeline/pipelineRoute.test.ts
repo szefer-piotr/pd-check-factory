@@ -17,16 +17,20 @@ describe("pipelineRoute", () => {
 
   it("maps legacy rules/deviations/export routes", () => {
     expect(parsePipelineHash("#/extract-rules")).toEqual(
-      expect.objectContaining({ stepId: "generate-pd", subStep: "rules" })
+      expect.objectContaining({ stepId: "rules" })
     );
-    expect(parsePipelineHash("#/extract-deviations").subStep).toBe("deviations");
-    expect(parsePipelineHash("#/export").stepId).toBe("review");
+    expect(parsePipelineHash("#/extract-deviations").stepId).toBe("deviations");
+    expect(parsePipelineHash("#/export").stepId).toBe("deviations");
+    expect(parsePipelineHash("#/review").stepId).toBe("deviations");
   });
 
-  it("parses generate-pd child routes and study query", () => {
+  it("maps legacy generate-pd child routes and study query", () => {
     expect(parsePipelineHash("#/generate-pd/rules?study=ABC")).toEqual({
-      stepId: "generate-pd",
-      subStep: "rules",
+      stepId: "rules",
+      studyId: "ABC"
+    });
+    expect(parsePipelineHash("#/generate-pd/deviations?study=ABC")).toEqual({
+      stepId: "deviations",
       studyId: "ABC"
     });
     expect(parsePipelineStepId("#/cost-analysis")).toBe("cost-analysis");
@@ -37,18 +41,21 @@ describe("pipelineRoute", () => {
     expect(pipelineHashForStep("study-setup", { section: "processing", studyId: "S1" })).toBe(
       "#/study-setup/processing?study=S1"
     );
-    expect(pipelineHashForStep("generate-pd", { subStep: "deviations" })).toBe("#/generate-pd/deviations");
+    expect(pipelineHashForStep("rules")).toBe("#/rules");
+    expect(pipelineHashForStep("deviations", { studyId: "S1" })).toBe("#/deviations?study=S1");
     expect(PIPELINE_STEPS.map((step) => step.id)).toEqual([
       "study-setup",
-      "generate-pd",
-      "review",
+      "rules",
+      "deviations",
       "cost-analysis"
     ]);
   });
 
   it("canonicalizes legacy hashes", () => {
-    expect(canonicalizePipelineHash("#/export")).toBe("#/review");
-    expect(canonicalizePipelineHash("#/extract-rules")).toBe("#/generate-pd/rules");
+    expect(canonicalizePipelineHash("#/export")).toBe("#/deviations");
+    expect(canonicalizePipelineHash("#/extract-rules")).toBe("#/rules");
+    expect(canonicalizePipelineHash("#/generate-pd/deviations")).toBe("#/deviations");
+    expect(canonicalizePipelineHash("#/review")).toBe("#/deviations");
     expect(canonicalizePipelineHash("#/study-setup")).toBeNull();
   });
 });

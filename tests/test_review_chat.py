@@ -170,6 +170,44 @@ def test_invalid_category_declines() -> None:
     assert "taxonomy" in result.reason.lower() or "category" in result.reason.lower()
 
 
+def test_set_programmability_to_programmable() -> None:
+    rows = [_dev_row()]
+    rows[0]["pd_spec_import"]["manual_or_programmable"] = "Partially programmable"
+    rules = [_rule()]
+    ops = [
+        ChatOperation(
+            operation="set_programmability",
+            target_id="DEV-012",
+            manual_or_programmable="Programmable",
+        )
+    ]
+    context = WorkingContext(domain="deviation", study_id="S1", list_revision=1)
+    applied = apply_operations(operations=ops, context=context, deviations=rows, rules=rules)
+    assert applied.mutated
+    assert rows[0]["pd_spec_import"]["manual_or_programmable"] == "Programmable"
+
+
+def test_validate_set_programmability_accepts_partially_programmable() -> None:
+    plan = TurnPlan(
+        turn_type="update",
+        scope="explicit_ids",
+        target_ids=["DEV-012"],
+        user_expects_data_change=True,
+        operations=[
+            ChatOperation(
+                operation="set_programmability",
+                target_id="DEV-012",
+                manual_or_programmable="partially_programmable",
+            )
+        ],
+    )
+    context = WorkingContext(domain="deviation", study_id="S1", list_revision=1)
+    store = EntityStore.from_rows(deviations=[_dev_row()], rules=[_rule()])
+    result = validate_turn_plan(plan, context, store)
+    assert result.outcome == "execute"
+    assert result.operations[0].manual_or_programmable == "Partially programmable"
+
+
 def test_manual_pseudo_logic_request_declines() -> None:
     plan = TurnPlan(
         turn_type="update",

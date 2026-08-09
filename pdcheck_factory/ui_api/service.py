@@ -1267,6 +1267,7 @@ class UiStepService:
             str(settings.get("extractorChoice") or ""),
             str(settings.get("extractionDeployment") or ""),
             str(settings.get("acrfSummaryDeployment") or ""),
+            str(settings.get("chatDeployment") or ""),
             str(settings.get("extractionLlmInstructions") or ""),
         ]
         payload = "|".join(parts)
@@ -1589,6 +1590,41 @@ class UiStepService:
             "generated_at": "",
             "items": [],
         }
+
+    def _sync_pseudo_programmability_from_row(self, study_id: str, row: Dict[str, Any]) -> None:
+        """Keep pseudo_logic items aligned when chat updates row programmability."""
+        label = pipeline_v2._normalize_manual_or_programmable(
+            pd_spec_field(row, "manual_or_programmable")
+        )
+        if label not in {"Programmable", "Partially programmable", "Manual"}:
+            return
+        dev_id = str(row.get("deviation_id", "")).strip()
+        if not dev_id:
+            return
+        pseudo_obj = self._load_pseudo_state(study_id)
+        items = list(pseudo_obj.get("items", []))
+        changed = False
+        for item in items:
+            if str(item.get("deviation_id", "")) != dev_id:
+                continue
+            if str(item.get("manual_or_programmable", "") or "") != label:
+                item["manual_or_programmable"] = label
+                changed = True
+            next_programmable = label == "Programmable"
+            if item.get("programmable") is not next_programmable:
+                item["programmable"] = next_programmable
+                changed = True
+            break
+        if not changed:
+            return
+        pseudo_obj["items"] = items
+        write_json(paths.local_pseudo_logic_review_state(study_id, self.output_dir), pseudo_obj)
+        write_json(paths.local_pseudo_logic_validated_json(study_id, self.output_dir), pseudo_obj)
+        self._mirror_upload(
+            study_id,
+            paths.local_pseudo_logic_review_state(study_id, self.output_dir),
+            paths.local_pseudo_logic_validated_json(study_id, self.output_dir),
+        )
 
     def _load_rules(self, study_id: str) -> Dict[str, Any]:
         path = paths.local_rules_parsed_json(study_id, self.output_dir)
@@ -2029,7 +2065,12 @@ class UiStepService:
         pseudo = pseudo_by_dev.get(deviation_id, {})
         rule = rule_by_id.get(rule_id, {})
         refs = list(row.get("paragraph_refs", []))
-        paragraph_lookup = paragraph_by_ref or {}
+        # Callers that omit paragraph_by_ref (chat refine / status updates) still need
+        # supporting sentence text; load the protocol index when study_id is known.
+        if paragraph_by_ref is None:
+            paragraph_lookup = self._load_paragraph_index(study_id) if study_id else {}
+        else:
+            paragraph_lookup = paragraph_by_ref
         supporting_sentences = []
         for ref in refs:
             paragraph = paragraph_lookup.get(str(ref), {})
@@ -2044,17 +2085,11 @@ class UiStepService:
                 rule_title = sub_category
             elif category or sub_category:
                 rule_title = f"{category} / {sub_category}".strip(" /")
-        programmable = pseudo.get("programmable")
-        if programmable is None:
-            programmable = programmable_from_manual_or_programmable(
-                pd_spec_field(row, "manual_or_programmable").strip()
-            )
+        # Prefer the deviation-row label (chat / import edits) over stale pseudo classification.
+        row_label = pd_spec_field(row, "manual_or_programmable").strip()
+        pseudo_label = str(pseudo.get("manual_or_programmable") or "").strip()
         manual_or_programmable = pipeline_v2._normalize_manual_or_programmable(
-            str(
-                pseudo.get("manual_or_programmable")
-                or pd_spec_field(row, "manual_or_programmable")
-                or ""
-            )
+            str(row_label or pseudo_label or "")
         )
         if manual_or_programmable not in {
             "Programmable",
@@ -2062,6 +2097,14 @@ class UiStepService:
             "Manual",
         }:
             manual_or_programmable = ""
+        if manual_or_programmable == "Programmable":
+            programmable = True
+        elif manual_or_programmable in {"Manual", "Partially programmable"}:
+            programmable = False
+        else:
+            programmable = pseudo.get("programmable")
+            if programmable is None:
+                programmable = programmable_from_manual_or_programmable(row_label or pseudo_label)
         rule_text = str(rule.get("text") or rule.get("rule_text") or rule.get("description") or "")
         if not rule_text and category and entry_source == "imported_pd_spec":
             rule_text = category
@@ -2542,6 +2585,8 @@ class UiStepService:
         logger.info("load_study: study=%s downloading artifacts from blob", study_id)
         report = study_artifact_sync.download_study_from_blob(study_id, self.output_dir)
         summary = self.get_study_summary(study_id)
+        active_run = self._active_run_entry(study_id)
+        settings = dict((active_run or {}).get("settings") or {})
         logger.info(
             "load_study: study=%s complete — downloaded=%d skipped=%d errors=%d",
             study_id,
@@ -2554,6 +2599,8 @@ class UiStepService:
             "sync": report.to_dict(),
             "summary": summary,
             "stepStatuses": summary["stepStatuses"],
+            "activeRunId": str((active_run or {}).get("runId") or ""),
+            "settings": settings or None,
         }
 
     def reset_study(self, study_id: str) -> Dict[str, Any]:
@@ -3926,28 +3973,6 @@ class UiStepService:
                     "highlight": True,
                 }
             )
-            if not version and p.deviations_review_state.is_file():
-                previews.append(
-                    {
-                        "title": "Review state preview",
-                        "body": self._read_excerpt(p.deviations_review_state),
-                    }
-                )
-            elif version:
-                review_snapshot = step_artifact_versions.version_artifact_path(
-                    study_id,
-                    self.output_dir,
-                    step_id,
-                    version,
-                    "deviations_review_state.json",
-                )
-                if review_snapshot.is_file():
-                    previews.append(
-                        {
-                            "title": "Review state preview",
-                            "body": self._read_excerpt(review_snapshot),
-                        }
-                    )
         elif step_id == "import-pd-spec-ground":
             review_dir = paths.local_review_dir(study_id, self.output_dir)
             import_files = sorted(review_dir.glob("deviations_import_*.json")) if review_dir.exists() else []
@@ -4961,6 +4986,11 @@ class UiStepService:
                     ),
                     revised_row,
                 )
+            if any(
+                str(op.get("operation", "")) == "set_programmability"
+                for op in turn.apply_result.applied_ops
+            ):
+                self._sync_pseudo_programmability_from_row(study_id, revised_row)
         else:
             audit = {
                 "study_id": study_id,
@@ -4986,6 +5016,7 @@ class UiStepService:
         pseudo_obj = self._load_pseudo_state(study_id)
         pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in pseudo_obj.get("items", [])}
         rule_by_id = {str(rule.get("rule_id", "")): rule for rule in self._load_rules(study_id).get("rules", [])}
+        paragraph_by_ref = self._load_paragraph_index(study_id)
         state_after = self._load_state(study_id, source)
         row_after = next(
             (item for item in state_after.get("deviations", []) if str(item.get("deviation_id", "")) == dev_id),
@@ -5001,6 +5032,7 @@ class UiStepService:
                 row_after,
                 pseudo_by_dev,
                 rule_by_id,
+                paragraph_by_ref,
                 study_id=study_id,
                 review_source=source,
             ),
@@ -5053,6 +5085,7 @@ class UiStepService:
         rules_obj = read_json(paths.local_rules_parsed_json(study_id, self.output_dir))
         pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in pseudo_obj.get("items", [])}
         rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
+        paragraph_by_ref = self._load_paragraph_index(study_id)
         return {
             "studyId": study_id,
             "reviewSource": source,
@@ -5061,6 +5094,7 @@ class UiStepService:
                 updated,
                 pseudo_by_dev,
                 rule_by_id,
+                paragraph_by_ref,
                 study_id=study_id,
                 review_source=source,
             ),
@@ -5133,6 +5167,7 @@ class UiStepService:
         rules_obj = read_json(paths.local_rules_parsed_json(study_id, self.output_dir))
         pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in items}
         rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
+        paragraph_by_ref = self._load_paragraph_index(study_id)
         return {
             "studyId": study_id,
             "reviewSource": source,
@@ -5141,6 +5176,7 @@ class UiStepService:
                 row,
                 pseudo_by_dev,
                 rule_by_id,
+                paragraph_by_ref,
                 study_id=study_id,
                 review_source=source,
             ),
@@ -5164,11 +5200,13 @@ class UiStepService:
             rules_obj = read_json(paths.local_rules_parsed_json(study_id, self.output_dir))
             pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in pseudo_obj.get("items", [])}
             rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
+            paragraph_by_ref = self._load_paragraph_index(study_id)
             normalized = [
                 self._normalized_step7_row(
                     row,
                     pseudo_by_dev,
                     rule_by_id,
+                    paragraph_by_ref,
                     study_id=study_id,
                     review_source=source,
                 )
@@ -5194,11 +5232,13 @@ class UiStepService:
         rules_obj = read_json(paths.local_rules_parsed_json(study_id, self.output_dir))
         pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in pseudo_obj.get("items", [])}
         rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
+        paragraph_by_ref = self._load_paragraph_index(study_id)
         normalized = [
             self._normalized_step7_row(
                 row,
                 pseudo_by_dev,
                 rule_by_id,
+                paragraph_by_ref,
                 study_id=study_id,
                 review_source=source,
             )
@@ -5291,11 +5331,13 @@ class UiStepService:
         rules_obj = read_json(paths.local_rules_parsed_json(study_id, self.output_dir))
         pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in items}
         rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
+        paragraph_by_ref = self._load_paragraph_index(study_id)
         rows = [
             self._normalized_step7_row(
                 row,
                 pseudo_by_dev,
                 rule_by_id,
+                paragraph_by_ref,
                 study_id=study_id,
                 review_source=source,
             )

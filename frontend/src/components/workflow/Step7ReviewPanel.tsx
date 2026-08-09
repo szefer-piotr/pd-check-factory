@@ -18,11 +18,18 @@ import {
   type Step7DeviationRow,
   type Step7ReviewSource,
   type Step7ReviewSourceOption,
-  type OpenAiDeploymentOption,
   type Step7RulePayload,
   type StepStatus
 } from "../../services/stepApi";
+import { Step7DeviationDetails } from "./Step7DeviationDetails";
 import { Step7DeviationDrawer } from "./Step7DeviationDrawer";
+import { Step7DeviationFilters } from "./Step7DeviationFilters";
+import {
+  EMPTY_DEVIATION_REVIEW_FILTERS,
+  deviationFiltersAreActive,
+  filterDeviationRows,
+  type DeviationReviewFilters
+} from "./deviationFilters";
 import { LlmProgressBar } from "./LlmProgressBar";
 import { Step7RuleGroups, groupDeviationsByRule } from "./Step7RuleGroups";
 
@@ -34,10 +41,7 @@ interface Step7ReviewPanelProps {
   codingAcceptError?: string;
   /** Notifies the host page whenever the loaded rows change (completion bar). */
   onRowsChange?: (rows: Step7DeviationRow[]) => void;
-  llmDeployments: OpenAiDeploymentOption[];
-  deploymentsLoading: boolean;
   chatDeployment: string;
-  onChatDeploymentChange: (value: string) => void;
   hideSourceSelector?: boolean;
   /** Extract pipeline UI: list, accept-all, and deviation drawer only. */
   minimal?: boolean;
@@ -82,10 +86,7 @@ export function Step7ReviewPanel({
   isAcceptingCoding = false,
   codingAcceptError = "",
   onRowsChange,
-  llmDeployments,
-  deploymentsLoading,
   chatDeployment,
-  onChatDeploymentChange,
   hideSourceSelector = false,
   minimal = false,
   exportAcceptedCount,
@@ -97,6 +98,8 @@ export function Step7ReviewPanel({
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [alsoPseudo, setAlsoPseudo] = useState(true);
+  const [chatRefreshKey, setChatRefreshKey] = useState(0);
   const [isBulkAccepting, setIsBulkAccepting] = useState(false);
   const [isBulkGenerating, setIsBulkGenerating] = useState(false);
   const [bulkLlmProgress, setBulkLlmProgress] = useState<LlmProgress | null>(null);
@@ -115,18 +118,30 @@ export function Step7ReviewPanel({
   const [reviewSource, setReviewSource] = useState<Step7ReviewSource>("generated");
   const [sourcesLoading, setSourcesLoading] = useState(false);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
+  const [filters, setFilters] = useState<DeviationReviewFilters>(EMPTY_DEVIATION_REVIEW_FILTERS);
 
   const onStepStatusesChangeRef = useRef(onStepStatusesChange);
   onStepStatusesChangeRef.current = onStepStatusesChange;
   const onRowsChangeRef = useRef(onRowsChange);
   onRowsChangeRef.current = onRowsChange;
 
+  const filteredRows = useMemo(() => filterDeviationRows(rows, filters), [rows, filters]);
+
   const selectedRow = useMemo(
-    () => rows.find((row) => row.deviation_id === selectedId) ?? null,
-    [rows, selectedId]
+    () => filteredRows.find((row) => row.deviation_id === selectedId) ?? null,
+    [filteredRows, selectedId]
   );
 
-  const groups = useMemo(() => groupDeviationsByRule(rows), [rows]);
+  const groups = useMemo(() => groupDeviationsByRule(filteredRows), [filteredRows]);
+
+  useEffect(() => {
+    if (!selectedId) {
+      return;
+    }
+    if (!filteredRows.some((row) => row.deviation_id === selectedId)) {
+      setSelectedId(null);
+    }
+  }, [filteredRows, selectedId]);
 
   useEffect(() => {
     onRowsChangeRef.current?.(rows);
@@ -640,6 +655,13 @@ export function Step7ReviewPanel({
         <LlmProgressBar progress={bulkLlmProgress} />
       ) : null}
 
+      <Step7DeviationFilters
+        filters={filters}
+        filteredCount={filteredRows.length}
+        totalCount={rows.length}
+        onChange={setFilters}
+      />
+
       <div className="step7-layout step7-layout-kit">
         <div className="step7-list-pane">
           <Step7RuleGroups
@@ -647,6 +669,26 @@ export function Step7ReviewPanel({
             selectedId={selectedId}
             onSelect={setSelectedId}
             isBulkGeneratingPseudo={isBulkGenerating}
+            emptyMessage={
+              rows.length === 0
+                ? "No deviations to review."
+                : deviationFiltersAreActive(filters)
+                  ? "No deviations match the current filters."
+                  : "No deviations to review."
+            }
+            renderExpanded={(row) => (
+              <Step7DeviationDetails
+                studyId={studyId}
+                reviewSource={reviewSource}
+                row={row}
+                alsoPseudo={alsoPseudo}
+                onAlsoPseudoChange={setAlsoPseudo}
+                onRowUpdated={handleRowUpdated}
+                onStepStatusesChange={onStepStatusesChange}
+                onRequestChatRefresh={() => setChatRefreshKey((value) => value + 1)}
+                onClose={() => setSelectedId(null)}
+              />
+            )}
           />
         </div>
         <div className="step7-reading-pane">
@@ -655,19 +697,17 @@ export function Step7ReviewPanel({
               studyId={studyId}
               reviewSource={reviewSource}
               row={selectedRow}
-              onClose={() => setSelectedId(null)}
+              alsoPseudo={alsoPseudo}
+              chatDeployment={chatDeployment}
+              chatRefreshKey={chatRefreshKey}
               onRowUpdated={handleRowUpdated}
               onStepStatusesChange={onStepStatusesChange}
-              llmDeployments={llmDeployments}
-              deploymentsLoading={deploymentsLoading}
-              chatDeployment={chatDeployment}
-              onChatDeploymentChange={onChatDeploymentChange}
             />
           ) : (
             <div className="step7-reading-empty" aria-live="polite">
               <p className="step7-reading-empty-title">Select a deviation</p>
               <p className="step7-muted">
-                Choose a message from the list to review details and chat with the assistant.
+                Choose a deviation from the list to review details and chat with the assistant.
               </p>
             </div>
           )}

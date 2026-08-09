@@ -199,10 +199,11 @@ def _apply_deviation_op(
         if row is None:
             return
         nested = dict(row.get("pd_spec_import") or {}) if isinstance(row.get("pd_spec_import"), dict) else {}
-        nested["manual_or_programmable"] = str(op.manual_or_programmable or op.value or "")
+        label = str(op.manual_or_programmable or op.value or "").strip()
+        nested["manual_or_programmable"] = label
         row["pd_spec_import"] = nested
         result.applied_ops.append({"operation": "set_programmability", "target_id": target_id})
-        result.summaries.append(f"Set programmability on {target_id} to {nested['manual_or_programmable']}.")
+        result.summaries.append(f"Set programmability on {target_id} to {label}.")
         result.primary_deviation_id = target_id
         return
 

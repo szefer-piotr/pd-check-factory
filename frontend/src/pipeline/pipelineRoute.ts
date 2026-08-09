@@ -1,6 +1,5 @@
-import type { GeneratePdSubStep, PipelineStepId, StudySetupSection } from "./pipelineSteps";
+import type { PipelineStepId, StudySetupSection } from "./pipelineSteps";
 import {
-  GENERATE_PD_CHILDREN,
   LEGACY_ROUTE_REDIRECTS,
   PIPELINE_STEPS,
   pipelineStepById,
@@ -11,7 +10,6 @@ const DEFAULT_STEP: PipelineStepId = "study-setup";
 
 export interface PipelineRouteState {
   stepId: PipelineStepId;
-  subStep?: GeneratePdSubStep;
   section?: StudySetupSection;
   studyId: string;
 }
@@ -33,6 +31,14 @@ function parsePath(hashPath: string): string[] {
     .filter(Boolean);
 }
 
+function resolveGeneratePdLegacy(parts: string[]): PipelineStepId {
+  const child = parts[1];
+  if (child === "deviations") {
+    return "deviations";
+  }
+  return "rules";
+}
+
 export function parsePipelineHash(hash: string): PipelineRouteState {
   const trimmed = hash.replace(/^#\/?/, "").trim();
   const parts = parsePath(trimmed);
@@ -40,11 +46,14 @@ export function parsePipelineHash(hash: string): PipelineRouteState {
   const studyId = (query.get("study") ?? "").trim();
   const route = parts[0] ?? DEFAULT_STEP;
 
+  if (route === "generate-pd") {
+    return { stepId: resolveGeneratePdLegacy(parts), studyId };
+  }
+
   const legacy = LEGACY_ROUTE_REDIRECTS[route];
   if (legacy) {
     return {
       stepId: legacy.stepId,
-      subStep: legacy.subStep,
       section: legacy.section,
       studyId
     };
@@ -53,16 +62,6 @@ export function parsePipelineHash(hash: string): PipelineRouteState {
   const step = pipelineStepByRoute(route);
   if (!step) {
     return { stepId: DEFAULT_STEP, section: "study", studyId };
-  }
-
-  if (step.id === "generate-pd") {
-    const childRoute = parts[1];
-    const child = GENERATE_PD_CHILDREN.find((item) => item.route === childRoute || item.id === childRoute);
-    return {
-      stepId: "generate-pd",
-      subStep: child?.id ?? "rules",
-      studyId
-    };
   }
 
   if (step.id === "study-setup") {
@@ -84,17 +83,13 @@ export function parsePipelineStepId(hash: string): PipelineStepId {
 
 export function pipelineHashForRoute(state: {
   stepId: PipelineStepId;
-  subStep?: GeneratePdSubStep;
   section?: StudySetupSection;
   studyId?: string;
 }): string {
   const step = pipelineStepById(state.stepId) ?? PIPELINE_STEPS[0];
   let path = `/${step.route}`;
 
-  if (state.stepId === "generate-pd") {
-    const child = GENERATE_PD_CHILDREN.find((item) => item.id === (state.subStep ?? "rules"));
-    path += `/${child?.route ?? "rules"}`;
-  } else if (state.stepId === "study-setup" && state.section && state.section !== "study") {
+  if (state.stepId === "study-setup" && state.section && state.section !== "study") {
     path += `/${state.section}`;
   }
 
@@ -107,14 +102,14 @@ export function pipelineHashForRoute(state: {
 
 export function pipelineHashForStep(
   stepId: PipelineStepId,
-  options: { subStep?: GeneratePdSubStep; section?: StudySetupSection; studyId?: string } = {}
+  options: { section?: StudySetupSection; studyId?: string } = {}
 ): string {
   return pipelineHashForRoute({ stepId, ...options });
 }
 
 export function navigateToPipelineStep(
   stepId: PipelineStepId,
-  options: { subStep?: GeneratePdSubStep; section?: StudySetupSection; studyId?: string } = {}
+  options: { section?: StudySetupSection; studyId?: string } = {}
 ): void {
   const next = pipelineHashForStep(stepId, options);
   if (window.location.hash !== next) {
@@ -127,10 +122,9 @@ export function canonicalizePipelineHash(hash: string): string | null {
   const trimmed = hash.replace(/^#\/?/, "").trim();
   const parts = parsePath(trimmed);
   const route = parts[0] ?? "";
-  const legacy = LEGACY_ROUTE_REDIRECTS[route];
-  if (!legacy) {
-    return null;
+  if (route === "generate-pd" || LEGACY_ROUTE_REDIRECTS[route]) {
+    const parsed = parsePipelineHash(hash);
+    return pipelineHashForRoute(parsed);
   }
-  const parsed = parsePipelineHash(hash);
-  return pipelineHashForRoute(parsed);
+  return null;
 }

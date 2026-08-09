@@ -610,7 +610,7 @@ export function ProcessingStepPage({
                       ? "Failed"
                       : bothReady
                         ? "Complete"
-                        : "Pending"}
+                        : "Required"}
                 </span>
               </div>
             )}

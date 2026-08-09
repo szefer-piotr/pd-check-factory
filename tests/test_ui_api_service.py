@@ -475,7 +475,8 @@ def test_step7_deviations_chat_and_refine(tmp_path: Path, monkeypatch: pytest.Mo
     assert isinstance(list_payload.get("listRevision"), int)
 
     chat_payload = service.get_step7_deviation_chat(study_id, "dev-0001")
-    assert chat_payload["messages"] == []
+    assert chat_payload["messages"]
+    assert chat_payload["messages"][0]["role"] == "assistant"
     assert "listRevision" in chat_payload
 
     refined = service.refine_step7_deviation(
@@ -485,12 +486,13 @@ def test_step7_deviations_chat_and_refine(tmp_path: Path, monkeypatch: pytest.Mo
         run_revision_cycle=True,
     )
     assert "refined" in refined["row"]["deviation_text"]
-    assert len(refined["messages"]) == 2
-    assert refined["messages"][0]["role"] == "dm"
-    assert refined["messages"][1]["role"] == "assistant"
-    assert "Updated deviation" in refined["messages"][1]["text"]
+    assert len(refined["messages"]) >= 2
+    assert refined["messages"][-2]["role"] == "dm"
+    assert refined["messages"][-1]["role"] == "assistant"
+    assert "Updated deviation" in refined["messages"][-1]["text"]
     assert refined.get("responseType") == "revision"
     assert isinstance(refined.get("listRevision"), int)
+    assert refined["row"]["supporting_sentences"][0]["text"] == "Visit must be inside the allowed window."
 
     updated = service.update_step7_deviation(
         study_id=study_id,
@@ -500,6 +502,7 @@ def test_step7_deviations_chat_and_refine(tmp_path: Path, monkeypatch: pytest.Mo
     )
     assert updated["row"]["status"] == "accepted"
     assert updated["row"]["dm_comment"] == "approved"
+    assert updated["row"]["supporting_sentences"][0]["text"] == "Visit must be inside the allowed window."
 
 
 def test_step7_manual_deviation_crud_and_xlsx_import(tmp_path: Path) -> None:
@@ -766,6 +769,92 @@ def test_normalized_step7_row_exposes_manual_or_programmable(tmp_path: Path) -> 
     assert by_id["dev-manual"]["manual_or_programmable"] == "Manual"
     assert by_id["dev-manual"]["programmable"] is False
     assert by_id["dev-manual"]["pseudo_logic"] == ""
+
+
+def test_normalized_step7_row_prefers_row_programmability_over_stale_pseudo(tmp_path: Path) -> None:
+    """Chat edits write pd_spec_import; UI must not keep showing stale pseudo labels."""
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "MY-STUDY"
+    _seed_step7_state(tmp_path, study_id, status="accepted")
+
+    review_path = tmp_path / study_id / "pipeline" / "review" / "deviations_review_state.json"
+    write_json(
+        review_path,
+        {
+            "schema_version": "1.0.0",
+            "study_id": study_id,
+            "deviations": [
+                {
+                    "deviation_id": "dev-0012",
+                    "rule_id": "rule-001",
+                    "text": "Programmable check text",
+                    "paragraph_refs": ["p1"],
+                    "status": "accepted",
+                    "dm_comment": "",
+                    "pd_spec_import": {
+                        "manual_or_programmable": "Programmable",
+                    },
+                },
+            ],
+        },
+    )
+    write_json(
+        paths.local_pseudo_logic_review_state(study_id, tmp_path),
+        {
+            "schema_version": "1.0.0",
+            "study_id": study_id,
+            "items": [
+                {
+                    "deviation_id": "dev-0012",
+                    "rule_id": "rule-001",
+                    "pseudo_logic": "FLAG candidates for review",
+                    "manual_or_programmable": "Partially programmable",
+                    "programmable": False,
+                    "programmability_note": "needs confirmation",
+                },
+            ],
+        },
+    )
+
+    payload = service.get_step7_deviations(study_id)
+    row = next(r for r in payload["rows"] if r["deviation_id"] == "dev-0012")
+    assert row["manual_or_programmable"] == "Programmable"
+    assert row["programmable"] is True
+
+
+def test_sync_pseudo_programmability_from_row_updates_pseudo_item(tmp_path: Path) -> None:
+    service = UiStepService(output_dir=tmp_path)
+    study_id = "MY-STUDY"
+    _seed_step7_state(tmp_path, study_id, status="accepted")
+    write_json(
+        paths.local_pseudo_logic_review_state(study_id, tmp_path),
+        {
+            "schema_version": "1.0.0",
+            "study_id": study_id,
+            "items": [
+                {
+                    "deviation_id": "dev-0012",
+                    "rule_id": "rule-001",
+                    "pseudo_logic": "FLAG candidates",
+                    "manual_or_programmable": "Partially programmable",
+                    "programmable": False,
+                },
+            ],
+        },
+    )
+
+    service._sync_pseudo_programmability_from_row(
+        study_id,
+        {
+            "deviation_id": "dev-0012",
+            "pd_spec_import": {"manual_or_programmable": "Programmable"},
+        },
+    )
+
+    pseudo = read_json(paths.local_pseudo_logic_review_state(study_id, tmp_path))
+    item = next(i for i in pseudo["items"] if i["deviation_id"] == "dev-0012")
+    assert item["manual_or_programmable"] == "Programmable"
+    assert item["programmable"] is True
 
 
 def test_generate_step7_pseudo_logic_for_deviation_writes_state(

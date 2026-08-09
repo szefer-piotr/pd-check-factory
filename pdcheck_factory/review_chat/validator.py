@@ -439,15 +439,25 @@ def _validate_set_programmability(op: ChatOperation, store: EntityStore) -> Vali
         value = "Manual"
     elif value in {"programmable"}:
         value = "Programmable"
-    elif value in {"to_review", "toreview"}:
+    elif value in {"partially programmable", "partially_programmable"}:
+        value = "Partially programmable"
+    elif value in {"to_review", "toreview", "to review"}:
         value = "To Review"
     else:
         # accept canonical casing from taxonomy-ish strings
         raw = str(op.manual_or_programmable or op.value or "").strip()
-        if raw.lower() not in {"manual", "programmable", "manual_only", "to review", "to_review"}:
+        if raw.lower() not in {
+            "manual",
+            "programmable",
+            "manual_only",
+            "partially programmable",
+            "partially_programmable",
+            "to review",
+            "to_review",
+        }:
             return ValidationResult(
                 outcome="decline",
-                reason="Programmability must be Manual, Programmable, or To Review.",
+                reason="Programmability must be Manual, Programmable, Partially programmable, or To Review.",
             )
         value = raw
 

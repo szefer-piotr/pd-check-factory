@@ -9,6 +9,12 @@ export interface StudySettings {
   chatDeployment: string;
 }
 
+export interface GlobalLlmSettings {
+  extractionDeployment: string;
+  acrfSummaryDeployment: string;
+  chatDeployment: string;
+}
+
 export const DEFAULT_SETTINGS: StudySettings = {
   extractorChoice: "document_intelligence",
   extractionLlmInstructions: "",
@@ -16,6 +22,8 @@ export const DEFAULT_SETTINGS: StudySettings = {
   acrfSummaryDeployment: "",
   chatDeployment: ""
 };
+
+const GLOBAL_LLM_SETTINGS_KEY = "pd-global-llm-settings";
 
 function draftStorageKey(studyId: string): string {
   return `pd-study-settings-draft:${studyId.trim()}`;
@@ -69,19 +77,60 @@ function readSettingsFromKey(key: string): StudySettings | null {
   }
 }
 
+function readGlobalLlmSettings(): GlobalLlmSettings | null {
+  try {
+    const raw = localStorage.getItem(GLOBAL_LLM_SETTINGS_KEY);
+    if (!raw) {
+      return null;
+    }
+    const parsed = JSON.parse(raw) as Partial<GlobalLlmSettings>;
+    return {
+      extractionDeployment:
+        typeof parsed.extractionDeployment === "string" ? parsed.extractionDeployment : "",
+      acrfSummaryDeployment:
+        typeof parsed.acrfSummaryDeployment === "string" ? parsed.acrfSummaryDeployment : "",
+      chatDeployment: typeof parsed.chatDeployment === "string" ? parsed.chatDeployment : ""
+    };
+  } catch {
+    return null;
+  }
+}
+
+function writeGlobalLlmSettings(settings: StudySettings): void {
+  const payload: GlobalLlmSettings = {
+    extractionDeployment: settings.extractionDeployment,
+    acrfSummaryDeployment: settings.acrfSummaryDeployment,
+    chatDeployment: settings.chatDeployment
+  };
+  localStorage.setItem(GLOBAL_LLM_SETTINGS_KEY, JSON.stringify(payload));
+}
+
+function seedFromGlobal(settings: StudySettings): StudySettings {
+  const global = readGlobalLlmSettings();
+  if (!global) {
+    return settings;
+  }
+  return {
+    ...settings,
+    extractionDeployment: settings.extractionDeployment.trim() || global.extractionDeployment,
+    acrfSummaryDeployment: settings.acrfSummaryDeployment.trim() || global.acrfSummaryDeployment,
+    chatDeployment: settings.chatDeployment.trim() || global.chatDeployment
+  };
+}
+
 function readDraftSettings(studyId: string): StudySettings {
   if (!studyId.trim()) {
-    return DEFAULT_SETTINGS;
+    return seedFromGlobal(DEFAULT_SETTINGS);
   }
   const draft = readSettingsFromKey(draftStorageKey(studyId));
   if (draft) {
-    return draft;
+    return seedFromGlobal(draft);
   }
   const legacy = readSettingsFromKey(legacyStorageKey(studyId));
   if (legacy) {
-    return legacy;
+    return seedFromGlobal(legacy);
   }
-  return DEFAULT_SETTINGS;
+  return seedFromGlobal(DEFAULT_SETTINGS);
 }
 
 function readAppliedSettings(studyId: string): StudySettings | null {
@@ -90,9 +139,10 @@ function readAppliedSettings(studyId: string): StudySettings | null {
   }
   const applied = readSettingsFromKey(appliedStorageKey(studyId));
   if (applied) {
-    return applied;
+    return seedFromGlobal(applied);
   }
-  return readSettingsFromKey(legacyStorageKey(studyId));
+  const legacy = readSettingsFromKey(legacyStorageKey(studyId));
+  return legacy ? seedFromGlobal(legacy) : null;
 }
 
 function writeDraftSettings(studyId: string, settings: StudySettings): void {
@@ -190,6 +240,7 @@ export function useStudySettings(studyId: string): {
   const applySettings = useCallback(
     (settings: StudySettings) => {
       writeAppliedSettings(studyId, settings);
+      writeGlobalLlmSettings(settings);
       setDraftSettings(settings);
       setAppliedSettings(settings);
     },
@@ -199,6 +250,7 @@ export function useStudySettings(studyId: string): {
   const loadAppliedSettings = useCallback(
     (settings: StudySettings) => {
       writeAppliedSettings(studyId, settings);
+      writeGlobalLlmSettings(settings);
       setDraftSettings(settings);
       setAppliedSettings(settings);
     },
