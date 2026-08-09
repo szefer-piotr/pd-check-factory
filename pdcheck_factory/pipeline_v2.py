@@ -1616,30 +1616,39 @@ def run_steps(study_id: str, output_dir: Path, from_step: int, to_step: int) -> 
         14: "review-and-finalize",
     }
     with cost_usage.session(study_id, output_dir):
-        for step in range(from_step, to_step + 1):
-            print(f"[v2] Running step {step}")
-            with cost_usage.use_step(step_labels.get(step, f"v2-step-{step}")):
-                if step == 1:
-                    step1_acrf_summary_text(study_id, output_dir)
-                elif step == 2:
-                    step_acrf_field_dictionary(study_id, output_dir)
-                elif step == 3:
-                    step2_protocol_paragraph_index(study_id, output_dir)
-                elif step == 4:
-                    step3_extract_rules(study_id, output_dir)
-                elif step == 5:
-                    step4_5_extract_deviations(study_id, output_dir)
-                elif step == 6:
-                    step_normalize_checks(study_id, output_dir)
-                elif step == 7:
-                    step_deduplicate_checks(study_id, output_dir)
-                    initialize_review_states(study_id, output_dir)
-                elif step == 8:
-                    step_classify_programmability(study_id, output_dir)
-                elif step in (9, 10, 11, 13):
-                    continue
-                elif step == 12:
-                    step8_generate_pseudo_logic(study_id, output_dir)
-                elif step == 14:
-                    step10_finalize(study_id, output_dir)
+        from pdcheck_factory import llm_call_log
+
+        with llm_call_log.bind(
+            conversation_id=llm_call_log.conversation_id_for_pipeline(study_id),
+        ):
+            for step in range(from_step, to_step + 1):
+                print(f"[v2] Running step {step}")
+                step_name = step_labels.get(step, f"v2-step-{step}")
+                with (
+                    cost_usage.use_step(step_name),
+                    llm_call_log.use_process(step_name),
+                ):
+                    if step == 1:
+                        step1_acrf_summary_text(study_id, output_dir)
+                    elif step == 2:
+                        step_acrf_field_dictionary(study_id, output_dir)
+                    elif step == 3:
+                        step2_protocol_paragraph_index(study_id, output_dir)
+                    elif step == 4:
+                        step3_extract_rules(study_id, output_dir)
+                    elif step == 5:
+                        step4_5_extract_deviations(study_id, output_dir)
+                    elif step == 6:
+                        step_normalize_checks(study_id, output_dir)
+                    elif step == 7:
+                        step_deduplicate_checks(study_id, output_dir)
+                        initialize_review_states(study_id, output_dir)
+                    elif step == 8:
+                        step_classify_programmability(study_id, output_dir)
+                    elif step in (9, 10, 11, 13):
+                        continue
+                    elif step == 12:
+                        step8_generate_pseudo_logic(study_id, output_dir)
+                    elif step == 14:
+                        step10_finalize(study_id, output_dir)
         cost_usage.print_cost_summary(cost_usage.load_artifact(study_id, output_dir))

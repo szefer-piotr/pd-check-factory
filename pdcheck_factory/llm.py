@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -13,7 +14,7 @@ from typing import Any, Callable, Dict, Iterator, List, Literal, Optional, Type
 from openai import AzureOpenAI
 from pydantic import BaseModel, ConfigDict, Field
 
-from pdcheck_factory import blob_io, text_parse
+from pdcheck_factory import blob_io, llm_call_log, text_parse
 from pdcheck_factory.json_util import load_schema, validate
 from pdcheck_factory.prompt_loader import load_prompt
 from pdcheck_factory.protocol_markdown import format_section_for_prompt, validate_step1_output
@@ -184,9 +185,10 @@ def _log_prompt_sizes(
     attempt_part = ""
     if attempt is not None and max_attempts is not None:
         attempt_part = f" attempt={attempt}/{max_attempts}"
+    process = llm_call_log.resolve_process(label)
     message = (
         f"[{log_prefix}] "
-        f"label={label!r}{attempt_part} "
+        f"process={process!r} label={label!r}{attempt_part} "
         f"messages={stats['messages']} "
         f"system_chars={stats['system_chars']} "
         f"user_chars={stats['user_chars']} "
@@ -195,6 +197,15 @@ def _log_prompt_sizes(
         f"approx_tokens={stats['approx_tokens']}"
     )
     _emit_llm_log(message)
+
+
+def _usage_from_response(resp: Any) -> tuple[Any, Any, Any, Any]:
+    usage = getattr(resp, "usage", None)
+    prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
+    completion_tokens = getattr(usage, "completion_tokens", None) if usage else None
+    total_tokens = getattr(usage, "total_tokens", None) if usage else None
+    model_name = getattr(resp, "model", None)
+    return prompt_tokens, completion_tokens, total_tokens, model_name
 
 
 def _log_chat_usage(
@@ -206,16 +217,17 @@ def _log_chat_usage(
     max_attempts: int | None = None,
     log_prefix: str = "llm-text",
 ) -> None:
-    usage = getattr(resp, "usage", None)
-    prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
-    completion_tokens = getattr(usage, "completion_tokens", None) if usage else None
-    total_tokens = getattr(usage, "total_tokens", None) if usage else None
-    model_name = getattr(resp, "model", None)
+    prompt_tokens, completion_tokens, total_tokens, model_name = _usage_from_response(resp)
     attempt_part = ""
     if attempt is not None and max_attempts is not None:
         attempt_part = f" attempt={attempt}/{max_attempts}"
+    process = llm_call_log.resolve_process(label)
+    conversation_id = llm_call_log.resolve_conversation_id(
+        llm_call_log.resolve_destination()[0], process
+    )
     message = (
         f"[{log_prefix}] "
+        f"process={process!r} conversation_id={conversation_id!r} "
         f"label={label!r} deployment={deployment!r} model={model_name!r}"
         f"{attempt_part} "
         f"prompt_tokens={prompt_tokens} completion_tokens={completion_tokens} "
@@ -232,6 +244,41 @@ def _log_chat_usage(
         total_tokens=total_tokens,
         label=label,
         attempt=attempt,
+    )
+
+
+def _record_chat_exchange(
+    *,
+    api: str,
+    label: str,
+    deployment: str,
+    messages: List[Dict[str, str]],
+    attempt: int,
+    max_attempts: int,
+    started_at: float,
+    resp: Any | None = None,
+    response_content: str | None = None,
+    response_parsed: Any = None,
+    error: str | None = None,
+) -> None:
+    prompt_tokens = completion_tokens = total_tokens = model_name = None
+    if resp is not None:
+        prompt_tokens, completion_tokens, total_tokens, model_name = _usage_from_response(resp)
+    llm_call_log.record_exchange(
+        api=api,
+        label=label,
+        deployment=deployment,
+        messages=messages,
+        response_content=response_content,
+        response_parsed=response_parsed,
+        model=model_name,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        attempt=attempt,
+        max_attempts=max_attempts,
+        duration_ms=(time.perf_counter() - started_at) * 1000.0,
+        error=error,
     )
 
 
@@ -252,27 +299,55 @@ def chat_text_repairs(
         {"role": "user", "content": user},
     ]
     last = ""
-    for attempt in range(max_repairs + 1):
+    max_attempts = max_repairs + 1
+    for attempt in range(max_attempts):
+        attempt_n = attempt + 1
         _log_prompt_sizes(
             label=label,
             messages=messages,
-            attempt=attempt + 1,
-            max_attempts=max_repairs + 1,
+            attempt=attempt_n,
+            max_attempts=max_attempts,
         )
-        resp = client.chat.completions.create(
-            model=deployment,
-            messages=messages,
-            **_chat_completion_kwargs(deployment),
-        )
+        started = time.perf_counter()
+        try:
+            resp = client.chat.completions.create(
+                model=deployment,
+                messages=messages,
+                **_chat_completion_kwargs(deployment),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _record_chat_exchange(
+                api="chat.completions",
+                label=label,
+                deployment=deployment,
+                messages=messages,
+                attempt=attempt_n,
+                max_attempts=max_attempts,
+                started_at=started,
+                error=str(exc),
+            )
+            raise
         _log_chat_usage(
             resp,
             deployment,
             label,
-            attempt=attempt + 1,
-            max_attempts=max_repairs + 1,
+            attempt=attempt_n,
+            max_attempts=max_attempts,
         )
         last = (resp.choices[0].message.content or "").strip()
         err = validate_reply(last)
+        _record_chat_exchange(
+            api="chat.completions",
+            label=label,
+            deployment=deployment,
+            messages=messages,
+            attempt=attempt_n,
+            max_attempts=max_attempts,
+            started_at=started,
+            resp=resp,
+            response_content=last,
+            error=None if err is None else f"validation: {err}",
+        )
         if err is None:
             return last
         if attempt >= max_repairs:
@@ -291,36 +366,54 @@ def chat_json(
     response_model: Type[_StrictModel],
     validator: Callable[[Dict[str, Any]], List[str]],
     max_repairs: int = 2,
+    label: str = "json",
 ) -> Dict[str, Any]:
     client = _azure_client()
     deployment = deployment_name()
     repair_parse_tmpl = load_prompt("repair_parse_user")
     repair_schema_tmpl = load_prompt("repair_schema_user")
+    call_label = label or response_model.__name__
 
     messages: List[Dict[str, str]] = [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
 
-    for attempt in range(max_repairs + 1):
+    max_attempts = max_repairs + 1
+    for attempt in range(max_attempts):
+        attempt_n = attempt + 1
         _log_prompt_sizes(
-            label="json",
+            label=call_label,
             messages=messages,
-            attempt=attempt + 1,
-            max_attempts=max_repairs + 1,
+            attempt=attempt_n,
+            max_attempts=max_attempts,
         )
-        resp = client.beta.chat.completions.parse(
-            model=deployment,
-            messages=messages,
-            response_format=response_model,
-            **_chat_completion_kwargs(deployment),
-        )
+        started = time.perf_counter()
+        try:
+            resp = client.beta.chat.completions.parse(
+                model=deployment,
+                messages=messages,
+                response_format=response_model,
+                **_chat_completion_kwargs(deployment),
+            )
+        except Exception as exc:  # noqa: BLE001
+            _record_chat_exchange(
+                api="chat.completions.parse",
+                label=call_label,
+                deployment=deployment,
+                messages=messages,
+                attempt=attempt_n,
+                max_attempts=max_attempts,
+                started_at=started,
+                error=str(exc),
+            )
+            raise
         _log_chat_usage(
             resp,
             deployment,
-            label="json",
-            attempt=attempt + 1,
-            max_attempts=max_repairs + 1,
+            call_label,
+            attempt=attempt_n,
+            max_attempts=max_attempts,
             log_prefix="llm-usage",
         )
         message = resp.choices[0].message
@@ -328,6 +421,18 @@ def chat_json(
         parsed = message.parsed
         if parsed is None:
             refusal = message.refusal or "Model did not return parseable structured output."
+            _record_chat_exchange(
+                api="chat.completions.parse",
+                label=call_label,
+                deployment=deployment,
+                messages=messages,
+                attempt=attempt_n,
+                max_attempts=max_attempts,
+                started_at=started,
+                resp=resp,
+                response_content=choice or refusal,
+                error=f"parse_refusal: {refusal}",
+            )
             if attempt >= max_repairs:
                 raise ValueError(refusal)
             messages.append({"role": "assistant", "content": choice or refusal})
@@ -341,6 +446,19 @@ def chat_json(
         data = parsed.model_dump(mode="json")
 
         v_errs = validator(data)
+        _record_chat_exchange(
+            api="chat.completions.parse",
+            label=call_label,
+            deployment=deployment,
+            messages=messages,
+            attempt=attempt_n,
+            max_attempts=max_attempts,
+            started_at=started,
+            resp=resp,
+            response_content=choice,
+            response_parsed=data,
+            error=None if not v_errs else "schema: " + "; ".join(v_errs[:15]),
+        )
         if not v_errs:
             return data
 
@@ -793,6 +911,7 @@ def summarize_acrf_section(
         user=user,
         response_model=AcrfSectionSummaryOutput,
         validator=_v,
+        label=f"acrf-summary-{acrf_section_id}",
     )
 
 
@@ -801,6 +920,7 @@ def generate_pseudo_logic_structured(
     system: str,
     user: str,
     max_repairs: int = 2,
+    label: str = "generate-pseudo-logic",
 ) -> str:
     """
     Generate pseudo logic as strict JSON to avoid brittle text-block parsing.
@@ -827,5 +947,6 @@ def generate_pseudo_logic_structured(
         response_model=PseudoLogicOutput,
         validator=_v,
         max_repairs=max_repairs,
+        label=label,
     )
     return str(out.get("pseudo_logic", "")).strip()

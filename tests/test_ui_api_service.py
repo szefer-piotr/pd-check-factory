@@ -430,34 +430,41 @@ def test_step7_deviations_chat_and_refine(tmp_path: Path, monkeypatch: pytest.Mo
         ),
     )
 
-    from pdcheck_factory import pipeline_v2
+    from pdcheck_factory.review_chat.executor import ApplyResult
+    from pdcheck_factory.review_chat.pipeline import ReviewChatTurnResult
+    from pdcheck_factory.review_chat import pipeline as review_chat_pipeline
+    from pdcheck_factory.review_chat.schemas import TurnPlan, ValidationResult
 
-    def fake_refine(
-        *,
-        study_id: str,
-        output_dir: Path,
-        row: dict,
-        dm_comment: str,
-        run_revision_cycle: bool,
-        chat_history=None,
-        also_generate_pseudo: bool = False,
-    ):
-        updated = dict(row)
-        updated["text"] = f"{row.get('text')} :: refined"
-        updated["dm_comment"] = dm_comment
-        return updated, {
-            "study_id": study_id,
-            "review_type": "deviations",
-            "deviation_id": row.get("deviation_id"),
-            "updated_rows": 1,
-            "revised_rows": 1,
-            "run_revision_cycle": run_revision_cycle,
-            "assistant_message": "Updated deviation based on your note.",
-            "response_type": "revision",
-            "missing_caveats": [],
-        }
+    def fake_turn(**kwargs):
+        deviations = kwargs.get("deviations") or []
+        for row in deviations:
+            if str(row.get("deviation_id", "")) == "dev-0001":
+                row["text"] = f"{row.get('text')} :: refined"
+                row["dm_comment"] = "please refine"
+        plan = TurnPlan(
+            turn_type="update",
+            scope="explicit_ids",
+            target_ids=["dev-0001"],
+            user_expects_data_change=True,
+            reason="Updated deviation based on your note.",
+            operations=[],
+        )
+        return ReviewChatTurnResult(
+            assistant_message="Updated deviation based on your note.",
+            plan=plan,
+            validation=ValidationResult(outcome="execute", reason="ok", operations=[]),
+            apply_result=ApplyResult(
+                applied_ops=[{"operation": "update_field", "target_id": "dev-0001", "field": "text"}],
+                summaries=["Updated text on dev-0001."],
+                mutated=True,
+                primary_deviation_id="dev-0001",
+            ),
+            applied=True,
+            response_type="revision",
+            audit={"plan": plan.model_dump(mode="json")},
+        )
 
-    monkeypatch.setattr(pipeline_v2, "refine_single_deviation_with_comment", fake_refine)
+    monkeypatch.setattr(review_chat_pipeline, "run_review_chat_turn", fake_turn)
 
     list_payload = service.get_step7_deviations(study_id)
     assert list_payload["columns"] == ["rule_id", "deviation_id", "rule_title", "deviation_text", "paragraph_refs", "pseudo_logic"]
@@ -465,9 +472,11 @@ def test_step7_deviations_chat_and_refine(tmp_path: Path, monkeypatch: pytest.Mo
     assert list_payload["rows"][0]["rule_title"] == "Visit window timing"
     assert list_payload["rows"][0]["data_support_note"] == "Supported by SV date"
     assert list_payload["rows"][0]["supporting_sentences"][0]["text"] == "Visit must be inside the allowed window."
+    assert isinstance(list_payload.get("listRevision"), int)
 
     chat_payload = service.get_step7_deviation_chat(study_id, "dev-0001")
     assert chat_payload["messages"] == []
+    assert "listRevision" in chat_payload
 
     refined = service.refine_step7_deviation(
         study_id=study_id,
@@ -481,6 +490,7 @@ def test_step7_deviations_chat_and_refine(tmp_path: Path, monkeypatch: pytest.Mo
     assert refined["messages"][1]["role"] == "assistant"
     assert "Updated deviation" in refined["messages"][1]["text"]
     assert refined.get("responseType") == "revision"
+    assert isinstance(refined.get("listRevision"), int)
 
     updated = service.update_step7_deviation(
         study_id=study_id,

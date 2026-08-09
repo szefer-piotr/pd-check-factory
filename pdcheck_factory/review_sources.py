@@ -47,5 +47,6 @@ def empty_review_state(study_id: str) -> Dict[str, Any]:
         "schema_version": "1.0.0",
         "study_id": study_id,
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "list_revision": 0,
         "deviations": [],
     }

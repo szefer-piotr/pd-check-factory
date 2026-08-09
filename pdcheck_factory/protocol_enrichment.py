@@ -243,6 +243,7 @@ def _run_enrichment_proposal(
             response_model=EnrichmentProposalOutput,
             validator=lambda d: _validate_proposal_refs(d, valid_ids),
             max_repairs=2,
+            label="protocol-enrich.propose",
         )
         return EnrichmentProposalOutput.model_validate(raw)
     except Exception:  # noqa: BLE001

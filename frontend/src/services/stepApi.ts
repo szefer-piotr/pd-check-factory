@@ -516,6 +516,7 @@ export interface Step7DeviationsResponse {
   reviewSource?: Step7ReviewSource;
   columns: string[];
   rows: Step7DeviationRow[];
+  listRevision?: number;
   stepStatuses: Record<string, StepStatus>;
 }
 
@@ -541,6 +542,7 @@ export interface Step7DeviationChatResponse {
   studyId: string;
   deviationId: string;
   messages: Step7ChatMessage[];
+  listRevision?: number;
 }
 
 export interface Step7RefineResponse {
@@ -552,6 +554,8 @@ export interface Step7RefineResponse {
   responseType?: string;
   agentReason?: string;
   missingCaveats?: string[];
+  listRevision?: number;
+  applied?: boolean;
   stepStatuses: Record<string, StepStatus>;
 }
 
@@ -1137,6 +1141,7 @@ export interface RulesChatResponse {
   studyId: string;
   messages: Step7ChatMessage[];
   ruleCount: number;
+  listRevision?: number;
   activeVersion?: string | null;
 }
 
@@ -1146,6 +1151,8 @@ export interface RulesChatRefineResponse {
   applied: boolean;
   version: string | null;
   ruleCount: number;
+  listRevision?: number;
+  responseType?: string;
   stepStatuses: Record<string, StepStatus>;
 }
 
@@ -1158,7 +1165,7 @@ export async function fetchRulesChat(studyId: string): Promise<RulesChatResponse
 
 export async function refineRulesChat(
   studyId: string,
-  options: { message: string; apply?: boolean; llmDeployment?: string }
+  options: { message: string; apply?: boolean; llmDeployment?: string; expectedRevision?: number }
 ): Promise<RulesChatRefineResponse> {
   const response = await fetch(
     `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/rules/refine`,
@@ -1168,7 +1175,8 @@ export async function refineRulesChat(
       body: JSON.stringify({
         message: options.message,
         apply: options.apply !== false,
-        llmDeployment: options.llmDeployment
+        llmDeployment: options.llmDeployment,
+        expectedRevision: options.expectedRevision
       })
     }
   );
@@ -1216,12 +1224,16 @@ export async function refineStep7Deviation(
   runRevisionCycle = true,
   alsoPseudo = false,
   reviewSource?: Step7ReviewSource,
-  llmDeployment?: string
+  llmDeployment?: string,
+  expectedRevision?: number
 ): Promise<Step7RefineResponse> {
   const body: Record<string, unknown> = { message, runRevisionCycle, alsoPseudo };
   const deployment = llmDeployment?.trim();
   if (deployment) {
     body.llmDeployment = deployment;
+  }
+  if (typeof expectedRevision === "number") {
+    body.expectedRevision = expectedRevision;
   }
   const response = await fetch(
     `${API_BASE}/api/v1/studies/${encodeURIComponent(studyId)}/step7/deviations/${encodeURIComponent(deviationId)}/refine`,

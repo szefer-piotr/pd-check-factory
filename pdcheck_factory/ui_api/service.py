@@ -566,10 +566,18 @@ class UiStepService:
             self._append_pipeline_log(study_id, message)
 
         try:
+            from pdcheck_factory import llm_call_log
+
             with (
                 llm.use_deployment(llm_deployment),
                 llm.use_pipeline_log(_pipeline_log),
                 cost_usage.session(study_id, self.output_dir, step="per-rule-dedup"),
+                llm_call_log.bind(
+                    process="per-rule-dedup",
+                    conversation_id=llm_call_log.conversation_id_for_pipeline(
+                        study_id, active_run_id or None
+                    ),
+                ),
             ):
                 acrf_context = ""
                 try:
@@ -1585,19 +1593,73 @@ class UiStepService:
     def _load_rules(self, study_id: str) -> Dict[str, Any]:
         path = paths.local_rules_parsed_json(study_id, self.output_dir)
         if path.is_file():
-            return read_json(path)
+            obj = read_json(path)
+            if "list_revision" not in obj:
+                obj["list_revision"] = 0
+            return obj
         return {
             "schema_version": "1.0.0",
             "study_id": study_id,
             "generated_at": "",
+            "list_revision": 0,
             "rules": [],
         }
 
-    def _save_rules(self, study_id: str, rules_obj: Dict[str, Any]) -> None:
+    def _next_deviation_id(self, rows: List[Dict[str, Any]]) -> str:
+        max_n = 0
+        for row in rows:
+            raw = str(row.get("deviation_id", ""))
+            digits = "".join(ch for ch in raw if ch.isdigit())
+            if digits.isdigit():
+                max_n = max(max_n, int(digits))
+        return f"DEV-{max_n + 1:03d}"
+
+    def _next_rule_id(self, rules: List[Dict[str, Any]]) -> str:
+        max_n = 0
+        for rule in rules:
+            raw = str(rule.get("rule_id", ""))
+            digits = "".join(ch for ch in raw if ch.isdigit())
+            if digits.isdigit():
+                max_n = max(max_n, int(digits))
+        return f"R{max_n + 1:03d}"
+
+    def _compact_rules_summary(self, rules: List[Dict[str, Any]], *, limit: int = 80) -> str:
+        compact = [
+            {
+                "rule_id": str(rule.get("rule_id", "")),
+                "title": str(rule.get("title", ""))[:120],
+                "text": str(rule.get("text", ""))[:240],
+                "paragraph_refs": list(rule.get("paragraph_refs") or [])[:12],
+            }
+            for rule in rules[:limit]
+        ]
+        return json.dumps(compact, ensure_ascii=True)
+
+    def _compact_deviation_summary(self, row: Dict[str, Any], rule: Dict[str, Any] | None = None) -> str:
+        payload = {
+            "deviation_id": str(row.get("deviation_id", "")),
+            "rule_id": str(row.get("rule_id", "")),
+            "text": str(row.get("text", ""))[:400],
+            "paragraph_refs": list(row.get("paragraph_refs") or [])[:20],
+            "status": str(row.get("status", "")),
+            "manual_or_programmable": pd_spec_field(row, "manual_or_programmable", default=""),
+            "category": pd_spec_field(row, "protocol_deviation_category", default=""),
+            "sub_category": pd_spec_field(row, "protocol_deviation_sub_category", default=""),
+        }
+        if rule:
+            payload["rule_title"] = str(rule.get("title", ""))[:120]
+            payload["rule_text"] = str(rule.get("text", ""))[:240]
+        return json.dumps(payload, ensure_ascii=True)
+
+    def _save_rules(self, study_id: str, rules_obj: Dict[str, Any], *, bump_revision: bool = True) -> None:
         rules_obj["schema_version"] = rules_obj.get("schema_version", "1.0.0")
         rules_obj["study_id"] = study_id
         if not rules_obj.get("generated_at"):
             rules_obj["generated_at"] = datetime.now(timezone.utc).isoformat()
+        if bump_revision:
+            self._bump_list_revision(rules_obj)
+        elif "list_revision" not in rules_obj:
+            rules_obj["list_revision"] = 0
         write_json(paths.local_rules_parsed_json(study_id, self.output_dir), rules_obj)
         self._mirror_upload(study_id, paths.local_rules_parsed_json(study_id, self.output_dir))
 
@@ -1675,6 +1737,19 @@ class UiStepService:
         state_obj["deviations"] = rows
         return state_obj
 
+    @staticmethod
+    def _list_revision(obj: Dict[str, Any]) -> int:
+        try:
+            return int(obj.get("list_revision") or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    @staticmethod
+    def _bump_list_revision(obj: Dict[str, Any]) -> int:
+        next_rev = UiStepService._list_revision(obj) + 1
+        obj["list_revision"] = next_rev
+        return next_rev
+
     def _persist_state(
         self,
         study_id: str,
@@ -1682,12 +1757,17 @@ class UiStepService:
         audit_obj: Dict[str, Any],
         *,
         review_source: str | None = None,
+        bump_revision: bool = True,
     ) -> None:
         source = self._resolve_review_source(study_id, review_source)
         state_obj["schema_version"] = state_obj.get("schema_version", "1.0.0")
         state_obj["study_id"] = study_id
         if not state_obj.get("generated_at"):
             state_obj["generated_at"] = datetime.now(timezone.utc).isoformat()
+        if bump_revision:
+            self._bump_list_revision(state_obj)
+        elif "list_revision" not in state_obj:
+            state_obj["list_revision"] = 0
         per_source_path = review_sources.review_state_path(study_id, self.output_dir, source)
         write_json(per_source_path, state_obj)
         write_json(paths.local_deviations_review_audit_json(study_id, self.output_dir), audit_obj)
@@ -3447,7 +3527,7 @@ class UiStepService:
         )
         self._append_pipeline_log(study_id, f"[{step_id}] Starting step {step_id}")
 
-        from pdcheck_factory import llm
+        from pdcheck_factory import llm, llm_call_log
 
         def _pipeline_log(message: str) -> None:
             self._append_pipeline_log(study_id, message)
@@ -3458,6 +3538,12 @@ class UiStepService:
                 llm.use_deployment(llm_deployment),
                 llm.use_pipeline_log(_pipeline_log),
                 cost_usage.session(study_id, self.output_dir, step=step_id),
+                llm_call_log.bind(
+                    process=step_id,
+                    conversation_id=llm_call_log.conversation_id_for_pipeline(
+                        study_id, active_run_id or None
+                    ),
+                ),
             ):
                 summary = self._execute_run_step(study_id, step_id, extra=extra, force=force)
                 if step_id == "extract-deviations" and source_versions_for_run is not None:
@@ -4089,6 +4175,7 @@ class UiStepService:
                 "pseudo_logic",
             ],
             "rows": rows,
+            "listRevision": self._list_revision(state_obj),
             "stepStatuses": self._step_statuses(study_id),
         }
 
@@ -4527,11 +4614,25 @@ class UiStepService:
     def get_rules_chat(self, study_id: str) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         chat_obj = self._load_rules_chat_state(study_id)
+        messages = list(chat_obj.get("messages", []))
+        if not messages:
+            from pdcheck_factory.review_chat.capabilities import welcome_message
+
+            messages = [
+                {
+                    "role": "assistant",
+                    "text": welcome_message("rules"),
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                }
+            ]
+            chat_obj["messages"] = messages
+            self._save_rules_chat_state(study_id, chat_obj)
         rules_obj = self._load_rules(study_id)
         return {
             "studyId": study_id,
-            "messages": list(chat_obj.get("messages", []))[-40:],
+            "messages": messages[-40:],
             "ruleCount": len(list(rules_obj.get("rules", []))),
+            "listRevision": self._list_revision(rules_obj),
             "activeVersion": (self._read_upload_manifest_obj(study_id).get("activeStepArtifacts") or {}).get(
                 "extract-rules"
             ),
@@ -4544,17 +4645,31 @@ class UiStepService:
         message: str,
         apply: bool = True,
         llm_deployment: str | None = None,
+        expected_revision: int | None = None,
     ) -> Dict[str, Any]:
-        """Discuss the whole rules list; optionally apply LLM edits as a new extract-rules version."""
+        """Discuss the whole rules list; apply typed field-level ops when validated."""
         study_id = self._require_study_id(study_id)
         comment = str(message or "").strip()
         if not comment:
             raise UiApiError("VALIDATION_ERROR", "message is required", 400)
 
+        from pdcheck_factory.review_chat.pipeline import run_review_chat_turn
+        from pdcheck_factory.review_chat.working_context import WorkingContext
+
         rules_obj = self._load_rules(study_id)
         rules = list(rules_obj.get("rules", []))
         chat_obj = self._load_rules_chat_state(study_id)
         messages = list(chat_obj.get("messages", []))
+        if not messages:
+            from pdcheck_factory.review_chat.capabilities import welcome_message
+
+            messages = [
+                {
+                    "role": "assistant",
+                    "text": welcome_message("rules"),
+                    "ts": datetime.now(timezone.utc).isoformat(),
+                }
+            ]
         messages.append(
             {
                 "role": "dm",
@@ -4562,106 +4677,42 @@ class UiStepService:
                 "ts": datetime.now(timezone.utc).isoformat(),
             }
         )
-
-        from pdcheck_factory import llm
-
-        compact_rules = [
-            {
-                "rule_id": str(rule.get("rule_id", "")),
-                "title": str(rule.get("title", "")),
-                "text": str(rule.get("text", "")),
-                "paragraph_refs": list(rule.get("paragraph_refs") or []),
-            }
-            for rule in rules
-        ]
         history = [
             {"role": str(m.get("role", "")), "text": str(m.get("text", ""))}
-            for m in messages[-12:]
+            for m in messages[:-1][-12:]
         ]
-        system = (
-            "You help edit a protocol deviation rule list. "
-            "Reply with ONLY a JSON object: "
-            '{"assistant_message": string, "rules": [{"rule_id","title","text","paragraph_refs":[]}...]}. '
-            "Return the full updated rules array when the user asks for changes. "
-            "Preserve rule_id values when editing existing rules. "
-            "Only invent new rule_id values for newly added rules (pattern R###). "
-            "If the user is only asking a question, keep rules identical to the input."
+        paragraph_by_ref = self._load_paragraph_index(study_id)
+        context = WorkingContext(
+            domain="rules",
+            study_id=study_id,
+            list_revision=self._list_revision(rules_obj),
+            expected_revision=expected_revision,
+            apply=apply,
         )
-        user = (
-            f"Current rules JSON:\n{json.dumps(compact_rules, ensure_ascii=True)}\n\n"
-            f"Recent chat:\n{json.dumps(history, ensure_ascii=True)}\n\n"
-            f"User request:\n{comment}"
-        )
-
         version: str | None = None
         applied = False
         try:
+            from pdcheck_factory import llm, llm_call_log
+
             with (
                 llm.use_deployment(llm_deployment),
                 cost_usage.session(study_id, self.output_dir, step="rules-chat"),
+                llm_call_log.bind(
+                    process="rules-chat",
+                    conversation_id=llm_call_log.conversation_id_for_rules_chat(study_id),
+                ),
             ):
-                raw = llm.chat_text_repairs(
-                    system=system,
-                    user=user,
-                    validate_reply=lambda text: None
-                    if text.strip().startswith("{")
-                    else "Reply must be a JSON object",
-                    label="rules-chat",
+                turn = run_review_chat_turn(
+                    user_message=comment,
+                    context=context,
+                    chat_history=history,
+                    deviations=[],
+                    rules=rules,
+                    entities_summary=self._compact_rules_summary(rules),
+                    evidence_for_answer=self._compact_rules_summary(rules),
+                    valid_paragraph_ids=set(paragraph_by_ref.keys()),
+                    next_rule_id_fn=lambda: self._next_rule_id(rules),
                 )
-            parsed_obj: Dict[str, Any]
-            try:
-                start = raw.find("{")
-                end = raw.rfind("}")
-                parsed_obj = json.loads(raw[start : end + 1] if start >= 0 and end > start else raw)
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"Model did not return valid JSON: {exc}") from exc
-
-            assistant_text = str(parsed_obj.get("assistant_message") or "").strip() or "Processed your message."
-            next_rules_raw = parsed_obj.get("rules")
-            if not isinstance(next_rules_raw, list):
-                next_rules_raw = compact_rules
-
-            next_rules: List[Dict[str, Any]] = []
-            for item in next_rules_raw:
-                if not isinstance(item, dict):
-                    continue
-                next_rules.append(
-                    self._normalized_rule_payload(
-                        {
-                            "rule_id": item.get("rule_id"),
-                            "title": item.get("title"),
-                            "text": item.get("text"),
-                            "paragraph_refs": item.get("paragraph_refs") or [],
-                        }
-                    )
-                )
-
-            messages.append(
-                {
-                    "role": "assistant",
-                    "text": assistant_text,
-                    "ts": datetime.now(timezone.utc).isoformat(),
-                }
-            )
-            chat_obj["messages"] = messages[-40:]
-            self._save_rules_chat_state(study_id, chat_obj)
-
-            if apply and next_rules:
-                rules_obj["rules"] = next_rules
-                rules_obj["generated_at"] = datetime.now(timezone.utc).isoformat()
-                self._save_rules(study_id, rules_obj)
-                version = step_artifact_versions.register_version_after_run(
-                    study_id,
-                    self.output_dir,
-                    "extract-rules",
-                    derived_from={"operation": "rules-chat"},
-                    version_mode="new",
-                )
-                manifest = self._read_upload_manifest_obj(study_id)
-                active_map = dict(manifest.get("activeStepArtifacts") or {})
-                active_map["extract-rules"] = version
-                self._write_upload_manifest(study_id, active_step_artifacts=active_map)
-                applied = True
         except Exception as exc:
             messages.append(
                 {
@@ -4674,12 +4725,50 @@ class UiStepService:
             self._save_rules_chat_state(study_id, chat_obj)
             raise UiApiError("REFINE_FAILED", str(exc), 500) from exc
 
+        messages.append(
+            {
+                "role": "assistant",
+                "text": turn.assistant_message,
+                "ts": datetime.now(timezone.utc).isoformat(),
+            }
+        )
+        chat_obj["messages"] = messages[-40:]
+        self._save_rules_chat_state(study_id, chat_obj)
+
+        if turn.applied and apply:
+            normalized_rules: List[Dict[str, Any]] = []
+            for item in rules:
+                try:
+                    normalized_rules.append(self._normalized_rule_payload(item))
+                except UiApiError:
+                    # Keep prior shape if a chat add was incomplete; skip invalid
+                    continue
+            rules_obj["rules"] = normalized_rules
+            rules_obj["generated_at"] = datetime.now(timezone.utc).isoformat()
+            self._save_rules(study_id, rules_obj)
+            version = step_artifact_versions.register_version_after_run(
+                study_id,
+                self.output_dir,
+                "extract-rules",
+                derived_from={"operation": "rules-chat"},
+                version_mode="new",
+            )
+            manifest = self._read_upload_manifest_obj(study_id)
+            active_map = dict(manifest.get("activeStepArtifacts") or {})
+            active_map["extract-rules"] = version
+            self._write_upload_manifest(study_id, active_step_artifacts=active_map)
+            applied = True
+
+        refreshed = self._load_rules(study_id)
         return {
             "studyId": study_id,
             "messages": list(chat_obj.get("messages", []))[-40:],
             "applied": applied,
             "version": version,
-            "ruleCount": len(list(self._load_rules(study_id).get("rules", []))),
+            "ruleCount": len(list(refreshed.get("rules", []))),
+            "listRevision": self._list_revision(refreshed),
+            "responseType": turn.response_type,
+            "audit": turn.audit,
             "stepStatuses": self._step_statuses(study_id),
         }
 
@@ -4690,10 +4779,29 @@ class UiStepService:
             raise UiApiError("VALIDATION_ERROR", "deviationId is required", 400)
         chat_obj = self._load_chat_state(study_id)
         dev_chat = chat_obj.get("deviations", {}).get(dev_id, {})
+        messages = list(dev_chat.get("messages", []))
+        if not messages:
+            from pdcheck_factory.review_chat.capabilities import welcome_message
+
+            self._append_chat_message(
+                chat_obj,
+                dev_id,
+                role="assistant",
+                text=welcome_message("deviation"),
+            )
+            self._save_chat_state(study_id, chat_obj)
+            messages = list(chat_obj.get("deviations", {}).get(dev_id, {}).get("messages", []))
+        # Prefer generated source revision for chat concurrency; fall back to active review source.
+        try:
+            state_obj = self._load_state(study_id, None)
+            list_revision = self._list_revision(state_obj)
+        except Exception:  # noqa: BLE001
+            list_revision = 0
         return {
             "studyId": study_id,
             "deviationId": dev_id,
-            "messages": list(dev_chat.get("messages", []))[-25:],
+            "messages": messages[-25:],
+            "listRevision": list_revision,
         }
 
     def refine_step7_deviation(
@@ -4706,13 +4814,19 @@ class UiStepService:
         also_generate_pseudo: bool = False,
         review_source: str | None = None,
         llm_deployment: str | None = None,
+        expected_revision: int | None = None,
     ) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
         source = self._resolve_review_source(study_id, review_source)
         dev_id = str(deviation_id).strip()
         if not dev_id:
             raise UiApiError("VALIDATION_ERROR", "deviationId is required", 400)
-        comment = str(dm_comment or "")
+        comment = str(dm_comment or "").strip()
+        if not comment:
+            raise UiApiError("VALIDATION_ERROR", "message is required", 400)
+
+        from pdcheck_factory.review_chat.pipeline import run_review_chat_turn
+        from pdcheck_factory.review_chat.working_context import WorkingContext
 
         state_obj = self._load_state(study_id, source)
         rows = list(state_obj.get("deviations", []))
@@ -4720,83 +4834,171 @@ class UiStepService:
         if row is None:
             raise UiApiError("NOT_FOUND", f"Unknown deviationId '{dev_id}'", 404)
 
+        rules_obj = self._load_rules(study_id)
+        rules = list(rules_obj.get("rules", []))
+        rule_by_id = {str(r.get("rule_id", "")): r for r in rules}
+        rule_row = rule_by_id.get(str(row.get("rule_id", "")), {})
+        paragraph_by_ref = self._load_paragraph_index(study_id)
+
         chat_obj = self._load_chat_state(study_id)
-        self._append_chat_message(chat_obj, dev_id, role="dm", text=comment.strip() or "(empty)")
+        existing = list(chat_obj.get("deviations", {}).get(dev_id, {}).get("messages", []))
+        if not existing:
+            from pdcheck_factory.review_chat.capabilities import welcome_message
+
+            self._append_chat_message(
+                chat_obj,
+                dev_id,
+                role="assistant",
+                text=welcome_message("deviation"),
+            )
+        self._append_chat_message(chat_obj, dev_id, role="dm", text=comment)
         dev_chat = chat_obj.get("deviations", {}).get(dev_id, {})
         prior_messages = list(dev_chat.get("messages", []))[:-1]
         chat_history = [
             {"role": str(m.get("role", "")), "text": str(m.get("text", ""))}
             for m in prior_messages[-10:]
         ]
-        from pdcheck_factory import llm
+
+        evidence_parts = [self._compact_deviation_summary(row, rule_row)]
+        for ref in list(row.get("paragraph_refs") or [])[:12]:
+            para = paragraph_by_ref.get(str(ref))
+            if isinstance(para, dict):
+                evidence_parts.append(f"{ref}: {str(para.get('text') or para.get('content') or '')[:500]}")
+
+        context = WorkingContext(
+            domain="deviation",
+            study_id=study_id,
+            list_revision=self._list_revision(state_obj),
+            expected_revision=expected_revision,
+            active_deviation_ids=[dev_id],
+            last_viewed_deviation_id=dev_id,
+            apply=True,
+        )
 
         try:
+            from pdcheck_factory import llm, llm_call_log
+
             with (
                 llm.use_deployment(llm_deployment),
                 cost_usage.session(study_id, self.output_dir, step="review-chat"),
+                llm_call_log.bind(
+                    process="review-chat",
+                    conversation_id=llm_call_log.conversation_id_for_review_chat(
+                        study_id, dev_id
+                    ),
+                ),
             ):
-                revised_row, audit = pipeline_v2.refine_single_deviation_with_comment(
-                    study_id=study_id,
-                    output_dir=self.output_dir,
-                    row=row,
-                    dm_comment=comment,
-                    run_revision_cycle=run_revision_cycle,
-                    chat_history=chat_history,
-                    also_generate_pseudo=also_generate_pseudo,
-                )
-            assistant_text = str(audit.get("assistant_message", "")).strip()
-            if not assistant_text:
-                assistant_text = "Processed your message."
-            self._append_chat_message(chat_obj, dev_id, role="assistant", text=assistant_text)
+                if not run_revision_cycle:
+                    # Preserve API flag: skip LLM interpret, treat as no-op answer.
+                    from pdcheck_factory.review_chat.schemas import TurnPlan
+
+                    turn = run_review_chat_turn(
+                        user_message=comment,
+                        context=context,
+                        chat_history=chat_history,
+                        deviations=rows,
+                        rules=rules,
+                        entities_summary=self._compact_deviation_summary(row, rule_row),
+                        evidence_for_answer="\n".join(evidence_parts),
+                        valid_paragraph_ids=set(paragraph_by_ref.keys()),
+                        next_deviation_id_fn=lambda: self._next_deviation_id(rows),
+                        plan_override=TurnPlan(
+                            turn_type="answer",
+                            scope="active_selection",
+                            target_ids=[dev_id],
+                            user_expects_data_change=False,
+                            reason="Revision cycle disabled.",
+                        ),
+                        skip_llm_answer=True,
+                    )
+                else:
+                    turn = run_review_chat_turn(
+                        user_message=comment,
+                        context=context,
+                        chat_history=chat_history,
+                        deviations=rows,
+                        rules=rules,
+                        entities_summary=self._compact_deviation_summary(row, rule_row),
+                        evidence_for_answer="\n".join(evidence_parts),
+                        valid_paragraph_ids=set(paragraph_by_ref.keys()),
+                        next_deviation_id_fn=lambda: self._next_deviation_id(rows),
+                    )
+            self._append_chat_message(chat_obj, dev_id, role="assistant", text=turn.assistant_message)
         except Exception as exc:
             self._append_chat_message(chat_obj, dev_id, role="assistant", text=f"Refinement failed: {exc}")
             self._save_chat_state(study_id, chat_obj)
             raise UiApiError("REFINE_FAILED", str(exc), 500) from exc
 
-        state_obj = self._replace_row(state_obj, revised_row)
-        self._persist_state(study_id, state_obj, audit, review_source=source)
+        revised_row = next((item for item in rows if str(item.get("deviation_id", "")) == dev_id), row)
+        if turn.applied:
+            # Keep dm_comment on the focused row when it still exists.
+            if any(str(item.get("deviation_id", "")) == dev_id for item in rows):
+                for item in rows:
+                    if str(item.get("deviation_id", "")) == dev_id:
+                        item["dm_comment"] = comment
+                        revised_row = item
+                        break
+            state_obj["deviations"] = rows
+            audit = {
+                "study_id": study_id,
+                "review_type": "deviations",
+                "deviation_id": dev_id,
+                "updated_rows": 1,
+                "revised_rows": 1,
+                "run_revision_cycle": run_revision_cycle,
+                "assistant_message": turn.assistant_message,
+                "response_type": turn.response_type,
+                "agent": turn.audit,
+                "missing_caveats": [],
+            }
+            self._persist_state(study_id, state_obj, audit, review_source=source)
+            if turn.apply_result.primary_deviation_id:
+                revised_row = next(
+                    (
+                        item
+                        for item in rows
+                        if str(item.get("deviation_id", "")) == turn.apply_result.primary_deviation_id
+                    ),
+                    revised_row,
+                )
+        else:
+            audit = {
+                "study_id": study_id,
+                "review_type": "deviations",
+                "deviation_id": dev_id,
+                "updated_rows": 0,
+                "revised_rows": 0,
+                "run_revision_cycle": run_revision_cycle,
+                "assistant_message": turn.assistant_message,
+                "response_type": turn.response_type,
+                "agent": turn.audit,
+                "missing_caveats": [],
+            }
+            # Persist audit snapshot without bumping revision when nothing changed.
+            write_json(paths.local_deviations_review_audit_json(study_id, self.output_dir), audit)
+            self._mirror_upload(study_id, paths.local_deviations_review_audit_json(study_id, self.output_dir))
+
         self._save_chat_state(study_id, chat_obj)
 
+        # Optional pseudo generation remains an explicit UI follow-up (alsoPseudo handled by client).
+        _ = also_generate_pseudo
+
         pseudo_obj = self._load_pseudo_state(study_id)
-        pseudo_item = audit.get("pseudo_item")
-        if isinstance(pseudo_item, dict) and pseudo_item.get("deviation_id"):
-            items = list(pseudo_obj.get("items", []))
-            replaced = False
-            for idx, existing in enumerate(items):
-                if str(existing.get("deviation_id", "")) == dev_id:
-                    items[idx] = pseudo_item
-                    replaced = True
-                    break
-            if not replaced:
-                items.append(pseudo_item)
-            pseudo_obj["schema_version"] = pseudo_obj.get("schema_version", "1.0.0")
-            pseudo_obj["study_id"] = study_id
-            pseudo_obj["generated_at"] = datetime.now(timezone.utc).isoformat()
-            pseudo_obj["items"] = items
-            write_json(paths.local_pseudo_logic_review_state(study_id, self.output_dir), pseudo_obj)
-            write_json(paths.local_pseudo_logic_validated_json(study_id, self.output_dir), pseudo_obj)
-            self._mirror_upload(
-                study_id,
-                paths.local_pseudo_logic_review_state(study_id, self.output_dir),
-                paths.local_pseudo_logic_validated_json(study_id, self.output_dir),
-            )
-
-        rules_obj = read_json(paths.local_rules_parsed_json(study_id, self.output_dir))
         pseudo_by_dev = {str(item.get("deviation_id", "")): item for item in pseudo_obj.get("items", [])}
-        rule_by_id = {str(rule.get("rule_id", "")): rule for rule in rules_obj.get("rules", [])}
-
-        agent_reason = ""
-        agent_block = audit.get("agent") or {}
-        decision_block = agent_block.get("decision") if isinstance(agent_block, dict) else None
-        if isinstance(decision_block, dict):
-            agent_reason = str(decision_block.get("reason", "")).strip()
+        rule_by_id = {str(rule.get("rule_id", "")): rule for rule in self._load_rules(study_id).get("rules", [])}
+        state_after = self._load_state(study_id, source)
+        row_after = next(
+            (item for item in state_after.get("deviations", []) if str(item.get("deviation_id", "")) == dev_id),
+            revised_row,
+        )
+        agent_reason = str((turn.audit.get("plan") or {}).get("reason", "") or turn.validation.reason)
 
         return {
             "studyId": study_id,
             "reviewSource": source,
             "deviationId": dev_id,
             "row": self._normalized_step7_row(
-                revised_row,
+                row_after,
                 pseudo_by_dev,
                 rule_by_id,
                 study_id=study_id,
@@ -4804,9 +5006,11 @@ class UiStepService:
             ),
             "messages": list(chat_obj.get("deviations", {}).get(dev_id, {}).get("messages", []))[-25:],
             "audit": audit,
-            "responseType": str(audit.get("response_type", "")),
+            "responseType": turn.response_type,
             "agentReason": agent_reason,
-            "missingCaveats": list(audit.get("missing_caveats", [])),
+            "missingCaveats": [],
+            "listRevision": self._list_revision(state_after),
+            "applied": turn.applied,
             "stepStatuses": self._step_statuses(study_id),
         }
 
@@ -4887,7 +5091,15 @@ class UiStepService:
             )
 
         try:
-            with cost_usage.session(study_id, self.output_dir, step="generate-pseudo-logic"):
+            from pdcheck_factory import llm_call_log
+
+            with (
+                cost_usage.session(study_id, self.output_dir, step="generate-pseudo-logic"),
+                llm_call_log.bind(
+                    process="generate-pseudo-logic",
+                    conversation_id=llm_call_log.conversation_id_for_pipeline(study_id),
+                ),
+            ):
                 pseudo_item = pipeline_v2.generate_pseudo_logic_for_deviation(
                     study_id=study_id,
                     output_dir=self.output_dir,
@@ -5036,7 +5248,15 @@ class UiStepService:
         )
         progress_callback = self._make_llm_progress_callback(study_id)
         try:
-            with cost_usage.session(study_id, self.output_dir, step="generate-pseudo-logic"):
+            from pdcheck_factory import llm_call_log
+
+            with (
+                cost_usage.session(study_id, self.output_dir, step="generate-pseudo-logic"),
+                llm_call_log.bind(
+                    process="generate-pseudo-logic",
+                    conversation_id=llm_call_log.conversation_id_for_pipeline(study_id),
+                ),
+            ):
                 pseudo_out = pipeline_v2.step8_generate_pseudo_logic(
                     study_id,
                     self.output_dir,

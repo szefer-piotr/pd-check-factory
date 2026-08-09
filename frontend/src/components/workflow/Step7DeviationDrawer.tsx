@@ -91,6 +91,7 @@ export function Step7DeviationDrawer({
   const [editForm, setEditForm] = useState<Step7DeviationPayload | null>(null);
   const [error, setError] = useState("");
   const [lastMissingCaveats, setLastMissingCaveats] = useState<string[]>([]);
+  const [listRevision, setListRevision] = useState<number | undefined>(undefined);
   const [enrichmentDetail, setEnrichmentDetail] = useState<Step7EnrichmentDetailResponse | null>(null);
   const [enrichmentLoading, setEnrichmentLoading] = useState(false);
   const [enrichmentError, setEnrichmentError] = useState("");
@@ -151,6 +152,9 @@ export function Step7DeviationDrawer({
       try {
         const chat = await fetchStep7DeviationChat(studyId.trim(), deviationId);
         setMessages(chat.messages);
+        if (typeof chat.listRevision === "number") {
+          setListRevision(chat.listRevision);
+        }
       } catch {
         setMessages([]);
       }
@@ -270,11 +274,15 @@ export function Step7DeviationDrawer({
         true,
         alsoPseudo,
         reviewSource,
-        chatDeployment
+        chatDeployment,
+        listRevision
       );
       let currentRow = result.row;
       setMessages(result.messages);
       setLastMissingCaveats(result.missingCaveats ?? []);
+      if (typeof result.listRevision === "number") {
+        setListRevision(result.listRevision);
+      }
       setChatInput("");
       onRowUpdated(currentRow);
       onStepStatusesChange(result.stepStatuses);
@@ -460,7 +468,10 @@ export function Step7DeviationDrawer({
             {messages.length === 0 ? (
               <div className="step7-chatgpt-empty">
                 <p className="step7-chatgpt-empty-title">No messages yet</p>
-                <p className="step7-chatgpt-empty-hint">Describe the change you want for this deviation.</p>
+                <p className="step7-chatgpt-empty-hint">
+                  Ask questions, rewrite text/notes, update status or category, or merge named
+                  deviations. Split and bulk filter edits are not available here.
+                </p>
               </div>
             ) : (
               messages.map((message, index) => {

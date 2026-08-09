@@ -609,6 +609,12 @@ class StepApiHandler(BaseHTTPRequestHandler):
         payload = parse_json_body(self.rfile.read(length))
         review_source = str(payload.get("reviewSource") or payload.get("review_source") or "").strip() or None
         llm_deployment = str(payload.get("llmDeployment", "") or "") or None
+        expected_revision = payload.get("expectedRevision", payload.get("expected_revision"))
+        expected: int | None
+        try:
+            expected = int(expected_revision) if expected_revision is not None and str(expected_revision) != "" else None
+        except (TypeError, ValueError):
+            expected = None
         return self.service.refine_step7_deviation(
             study_id=study_id,
             deviation_id=deviation_id,
@@ -617,6 +623,7 @@ class StepApiHandler(BaseHTTPRequestHandler):
             also_generate_pseudo=bool(payload.get("alsoPseudo", False)),
             review_source=review_source,
             llm_deployment=llm_deployment,
+            expected_revision=expected,
         )
 
     def _parse_rules_refine(self, study_id: str) -> Dict[str, Any]:
@@ -626,11 +633,18 @@ class StepApiHandler(BaseHTTPRequestHandler):
         payload = parse_json_body(self.rfile.read(length))
         llm_deployment = str(payload.get("llmDeployment", "") or "") or None
         apply = payload.get("apply")
+        expected_revision = payload.get("expectedRevision", payload.get("expected_revision"))
+        expected: int | None
+        try:
+            expected = int(expected_revision) if expected_revision is not None and str(expected_revision) != "" else None
+        except (TypeError, ValueError):
+            expected = None
         return self.service.refine_rules_chat(
             study_id=study_id,
             message=str(payload.get("message", "")),
             apply=True if apply is None else bool(apply),
             llm_deployment=llm_deployment,
+            expected_revision=expected,
         )
 
     def _parse_step7_deviation_create(self, study_id: str) -> Dict[str, Any]:

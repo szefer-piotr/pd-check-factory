@@ -31,6 +31,7 @@ export function RulesListChat({
   const [error, setError] = useState("");
   const [ruleCount, setRuleCount] = useState(0);
   const [version, setVersion] = useState<string | null>(null);
+  const [listRevision, setListRevision] = useState<number | undefined>(undefined);
   const threadRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -44,6 +45,9 @@ export function RulesListChat({
           setMessages(result.messages);
           setRuleCount(result.ruleCount);
           setVersion(result.activeVersion ?? null);
+          if (typeof result.listRevision === "number") {
+            setListRevision(result.listRevision);
+          }
         }
       })
       .catch((loadError) => {
@@ -75,10 +79,14 @@ export function RulesListChat({
       const result = await refineRulesChat(studyId.trim(), {
         message,
         apply: true,
-        llmDeployment: chatDeployment || undefined
+        llmDeployment: chatDeployment || undefined,
+        expectedRevision: listRevision
       });
       setMessages(result.messages);
       setRuleCount(result.ruleCount);
+      if (typeof result.listRevision === "number") {
+        setListRevision(result.listRevision);
+      }
       if (result.version) {
         setVersion(result.version);
       }
@@ -112,7 +120,8 @@ export function RulesListChat({
           <div className="step7-chatgpt-empty">
             <p className="step7-chatgpt-empty-title">No messages yet</p>
             <p className="step7-chatgpt-empty-hint">
-              Ask to merge duplicates, rewrite titles, or add a missing rule.
+              Ask about rules, edit title/text/paragraph refs, or add/remove a rule by id. Category,
+              programmability, and deviation merges belong in a deviation&apos;s chat.
             </p>
           </div>
         ) : (

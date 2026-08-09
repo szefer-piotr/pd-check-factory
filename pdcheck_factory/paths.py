@@ -270,6 +270,11 @@ def local_pipeline_cost_usage_json(study_id: str, output_dir: Path) -> Path:
     return local_pipeline_v2_dir(study_id, output_dir) / "pipeline_cost_usage.json"
 
 
+def local_llm_call_log_jsonl(study_id: str, output_dir: Path) -> Path:
+    """Append-only JSONL of full LLM request/response exchanges for a study."""
+    return local_pipeline_v2_dir(study_id, output_dir) / "llm_call_log.jsonl"
+
+
 def local_rules_dir(study_id: str, output_dir: Path) -> Path:
     return local_pipeline_v2_dir(study_id, output_dir) / "rules"
 

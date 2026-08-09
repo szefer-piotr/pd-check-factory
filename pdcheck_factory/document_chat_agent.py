@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Literal, Optional, Set
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from pdcheck_factory import llm
+from pdcheck_factory import llm, llm_call_log
 from pdcheck_factory.prompt_loader import load_prompt
 
 _PARAGRAPH_REF_RE = re.compile(r"^p[0-9]+$")
@@ -283,23 +283,25 @@ class Step7DocumentChatAgent:
         reference_sentences: List[Dict[str, str]],
         chat_history: List[Dict[str, str]],
     ) -> AgentDecision:
-        raw = llm.chat_json(
-            system=load_prompt("document_chat_router_system"),
-            user=load_prompt("document_chat_router_user").format(
-                study_id=study_id,
-                deviation_id=str(deviation_row.get("deviation_id", "")),
-                rule_id=str(deviation_row.get("rule_id", "")),
-                deviation_text=str(deviation_row.get("text", "")),
-                rule_title=str(rule_row.get("title", "")),
-                rule_text=str(rule_row.get("text", "")),
-                reference_sentences=_format_reference_sentences(reference_sentences),
-                chat_history=_format_chat_history(chat_history),
-                user_question=user_question,
-            ),
-            response_model=AgentDecision,
-            validator=lambda d: [],
-            max_repairs=2,
-        )
+        with llm_call_log.use_process("document-chat.route"):
+            raw = llm.chat_json(
+                system=load_prompt("document_chat_router_system"),
+                user=load_prompt("document_chat_router_user").format(
+                    study_id=study_id,
+                    deviation_id=str(deviation_row.get("deviation_id", "")),
+                    rule_id=str(deviation_row.get("rule_id", "")),
+                    deviation_text=str(deviation_row.get("text", "")),
+                    rule_title=str(rule_row.get("title", "")),
+                    rule_text=str(rule_row.get("text", "")),
+                    reference_sentences=_format_reference_sentences(reference_sentences),
+                    chat_history=_format_chat_history(chat_history),
+                    user_question=user_question,
+                ),
+                response_model=AgentDecision,
+                validator=lambda d: [],
+                max_repairs=2,
+                label="document-chat.route",
+            )
         decision = AgentDecision.model_validate(raw)
         return _apply_router_guardrails(decision)
 
@@ -321,23 +323,25 @@ class Step7DocumentChatAgent:
             if use_full_document
             else ""
         )
-        raw = llm.chat_json(
-            system=load_prompt("document_chat_answer_system"),
-            user=load_prompt("document_chat_answer_user").format(
-                study_id=study_id,
-                context_mode=context_mode,
-                deviation_text=str(deviation_row.get("text", "")),
-                rule_title=str(rule_row.get("title", "")),
-                rule_text=str(rule_row.get("text", "")),
-                reference_sentences=_format_reference_sentences(reference_sentences),
-                full_document_block=full_block,
-                acrf_summary=acrf_summary,
-                user_question=user_question,
-            ),
-            response_model=ChatAnswerDraft,
-            validator=lambda d: [],
-            max_repairs=2,
-        )
+        with llm_call_log.use_process("document-chat.answer"):
+            raw = llm.chat_json(
+                system=load_prompt("document_chat_answer_system"),
+                user=load_prompt("document_chat_answer_user").format(
+                    study_id=study_id,
+                    context_mode=context_mode,
+                    deviation_text=str(deviation_row.get("text", "")),
+                    rule_title=str(rule_row.get("title", "")),
+                    rule_text=str(rule_row.get("text", "")),
+                    reference_sentences=_format_reference_sentences(reference_sentences),
+                    full_document_block=full_block,
+                    acrf_summary=acrf_summary,
+                    user_question=user_question,
+                ),
+                response_model=ChatAnswerDraft,
+                validator=lambda d: [],
+                max_repairs=2,
+                label="document-chat.answer",
+            )
         return ChatAnswerDraft.model_validate(raw)
 
     def generate_deviation_draft(
@@ -351,24 +355,26 @@ class Step7DocumentChatAgent:
         full_document: str,
         acrf_summary: str,
     ) -> DeviationDraft:
-        raw = llm.chat_json(
-            system=load_prompt("document_chat_deviation_system"),
-            user=load_prompt("document_chat_deviation_user").format(
-                study_id=study_id,
-                deviation_id=str(deviation_row.get("deviation_id", "")),
-                rule_id=str(deviation_row.get("rule_id", "")),
-                deviation_text=str(deviation_row.get("text", "")),
-                rule_title=str(rule_row.get("title", "")),
-                rule_text=str(rule_row.get("text", "")),
-                reference_sentences=_format_reference_sentences(reference_sentences),
-                full_document=full_document,
-                acrf_summary=acrf_summary,
-                user_question=user_question,
-            ),
-            response_model=DeviationDraft,
-            validator=lambda d: [],
-            max_repairs=2,
-        )
+        with llm_call_log.use_process("document-chat.deviation"):
+            raw = llm.chat_json(
+                system=load_prompt("document_chat_deviation_system"),
+                user=load_prompt("document_chat_deviation_user").format(
+                    study_id=study_id,
+                    deviation_id=str(deviation_row.get("deviation_id", "")),
+                    rule_id=str(deviation_row.get("rule_id", "")),
+                    deviation_text=str(deviation_row.get("text", "")),
+                    rule_title=str(rule_row.get("title", "")),
+                    rule_text=str(rule_row.get("text", "")),
+                    reference_sentences=_format_reference_sentences(reference_sentences),
+                    full_document=full_document,
+                    acrf_summary=acrf_summary,
+                    user_question=user_question,
+                ),
+                response_model=DeviationDraft,
+                validator=lambda d: [],
+                max_repairs=2,
+                label="document-chat.deviation",
+            )
         return DeviationDraft.model_validate(raw)
 
     def verify(
@@ -380,19 +386,21 @@ class Step7DocumentChatAgent:
         evidence_pack: Dict[str, Any],
         draft_output: str,
     ) -> VerificationResult:
-        raw = llm.chat_json(
-            system=load_prompt("document_chat_verifier_system"),
-            user=load_prompt("document_chat_verifier_user").format(
-                study_id=study_id,
-                output_kind=output_kind,
-                user_question=user_question,
-                evidence_pack=json.dumps(evidence_pack, ensure_ascii=False, indent=2),
-                draft_output=draft_output,
-            ),
-            response_model=VerificationResult,
-            validator=lambda d: [],
-            max_repairs=2,
-        )
+        with llm_call_log.use_process("document-chat.verify"):
+            raw = llm.chat_json(
+                system=load_prompt("document_chat_verifier_system"),
+                user=load_prompt("document_chat_verifier_user").format(
+                    study_id=study_id,
+                    output_kind=output_kind,
+                    user_question=user_question,
+                    evidence_pack=json.dumps(evidence_pack, ensure_ascii=False, indent=2),
+                    draft_output=draft_output,
+                ),
+                response_model=VerificationResult,
+                validator=lambda d: [],
+                max_repairs=2,
+                label="document-chat.verify",
+            )
         return VerificationResult.model_validate(raw)
 
     def _format_answer_message(self, draft: ChatAnswerDraft) -> str:
