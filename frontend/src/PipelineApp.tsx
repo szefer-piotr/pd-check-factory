@@ -31,6 +31,7 @@ import {
   type OpenAiDeploymentOption,
   type StepStatus
 } from "./services/stepApi";
+import { RhoLogo, RhoMark } from "./components/brand/RhoLogo";
 
 function stepComplete(
   stepId: PipelineStepId,
@@ -406,7 +407,7 @@ function PipelineAppInner(): JSX.Element {
       <div className="pipeline-shell">
         <header className="pipeline-topbar">
           <div>
-            <strong>PD Check Pipeline</strong>
+            <strong>Pipeline</strong>
             {studyId ? <span className="pipeline-topbar-study">{studyId}</span> : null}
           </div>
           <div className="pipeline-topbar-actions">
@@ -448,6 +449,11 @@ function PipelineAppInner(): JSX.Element {
 
         <div className="pipeline-body">
           <nav className="pipeline-sidebar" aria-label="Pipeline steps">
+            <div className="pipeline-brand">
+              <RhoLogo className="pipeline-brand-logo" />
+              <RhoMark className="pipeline-brand-mark" />
+              <span className="pipeline-brand-product">PD Check</span>
+            </div>
             <ol>
               {PIPELINE_STEPS.map((step) => {
                 const done = stepComplete(step.id, completionCtx);

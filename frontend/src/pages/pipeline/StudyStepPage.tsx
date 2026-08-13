@@ -1,7 +1,5 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { LogPanel } from "../../components/pipeline/LogPanel";
-import { Card } from "../../components/layout/Card";
-import { Stack } from "../../components/layout/Stack";
 import {
   createStudy,
   deleteAllStudies,
@@ -40,9 +38,15 @@ interface StudyStepPageProps {
   studyId: string;
   onStudyIdChange: (value: string) => void;
   onCreated: () => void;
+  embedded?: boolean;
 }
 
-export function StudyStepPage({ studyId, onStudyIdChange, onCreated }: StudyStepPageProps): JSX.Element {
+export function StudyStepPage({
+  studyId,
+  onStudyIdChange,
+  onCreated,
+  embedded = false
+}: StudyStepPageProps): JSX.Element {
   const [studies, setStudies] = useState<StudyListItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadingStudyId, setLoadingStudyId] = useState<string | null>(null);
@@ -51,6 +55,7 @@ export function StudyStepPage({ studyId, onStudyIdChange, onCreated }: StudyStep
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [newStudyId, setNewStudyId] = useState(studyId);
+  const [filter, setFilter] = useState("");
   const [loadLogs, setLoadLogs] = useState<PipelineLogLine[]>([]);
   const [loadElapsedSec, setLoadElapsedSec] = useState(0);
   const loadTimerRef = useRef<number | null>(null);
@@ -98,6 +103,14 @@ export function StudyStepPage({ studyId, onStudyIdChange, onCreated }: StudyStep
       cancelled = true;
     };
   }, []);
+
+  const filteredStudies = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) {
+      return studies;
+    }
+    return studies.filter((study) => study.studyId.toLowerCase().includes(q));
+  }, [filter, studies]);
 
   async function handleCreate(): Promise<void> {
     const trimmed = newStudyId.trim();
@@ -169,7 +182,7 @@ export function StudyStepPage({ studyId, onStudyIdChange, onCreated }: StudyStep
     }
     if (
       !window.confirm(
-        "Delete all studies from blob storage? This permanently removes every study under raw/, extractions/, pipeline/, and review/, plus matching local output folders. This cannot be undone."
+        "Delete all studies from blob storage? This permanently removes every study under raw/, extracted/, pipeline/, and review/, plus matching local output folders. This cannot be undone."
       )
     ) {
       return;
@@ -255,22 +268,38 @@ export function StudyStepPage({ studyId, onStudyIdChange, onCreated }: StudyStep
   }
 
   return (
-    <Stack gap="md">
-      <div className="pipeline-step-page">
-      <header className="pipeline-step-header">
-        <div>
-          <h2>Study</h2>
-          <p className="pipeline-step-description">
-            Create a new study or select an existing folder from blob storage. Selecting a study downloads
-            pipeline artifacts and checkpoints.
-          </p>
+    <div className={`pipeline-step-page ${embedded ? "pipeline-step-page-embedded" : ""}`}>
+      {!embedded ? (
+        <header className="pipeline-step-header">
+          <div>
+            <h2>Study</h2>
+            <p className="pipeline-step-description">
+              Create a new study or select an existing folder from blob storage.
+            </p>
+          </div>
+          {studyId.trim() ? (
+            <span className="pipeline-step-badge pipeline-step-badge-done">Selected</span>
+          ) : (
+            <span className="pipeline-step-badge">Required</span>
+          )}
+        </header>
+      ) : (
+        <div className="study-setup-section-head">
+          <div>
+            <h2>Study</h2>
+            <p className="pipeline-step-description">
+              Create a new study or select an existing folder from blob storage.
+            </p>
+          </div>
+          {studyId.trim() ? (
+            <span className="pipeline-step-badge pipeline-step-badge-done">
+              Selected · {studyId.trim()}
+            </span>
+          ) : (
+            <span className="pipeline-step-badge">Required</span>
+          )}
         </div>
-        {studyId.trim() ? (
-          <span className="pipeline-step-badge pipeline-step-badge-done">Selected</span>
-        ) : (
-          <span className="pipeline-step-badge">Required</span>
-        )}
-      </header>
+      )}
 
       {error ? <p className="pipeline-error">{error}</p> : null}
       {message ? <p className="pipeline-message">{message}</p> : null}
@@ -292,31 +321,39 @@ export function StudyStepPage({ studyId, onStudyIdChange, onCreated }: StudyStep
 
       {loadLogs.length > 0 ? <LogPanel logs={loadLogs} active={loadingStudyId !== null} /> : null}
 
-      <Card>
-        <Stack gap="sm">
-          <label className="pipeline-field">
-            <span>Study ID</span>
+      <div className="study-stage-panel">
+        <div className="study-create-row">
+          <label className="pipeline-field study-create-field">
+            <span>New study ID</span>
             <input
               value={newStudyId}
               onChange={(event) => setNewStudyId(event.target.value)}
               placeholder="e.g. TARA-002-201"
             />
           </label>
-          <button
-            type="button"
-            className="button button-primary"
-            onClick={() => void handleCreate()}
-            disabled={Boolean(loadingStudyId) || isCreating}
-          >
-            {isCreating ? "Creating…" : "Create study"}
-          </button>
-        </Stack>
-      </Card>
+          <div className="pipeline-actions">
+            <button
+              type="button"
+              className="button button-primary"
+              onClick={() => void handleCreate()}
+              disabled={Boolean(loadingStudyId) || isCreating}
+            >
+              {isCreating ? "Creating…" : "Create study"}
+            </button>
+          </div>
+        </div>
 
-      <Card>
-        <div className="pipeline-step-header">
-          <h2>Existing studies</h2>
-          <div className="pipeline-step-actions">
+        <div className="study-list-toolbar">
+          <label className="pipeline-field study-filter-field">
+            <span className="visually-hidden">Filter studies</span>
+            <input
+              value={filter}
+              onChange={(event) => setFilter(event.target.value)}
+              placeholder="Search studies…"
+              disabled={loading}
+            />
+          </label>
+          <div className="pipeline-actions">
             <button
               type="button"
               className="button button-secondary"
@@ -333,22 +370,18 @@ export function StudyStepPage({ studyId, onStudyIdChange, onCreated }: StudyStep
             >
               Refresh
             </button>
-            <button
-              type="button"
-              className="button button-danger"
-              disabled={loading || loadingStudyId !== null || isWiping}
-              onClick={() => void handleWipeBlob()}
-            >
-              {isWiping ? "Wiping…" : "Wipe blob storage"}
-            </button>
           </div>
         </div>
-        {loading ? <p>Loading study folders from blob…</p> : null}
-        {!loading && studies.length === 0 ? (
-          <p>No studies found in blob storage.</p>
+
+        {loading ? <p className="pipeline-hint">Loading study folders from blob…</p> : null}
+        {!loading && filteredStudies.length === 0 ? (
+          <p className="pipeline-hint">
+            {studies.length === 0 ? "No studies found in blob storage." : "No studies match your search."}
+          </p>
         ) : null}
+
         <ul className="pipeline-study-list">
-          {studies.map((study) => (
+          {filteredStudies.map((study) => (
             <li key={study.studyId}>
               <button
                 type="button"
@@ -366,8 +399,24 @@ export function StudyStepPage({ studyId, onStudyIdChange, onCreated }: StudyStep
             </li>
           ))}
         </ul>
-      </Card>
+
+        <details className="study-danger-details">
+          <summary>Danger zone</summary>
+          <p className="pipeline-hint">
+            Wipe permanently deletes every study under blob storage and matching local output folders.
+          </p>
+          <div className="pipeline-actions">
+            <button
+              type="button"
+              className="button button-danger"
+              disabled={loading || loadingStudyId !== null || isWiping}
+              onClick={() => void handleWipeBlob()}
+            >
+              {isWiping ? "Wiping…" : "Wipe blob storage"}
+            </button>
+          </div>
+        </details>
       </div>
-    </Stack>
+    </div>
   );
 }

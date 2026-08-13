@@ -97,6 +97,7 @@ def test_process_falls_back_to_cost_step(tmp_path: Path) -> None:
 
 def test_conversation_id_helpers() -> None:
     assert llm_call_log.conversation_id_for_rules_chat("S1") == "rules-chat:S1"
+    assert llm_call_log.conversation_id_for_rules_chat("S1", "v3") == "rules-chat:S1:v3"
     assert (
         llm_call_log.conversation_id_for_review_chat("S1", "dev-9")
         == "review-chat:S1:dev-9"

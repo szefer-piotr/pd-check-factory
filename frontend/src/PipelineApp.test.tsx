@@ -73,12 +73,16 @@ describe("PipelineApp", () => {
   it("renders pipeline shell and study setup", () => {
     window.location.hash = "#/study-setup";
     render(<PipelineApp />);
-    expect(screen.getByText("PD Check Pipeline")).toBeInTheDocument();
+    expect(screen.getByText("Pipeline")).toBeInTheDocument();
+    expect(screen.getByRole("img", { name: "Rho" })).toBeInTheDocument();
+    expect(screen.getByText("PD Check")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Study setup" })).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Study setup stages" })).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Pipeline steps" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Activity/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Rules/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Deviations/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Study" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Model configuration" })).not.toBeInTheDocument();
   });
 });

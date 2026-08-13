@@ -38,11 +38,11 @@ interface ProcessingStepPageProps {
 
 interface UploadSlotCardProps {
   title: string;
+  hint: string;
   uploaded: boolean;
   fileName: string;
   size: number;
   blobPath: string;
-  selectedFile: File | null;
   uploading: boolean;
   disabled: boolean;
   preprocessStatus: PreprocessSlotStatus;
@@ -50,8 +50,7 @@ interface UploadSlotCardProps {
   previewButtons: Array<{ label: string; disabled: boolean; onClick: () => void }>;
   canReprocess: boolean;
   reprocessDisabled: boolean;
-  onFileChange: (file: File | null) => void;
-  onUpload: () => void;
+  onUploadFile: (file: File) => void;
   onReprocess: () => void;
 }
 
@@ -83,28 +82,13 @@ function preprocessStatusLabel(status: PreprocessSlotStatus): string {
   }
 }
 
-function checklistChipClass(state: ChecklistState): string {
-  switch (state) {
-    case "done":
-      return "dep-chip dep-chip-done";
-    case "skipped":
-      return "dep-chip";
-    case "running":
-      return "dep-chip dep-chip-running";
-    case "failed":
-      return "dep-chip dep-chip-missing";
-    default:
-      return "dep-chip dep-chip-missing";
-  }
-}
-
 function UploadSlotCard({
   title,
+  hint,
   uploaded,
   fileName,
   size,
   blobPath,
-  selectedFile,
   uploading,
   disabled,
   preprocessStatus,
@@ -112,78 +96,117 @@ function UploadSlotCard({
   previewButtons,
   canReprocess,
   reprocessDisabled,
-  onFileChange,
-  onUpload,
+  onUploadFile,
   onReprocess
 }: UploadSlotCardProps): JSX.Element {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+
+  function takeFile(file: File | null | undefined): void {
+    if (!file || disabled || uploading) {
+      return;
+    }
+    onUploadFile(file);
+  }
+
   return (
     <div className={`upload-card ${uploaded ? "upload-card-done" : ""}`}>
       <div className="upload-card-header">
         <h3 className="upload-card-title">{title}</h3>
         <span className={`dep-chip ${uploaded ? "dep-chip-done" : "dep-chip-missing"}`}>
-          {uploaded ? "Uploaded" : "Missing"}
+          {uploading ? "Uploading…" : uploaded ? "Uploaded" : "Missing"}
         </span>
       </div>
 
       {uploaded ? (
-        <div className="upload-card-success-block">
-          <p className="upload-card-success">
-            <span className="upload-check" aria-hidden="true">
-              ✓
+        <div
+          className="file-chip"
+          title={blobPath || undefined}
+        >
+          <span className="upload-check" aria-hidden="true">
+            ✓
+          </span>
+          <span className="file-chip-meta">
+            <strong>{fileName}</strong>
+            <span>
+              {size > 0 ? formatBytes(size) : "Stored in blob"}
+              {preprocessStatus !== "idle" ? ` · ${preprocessStatusLabel(preprocessStatus)}` : ""}
             </span>
-            Stored in blob
-          </p>
-          <p className="upload-card-blob-path">
-            {fileName}
-            {size > 0 ? ` · ${formatBytes(size)}` : ""}
-          </p>
-          <p className="upload-card-blob-path">{blobPath}</p>
+          </span>
         </div>
       ) : (
-        <p className="upload-card-pending">No file in blob storage yet.</p>
+        <button
+          type="button"
+          className={`drop-zone ${dragOver ? "is-dragover" : ""}`}
+          disabled={disabled || uploading}
+          onClick={() => inputRef.current?.click()}
+          onDragEnter={(event) => {
+            event.preventDefault();
+            setDragOver(true);
+          }}
+          onDragOver={(event) => {
+            event.preventDefault();
+            setDragOver(true);
+          }}
+          onDragLeave={(event) => {
+            event.preventDefault();
+            setDragOver(false);
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            setDragOver(false);
+            takeFile(event.dataTransfer.files?.[0]);
+          }}
+        >
+          <span className="drop-zone-title">{uploading ? "Uploading…" : `Drop ${hint} here`}</span>
+          <span className="drop-zone-subtitle">or browse to upload</span>
+        </button>
       )}
 
-      <label className="pipeline-field">
-        <span>{uploaded ? "Replace file" : "Choose file"}</span>
-        <input
-          type="file"
-          accept=".pdf,.xls,.xlsx,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-          disabled={disabled}
-          onChange={(event) => onFileChange(event.target.files?.[0] ?? null)}
-        />
-      </label>
-      {selectedFile ? <p className="upload-card-pending">Selected: {selectedFile.name}</p> : null}
-                      <button type="button" className="button button-primary" disabled={!selectedFile || disabled} onClick={onUpload}>
-                        {uploading ? "Uploading…" : uploaded ? `Re-upload ${title}` : `Upload ${title}`}
-                      </button>
+      <input
+        ref={inputRef}
+        className="visually-hidden"
+        type="file"
+        accept=".pdf,.xls,.xlsx,application/pdf,application/vnd.ms-excel,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        disabled={disabled || uploading}
+        onChange={(event) => {
+          takeFile(event.target.files?.[0]);
+          event.target.value = "";
+        }}
+      />
 
       {uploaded ? (
         <div className="processing-slot-status">
-          <p className="upload-card-preprocess-status" role="status" aria-live="polite">
-            Pipeline: {preprocessStatusLabel(preprocessStatus)}
-          </p>
-          <ul className="processing-checklist">
+          <ol className="processing-mini-pipeline" aria-label={`${title} processing stages`}>
             {checklist.map((item) => (
-              <li key={item.id}>
-                <span className={checklistChipClass(item.state)}>{item.label}</span>
-                <span className="processing-checklist-state">{item.state}</span>
+              <li key={item.id} className={`processing-mini-step is-${item.state}`}>
+                <span className="processing-mini-dot" aria-hidden="true" />
+                <span className="processing-mini-label">{item.label}</span>
               </li>
             ))}
-          </ul>
-          <div className="processing-slot-actions">
+          </ol>
+          <div className="processing-slot-actions pipeline-actions">
             {previewButtons.map((button) => (
               <button
                 key={button.label}
                 type="button"
-                className="button button-secondary upload-card-preview-btn"
+                className="button button-secondary"
                 disabled={button.disabled}
                 onClick={button.onClick}
               >
                 {button.label}
               </button>
             ))}
+            <button
+              type="button"
+              className="button button-ghost"
+              disabled={disabled || uploading}
+              onClick={() => inputRef.current?.click()}
+            >
+              Replace
+            </button>
             {canReprocess ? (
-              <button type="button" className="button button-secondary" disabled={reprocessDisabled} onClick={onReprocess}>
+              <button type="button" className="button button-ghost" disabled={reprocessDisabled} onClick={onReprocess}>
                 Re-process
               </button>
             ) : null}
@@ -222,8 +245,6 @@ export function ProcessingStepPage({
   hideLocalActivity = false
 }: ProcessingStepPageProps): JSX.Element {
   const jobs = usePipelineJobs();
-  const [protocolFile, setProtocolFile] = useState<File | null>(null);
-  const [acrfFile, setAcrfFile] = useState<File | null>(null);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
   const [uploadingSlot, setUploadingSlot] = useState<"protocol" | "acrf" | null>(null);
@@ -392,8 +413,7 @@ export function ProcessingStepPage({
     };
   }, [runPreprocessSlot]);
 
-  async function handleUpload(slot: "protocol" | "acrf"): Promise<void> {
-    const file = slot === "protocol" ? protocolFile : acrfFile;
+  async function handleUpload(slot: "protocol" | "acrf", file: File): Promise<void> {
     if (!file || !studyId.trim()) {
       return;
     }
@@ -403,11 +423,6 @@ export function ProcessingStepPage({
     try {
       const result = await uploadStep1File(studyId.trim(), slot, file);
       onStatusesChange(result.stepStatuses);
-      if (slot === "protocol") {
-        setProtocolFile(null);
-      } else {
-        setAcrfFile(null);
-      }
       await refreshStatus();
       setMessage(`Uploaded ${slot === "protocol" ? "protocol" : "aCRF"}. Starting processing…`);
       enqueuePreprocess(slot);
@@ -641,15 +656,14 @@ export function ProcessingStepPage({
             ) : null}
 
             <Card>
-              <Stack gap="md">
-                <div className="upload-cards-grid">
+              <div className="upload-cards-grid">
                   <UploadSlotCard
-                    title="Protocol PDF"
+                    title="Protocol"
+                    hint="PDF"
                     uploaded={protocolUploaded}
                     fileName={uploadStatus?.protocol.fileName || "protocol.pdf"}
                     size={uploadStatus?.protocol.size ?? 0}
                     blobPath={uploadStatus?.protocol.blob || ""}
-                    selectedFile={protocolFile}
                     uploading={uploadingSlot === "protocol"}
                     disabled={busy || !studyId.trim()}
                     preprocessStatus={protocolPreprocess}
@@ -674,17 +688,16 @@ export function ProcessingStepPage({
                     ]}
                     canReprocess={protocolUploaded}
                     reprocessDisabled={busy}
-                    onFileChange={setProtocolFile}
-                    onUpload={() => void handleUpload("protocol")}
+                    onUploadFile={(file) => void handleUpload("protocol", file)}
                     onReprocess={() => enqueuePreprocess("protocol")}
                   />
                   <UploadSlotCard
-                    title="aCRF (PDF/XLS/XLSX)"
+                    title="aCRF"
+                    hint="PDF/XLS"
                     uploaded={acrfUploaded}
                     fileName={uploadStatus?.acrf.fileName || "acrf.pdf"}
                     size={uploadStatus?.acrf.size ?? 0}
                     blobPath={uploadStatus?.acrf.blob || ""}
-                    selectedFile={acrfFile}
                     uploading={uploadingSlot === "acrf"}
                     disabled={busy || !studyId.trim()}
                     preprocessStatus={acrfPreprocess}
@@ -713,35 +726,35 @@ export function ProcessingStepPage({
                     ]}
                     canReprocess={acrfUploaded}
                     reprocessDisabled={busy}
-                    onFileChange={setAcrfFile}
-                    onUpload={() => void handleUpload("acrf")}
+                    onUploadFile={(file) => void handleUpload("acrf", file)}
                     onReprocess={() => enqueuePreprocess("acrf")}
                   />
-                </div>
+              </div>
 
                 {!hideLocalActivity && runState.llmProgress ? <LlmProgressBar progress={runState.llmProgress} /> : null}
 
-                <button
-                  type="button"
-                  className="button button-secondary"
-                  disabled={busy || !studyId.trim()}
-                  onClick={() => {
-                    setStatusLoading(true);
-                    setError("");
-                    void refreshStatus()
-                      .catch((refreshError) => {
-                        setError(
-                          refreshError instanceof Error
-                            ? refreshError.message
-                            : "Unable to load upload status."
-                        );
-                      })
-                      .finally(() => setStatusLoading(false));
-                  }}
-                >
-                  Refresh status
-                </button>
-              </Stack>
+                <div className="pipeline-actions" style={{ marginTop: "var(--space-md)" }}>
+                  <button
+                    type="button"
+                    className="button button-secondary"
+                    disabled={busy || !studyId.trim()}
+                    onClick={() => {
+                      setStatusLoading(true);
+                      setError("");
+                      void refreshStatus()
+                        .catch((refreshError) => {
+                          setError(
+                            refreshError instanceof Error
+                              ? refreshError.message
+                              : "Unable to load upload status."
+                          );
+                        })
+                        .finally(() => setStatusLoading(false));
+                    }}
+                  >
+                    Refresh status
+                  </button>
+                </div>
             </Card>
           </Stack>
         </div>

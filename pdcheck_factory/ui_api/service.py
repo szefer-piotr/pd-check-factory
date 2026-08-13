@@ -245,6 +245,170 @@ class UiStepService:
             final_xlsx=paths.local_final_deviations_xlsx(study_id, self.output_dir),
         )
 
+    def _content_type_for_path(self, path: Path) -> str:
+        suffix = path.suffix.lower()
+        if suffix == ".json":
+            return "application/json; charset=utf-8"
+        if suffix in {".md", ".markdown"}:
+            return "text/markdown; charset=utf-8"
+        if suffix == ".txt":
+            return "text/plain; charset=utf-8"
+        if suffix == ".pdf":
+            return "application/pdf"
+        return "application/octet-stream"
+
+    def _resolve_artifact_path(self, study_id: str, artifact: str) -> Path:
+        """Map a whitelisted artifact key to a local file path."""
+        study_id = self._require_study_id(study_id)
+        key = (artifact or "").strip()
+        if not key:
+            raise UiApiError("VALIDATION_ERROR", "artifact is required", 400)
+
+        p = self._study_paths(study_id)
+        out = self.output_dir
+
+        if key == "protocol-md":
+            return p.protocol_source
+        if key == "acrf-md":
+            return p.acrf_source
+        if key == "protocol-md-layout":
+            return paths.local_extraction_layout(study_id, "protocol", out) / "rendered" / "source.md"
+        if key == "protocol-md-odl":
+            return paths.local_extraction_opendataloader(study_id, "protocol", out) / "rendered" / "source.md"
+        if key == "acrf-md-layout":
+            return paths.local_extraction_layout(study_id, "acrf", out) / "rendered" / "source.md"
+        if key == "acrf-md-odl":
+            return paths.local_extraction_opendataloader(study_id, "acrf", out) / "rendered" / "source.md"
+        if key == "paragraphs-md":
+            return paths.local_protocol_paragraphs_md(study_id, out)
+        if key == "paragraph-index":
+            return p.paragraph_index
+        if key == "acrf-sections-manifest":
+            return p.acrf_sections_toc_dir / "sections_manifest.json"
+        if key == "acrf-summary-merged":
+            text_merged = paths.local_acrf_summary_text_merged(study_id, out)
+            if text_merged.is_file():
+                return text_merged
+            return paths.local_acrf_summary_merged(study_id, out)
+        if key == "rules-parsed":
+            return p.rules_parsed
+        if key == "rules-raw":
+            return paths.local_rules_raw_txt(study_id, out)
+        if key == "deviations-parsed":
+            return p.deviations_parsed
+        if key == "deviations-raw":
+            return paths.local_deviations_raw_txt(study_id, out)
+        if key == "deviations-review-state":
+            return p.deviations_review_state
+        if key == "pseudo-logic-validated":
+            return p.pseudo_logic_validated
+        if key == "final-deviations":
+            return p.final_json
+
+        if key.startswith("acrf-section:"):
+            section_name = key.split(":", 1)[1].strip()
+            if not section_name or "/" in section_name or "\\" in section_name or ".." in section_name:
+                raise UiApiError("VALIDATION_ERROR", f"Invalid acrf-section artifact '{key}'", 400)
+            return p.acrf_sections_toc_dir / section_name
+
+        if key.startswith("analyze-result:"):
+            doc = key.split(":", 1)[1].strip().lower()
+            if doc not in {"protocol", "acrf"}:
+                raise UiApiError("VALIDATION_ERROR", f"Invalid analyze-result doc '{doc}'", 400)
+            return paths.local_extraction_layout(study_id, doc, out) / "raw" / "analyze_result.json"
+
+        if key.startswith("coding-context:"):
+            deviation_id = key.split(":", 1)[1].strip()
+            if not deviation_id:
+                raise UiApiError("VALIDATION_ERROR", "coding-context requires a deviation id", 400)
+            return paths.local_deviation_context_json(study_id, out, deviation_id)
+
+        if key.startswith("coding-enrichment:"):
+            deviation_id = key.split(":", 1)[1].strip()
+            if not deviation_id:
+                raise UiApiError("VALIDATION_ERROR", "coding-enrichment requires a deviation id", 400)
+            return paths.local_protocol_enrichment_json(study_id, out, deviation_id)
+
+        raise UiApiError("NOT_FOUND", f"Unknown artifact '{key}'", 404)
+
+    def get_artifact_meta(self, study_id: str, artifact: str) -> Dict[str, Any]:
+        path = self._resolve_artifact_path(study_id, artifact)
+        if not path.is_file():
+            raise UiApiError("NOT_FOUND", f"Artifact '{artifact}' not found", 404)
+        return {
+            "contentType": self._content_type_for_path(path),
+            "size": path.stat().st_size,
+            "fileName": path.name,
+        }
+
+    def get_artifact_text(self, study_id: str, artifact: str) -> Dict[str, Any]:
+        path = self._resolve_artifact_path(study_id, artifact)
+        if not path.is_file():
+            raise UiApiError("NOT_FOUND", f"Artifact '{artifact}' not found", 404)
+        content = path.read_bytes()
+        return {
+            "content": content,
+            "contentType": self._content_type_for_path(path),
+            "size": len(content),
+            "fileName": path.name,
+        }
+
+    def get_raw_pdf(self, study_id: str, doc: str) -> Dict[str, Any]:
+        study_id = self._require_study_id(study_id)
+        role = (doc or "").strip().lower()
+        if role not in {"protocol", "acrf"}:
+            raise UiApiError("VALIDATION_ERROR", "doc must be 'protocol' or 'acrf'", 400)
+
+        if role == "protocol":
+            blob_path = paths.raw_protocol_blob(study_id)
+            file_name = "protocol.pdf"
+        else:
+            manifest = self._read_upload_manifest_obj(study_id)
+            acrf_source_type = str(manifest.get("acrfSourceType") or "pdf").strip().lower()
+            if acrf_source_type not in {"pdf", "xls", "xlsx"}:
+                acrf_source_type = "pdf"
+            blob_path = paths.raw_acrf_blob_for_source_type(study_id, acrf_source_type)
+            file_name = {
+                "xls": "acrf.xls",
+                "xlsx": "acrf.xlsx",
+            }.get(acrf_source_type, "acrf.pdf")
+
+        local_cache = paths.local_study_root(study_id, self.output_dir) / "raw" / file_name
+        if local_cache.is_file():
+            data = local_cache.read_bytes()
+        else:
+            try:
+                blob_service = blob_io.blob_service_from_env()
+                container = blob_io.container_from_env()
+                if not blob_io.blob_exists(
+                    blob_service=blob_service,
+                    container_name=container,
+                    blob_path=blob_path,
+                ):
+                    raise UiApiError("NOT_FOUND", f"Raw {role} document not found", 404)
+                data = blob_io.download_blob_bytes(
+                    blob_service=blob_service,
+                    container_name=container,
+                    blob_path=blob_path,
+                )
+            except UiApiError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                raise UiApiError("NOT_FOUND", f"Raw {role} document not available: {exc}", 404) from exc
+            local_cache.parent.mkdir(parents=True, exist_ok=True)
+            local_cache.write_bytes(data)
+
+        content_type = "application/pdf"
+        if file_name.endswith(".xls"):
+            content_type = "application/vnd.ms-excel"
+        elif file_name.endswith(".xlsx"):
+            content_type = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        return {
+            "content": data,
+            "contentType": content_type,
+            "fileName": file_name,
+        }
+
     def _require_study_id(self, study_id: str) -> str:
         normalized = (study_id or "").strip()
         if not normalized:
@@ -3636,6 +3800,9 @@ class UiStepService:
                 active_map = dict(manifest.get("activeStepArtifacts") or {})
                 active_map[step_id] = new_version
                 self._write_upload_manifest(study_id, active_step_artifacts=active_map)
+                if step_id == "extract-rules" and new_version:
+                    # Fresh extract always starts with a clean per-version chat.
+                    self._init_empty_rules_chat_for_version(study_id, new_version)
             except ValueError as exc:
                 if step_id == "extract-deviations" and resolved_version_mode == "overwrite":
                     raise UiApiError("STEP_BLOCKED", str(exc), 409) from exc
@@ -4617,28 +4784,92 @@ class UiStepService:
         self._save_rules(study_id, rules_obj)
         return {"studyId": study_id, "deletedRuleId": rid, "stepStatuses": self._step_statuses(study_id)}
 
-    def _rules_chat_state_path(self, study_id: str) -> Path:
+    def _active_extract_rules_version(self, study_id: str) -> str | None:
+        active = (self._read_upload_manifest_obj(study_id).get("activeStepArtifacts") or {}).get(
+            "extract-rules"
+        )
+        ver = str(active or "").strip()
+        return ver or None
+
+    def _legacy_rules_chat_state_path(self, study_id: str) -> Path:
         return paths.local_review_dir(study_id, self.output_dir) / "rules_chat_state.json"
 
-    def _load_rules_chat_state(self, study_id: str) -> Dict[str, Any]:
-        chat_path = self._rules_chat_state_path(study_id)
-        if chat_path.is_file():
-            return read_json(chat_path)
-        return {
+    def _rules_chat_root(self, study_id: str) -> Path:
+        return paths.local_review_dir(study_id, self.output_dir) / "rules_chat"
+
+    def _rules_chat_state_path(self, study_id: str, version: str) -> Path:
+        safe = str(version or "").strip()
+        if not safe or "/" in safe or "\\" in safe or ".." in safe:
+            raise UiApiError("VALIDATION_ERROR", f"Invalid rules chat version '{version}'", 400)
+        return self._rules_chat_root(study_id) / safe / "rules_chat_state.json"
+
+    def _empty_rules_chat_state(self, study_id: str, version: str | None = None) -> Dict[str, Any]:
+        obj: Dict[str, Any] = {
             "schema_version": "1.0.0",
             "study_id": study_id,
             "updated_at": "",
             "messages": [],
         }
+        if version:
+            obj["version"] = version
+        return obj
 
-    def _save_rules_chat_state(self, study_id: str, chat_obj: Dict[str, Any]) -> None:
+    def _maybe_migrate_legacy_rules_chat(self, study_id: str, version: str) -> None:
+        """One-time: attach study-scoped rules_chat_state.json to the active version."""
+        legacy = self._legacy_rules_chat_state_path(study_id)
+        if not legacy.is_file():
+            return
+        target = self._rules_chat_state_path(study_id, version)
+        if target.is_file():
+            return
+        chat_root = self._rules_chat_root(study_id)
+        if chat_root.is_dir() and any(chat_root.iterdir()):
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(legacy), str(target))
+        self._mirror_upload(study_id, target)
+
+    def _init_empty_rules_chat_for_version(self, study_id: str, version: str) -> None:
+        """Start a clean chat store for a newly extracted rules version."""
+        chat_obj = self._empty_rules_chat_state(study_id, version)
+        self._save_rules_chat_state(study_id, version, chat_obj)
+
+    def _copy_rules_chat_to_version(
+        self, study_id: str, source_version: str, target_version: str, chat_obj: Dict[str, Any]
+    ) -> None:
+        copied = dict(chat_obj)
+        copied["version"] = target_version
+        self._save_rules_chat_state(study_id, target_version, copied)
+
+    def _load_rules_chat_state(self, study_id: str, version: str) -> Dict[str, Any]:
+        self._maybe_migrate_legacy_rules_chat(study_id, version)
+        chat_path = self._rules_chat_state_path(study_id, version)
+        if chat_path.is_file():
+            obj = read_json(chat_path)
+            if isinstance(obj, dict):
+                return obj
+        return self._empty_rules_chat_state(study_id, version)
+
+    def _save_rules_chat_state(self, study_id: str, version: str, chat_obj: Dict[str, Any]) -> None:
         chat_obj["updated_at"] = datetime.now(timezone.utc).isoformat()
-        write_json(self._rules_chat_state_path(study_id), chat_obj)
-        self._mirror_upload(study_id, self._rules_chat_state_path(study_id))
+        chat_obj["version"] = version
+        chat_path = self._rules_chat_state_path(study_id, version)
+        chat_path.parent.mkdir(parents=True, exist_ok=True)
+        write_json(chat_path, chat_obj)
+        self._mirror_upload(study_id, chat_path)
 
     def get_rules_chat(self, study_id: str) -> Dict[str, Any]:
         study_id = self._require_study_id(study_id)
-        chat_obj = self._load_rules_chat_state(study_id)
+        active_version = self._active_extract_rules_version(study_id)
+        if not active_version:
+            return {
+                "studyId": study_id,
+                "messages": [],
+                "ruleCount": 0,
+                "listRevision": 0,
+                "activeVersion": None,
+            }
+        chat_obj = self._load_rules_chat_state(study_id, active_version)
         messages = list(chat_obj.get("messages", []))
         if not messages:
             from pdcheck_factory.review_chat.capabilities import welcome_message
@@ -4651,16 +4882,14 @@ class UiStepService:
                 }
             ]
             chat_obj["messages"] = messages
-            self._save_rules_chat_state(study_id, chat_obj)
+            self._save_rules_chat_state(study_id, active_version, chat_obj)
         rules_obj = self._load_rules(study_id)
         return {
             "studyId": study_id,
             "messages": messages[-40:],
             "ruleCount": len(list(rules_obj.get("rules", []))),
             "listRevision": self._list_revision(rules_obj),
-            "activeVersion": (self._read_upload_manifest_obj(study_id).get("activeStepArtifacts") or {}).get(
-                "extract-rules"
-            ),
+            "activeVersion": active_version,
         }
 
     def refine_rules_chat(
@@ -4678,12 +4907,16 @@ class UiStepService:
         if not comment:
             raise UiApiError("VALIDATION_ERROR", "message is required", 400)
 
+        active_version = self._active_extract_rules_version(study_id)
+        if not active_version:
+            raise UiApiError("STEP_BLOCKED", "No active extract-rules version for chat", 409)
+
         from pdcheck_factory.review_chat.pipeline import run_review_chat_turn
         from pdcheck_factory.review_chat.working_context import WorkingContext
 
         rules_obj = self._load_rules(study_id)
         rules = list(rules_obj.get("rules", []))
-        chat_obj = self._load_rules_chat_state(study_id)
+        chat_obj = self._load_rules_chat_state(study_id, active_version)
         messages = list(chat_obj.get("messages", []))
         if not messages:
             from pdcheck_factory.review_chat.capabilities import welcome_message
@@ -4724,7 +4957,9 @@ class UiStepService:
                 cost_usage.session(study_id, self.output_dir, step="rules-chat"),
                 llm_call_log.bind(
                     process="rules-chat",
-                    conversation_id=llm_call_log.conversation_id_for_rules_chat(study_id),
+                    conversation_id=llm_call_log.conversation_id_for_rules_chat(
+                        study_id, active_version
+                    ),
                 ),
             ):
                 turn = run_review_chat_turn(
@@ -4747,7 +4982,7 @@ class UiStepService:
                 }
             )
             chat_obj["messages"] = messages[-40:]
-            self._save_rules_chat_state(study_id, chat_obj)
+            self._save_rules_chat_state(study_id, active_version, chat_obj)
             raise UiApiError("REFINE_FAILED", str(exc), 500) from exc
 
         messages.append(
@@ -4758,7 +4993,7 @@ class UiStepService:
             }
         )
         chat_obj["messages"] = messages[-40:]
-        self._save_rules_chat_state(study_id, chat_obj)
+        self._save_rules_chat_state(study_id, active_version, chat_obj)
 
         if turn.applied and apply:
             normalized_rules: List[Dict[str, Any]] = []
@@ -4778,6 +5013,8 @@ class UiStepService:
                 derived_from={"operation": "rules-chat"},
                 version_mode="new",
             )
+            # Carry conversation into the new version so edits keep their chat context.
+            self._copy_rules_chat_to_version(study_id, active_version, version, chat_obj)
             manifest = self._read_upload_manifest_obj(study_id)
             active_map = dict(manifest.get("activeStepArtifacts") or {})
             active_map["extract-rules"] = version
@@ -4794,6 +5031,7 @@ class UiStepService:
             "listRevision": self._list_revision(refreshed),
             "responseType": turn.response_type,
             "audit": turn.audit,
+            "activeVersion": version or active_version,
             "stepStatuses": self._step_statuses(study_id),
         }
 

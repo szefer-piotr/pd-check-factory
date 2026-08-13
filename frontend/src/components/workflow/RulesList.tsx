@@ -1,17 +1,28 @@
+import { useEffect, useState } from "react";
+import { ParagraphRefChip } from "../viewers/RefChip";
+import { getParagraphTextMap } from "../../services/paragraphCache";
 import type { RulePreviewRow } from "../../utils/previewFormat";
 
 interface RulesListProps {
   rules: RulePreviewRow[];
   selectedId: string | null;
+  studyId: string;
   onSelect: (ruleId: string) => void;
+  onOpenParagraphRef: (refId: string, allRefs: string[]) => void;
 }
 
 function RuleExpandedTile({
   rule,
-  onClose
+  paragraphTexts,
+  paragraphsLoading,
+  onClose,
+  onOpenParagraphRef
 }: {
   rule: RulePreviewRow;
+  paragraphTexts: Map<string, string>;
+  paragraphsLoading: boolean;
   onClose: () => void;
+  onOpenParagraphRef: (refId: string, allRefs: string[]) => void;
 }): JSX.Element {
   return (
     <div
@@ -40,18 +51,30 @@ function RuleExpandedTile({
 
       <div className="step7-deviation-expanded-body">
         <section className="step7-tile-section">
-          <h5 className="step7-tile-section-title">Supporting information</h5>
+          <h5 className="step7-tile-section-title">Paragraph references</h5>
           <div className="step7-tile-section-body">
-            <div className="step7-evidence-panel">
-              <div className="step7-tile-field">
-                <h6>Paragraph references</h6>
-                {rule.paragraph_refs.length > 0 ? (
-                  <p className="step7-evidence-body">{rule.paragraph_refs.join(", ")}</p>
-                ) : (
-                  <p className="step7-evidence-body">None</p>
-                )}
-              </div>
-            </div>
+            {rule.paragraph_refs.length === 0 ? (
+              <p className="step7-evidence-body">None</p>
+            ) : paragraphsLoading ? (
+              <p className="step7-muted">Loading paragraph text…</p>
+            ) : (
+              <ul className="rule-paragraph-ref-list">
+                {rule.paragraph_refs.map((refId) => {
+                  const text = paragraphTexts.get(refId);
+                  return (
+                    <li key={refId} className="rule-paragraph-ref-item">
+                      <ParagraphRefChip
+                        refId={refId}
+                        onOpen={() => onOpenParagraphRef(refId, rule.paragraph_refs)}
+                      />
+                      <p className="rule-paragraph-ref-text">
+                        {text?.trim() ? text : "Paragraph text unavailable"}
+                      </p>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
           </div>
         </section>
       </div>
@@ -59,7 +82,41 @@ function RuleExpandedTile({
   );
 }
 
-export function RulesList({ rules, selectedId, onSelect }: RulesListProps): JSX.Element {
+export function RulesList({
+  rules,
+  selectedId,
+  studyId,
+  onSelect,
+  onOpenParagraphRef
+}: RulesListProps): JSX.Element {
+  const [paragraphTexts, setParagraphTexts] = useState<Map<string, string>>(new Map());
+  const [paragraphsLoading, setParagraphsLoading] = useState(false);
+
+  useEffect(() => {
+    const trimmed = studyId.trim();
+    if (!trimmed) {
+      setParagraphTexts(new Map());
+      setParagraphsLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setParagraphsLoading(true);
+    void getParagraphTextMap(trimmed)
+      .then((map) => {
+        if (!cancelled) {
+          setParagraphTexts(map);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setParagraphsLoading(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [studyId]);
+
   if (rules.length === 0) {
     return <p className="step7-muted">No rules to preview.</p>;
   }
@@ -73,7 +130,13 @@ export function RulesList({ rules, selectedId, onSelect }: RulesListProps): JSX.
             <li key={rule.rule_id} className={isSelected ? "step7-deviation-item-selected" : undefined}>
               {isSelected ? (
                 <div className="step7-deviation-item-selected-inner">
-                  <RuleExpandedTile rule={rule} onClose={() => onSelect("")} />
+                  <RuleExpandedTile
+                    rule={rule}
+                    paragraphTexts={paragraphTexts}
+                    paragraphsLoading={paragraphsLoading}
+                    onClose={() => onSelect("")}
+                    onOpenParagraphRef={onOpenParagraphRef}
+                  />
                 </div>
               ) : (
                 <div

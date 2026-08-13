@@ -187,6 +187,7 @@ export function RulesStepPage({
               ) : null}
               <RulesWorkspace
                 studyId={studyId}
+                activeVersion={activeVersion}
                 chatDeployment={chatDeployment}
                 rules={rules}
                 chatKey={rulesChatKey}

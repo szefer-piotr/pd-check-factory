@@ -72,7 +72,10 @@ def use_process(process: str) -> Iterator[LlmLogBind]:
         yield ctx
 
 
-def conversation_id_for_rules_chat(study_id: str) -> str:
+def conversation_id_for_rules_chat(study_id: str, version: str | None = None) -> str:
+    ver = (version or "").strip()
+    if ver:
+        return f"rules-chat:{study_id}:{ver}"
     return f"rules-chat:{study_id}"
 
 

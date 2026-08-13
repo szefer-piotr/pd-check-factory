@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useMemo } from "react";
 import { ConfigStepPage } from "./ConfigStepPage";
 import { ProcessingStepPage } from "./ProcessingStepPage";
 import { StudyStepPage } from "./StudyStepPage";
@@ -35,6 +35,16 @@ interface SetupStage {
   done: boolean;
 }
 
+function stageStatusLabel(done: boolean, isCurrent: boolean): string {
+  if (done) {
+    return "Complete";
+  }
+  if (isCurrent) {
+    return "In progress";
+  }
+  return "Not started";
+}
+
 export function StudySetupStepPage({
   studyId,
   onStudyIdChange,
@@ -53,10 +63,6 @@ export function StudySetupStepPage({
   onRefreshSummary,
   onStudyCreated
 }: StudySetupStepPageProps): JSX.Element {
-  const studyRef = useRef<HTMLElement | null>(null);
-  const configRef = useRef<HTMLElement | null>(null);
-  const processingRef = useRef<HTMLElement | null>(null);
-
   const studyDone = Boolean(studyId.trim());
   const configDone = configSaved;
   const documentsDone = processingComplete;
@@ -72,17 +78,37 @@ export function StudySetupStepPage({
 
   const completedCount = stages.filter((stage) => stage.done).length;
   const allComplete = completedCount === stages.length;
-  const progressPercent = Math.round((completedCount / stages.length) * 100);
 
-  useEffect(() => {
-    const target =
-      section === "config" ? configRef.current : section === "processing" ? processingRef.current : studyRef.current;
-    target?.scrollIntoView?.({ block: "start", behavior: "smooth" });
-  }, [section]);
+  const statusLine = stages
+    .map((stage) => {
+      if (stage.done) {
+        return `${stage.shortLabel} ready`;
+      }
+      if (section === stage.id) {
+        return `${stage.shortLabel} in progress`;
+      }
+      return `${stage.shortLabel} needed`;
+    })
+    .join(" · ");
 
   function goToStage(stageId: SetupStageId): void {
     navigateToPipelineStep("study-setup", { section: stageId, studyId: studyId.trim() || undefined });
   }
+
+  function continueTarget(): SetupStageId | "rules" | null {
+    if (section === "study" && studyDone) {
+      return "config";
+    }
+    if (section === "config" && configDone) {
+      return "processing";
+    }
+    if (section === "processing" && documentsDone) {
+      return "rules";
+    }
+    return null;
+  }
+
+  const next = continueTarget();
 
   return (
     <div className="pipeline-step-page study-setup-page">
@@ -90,8 +116,8 @@ export function StudySetupStepPage({
         <div>
           <h1>Study setup</h1>
           <p className="pipeline-step-description">
-            Complete the three stages below before moving on to Generate PD. Progress stays available in the activity
-            panel while you navigate.
+            Complete each stage before moving on to Generate PD. Progress stays available in Activity while you
+            navigate.
           </p>
         </div>
         <span
@@ -103,15 +129,20 @@ export function StudySetupStepPage({
       </header>
 
       <nav className="study-setup-progress" aria-label="Study setup stages">
-        <div className="study-setup-progress-track" aria-hidden="true">
-          <div className="study-setup-progress-fill" style={{ width: `${progressPercent}%` }} />
-        </div>
         <ol className="study-setup-progress-stages">
           {stages.map((stage, index) => {
             const isCurrent = section === stage.id;
             const stateClass = stage.done ? "is-done" : isCurrent ? "is-current" : "is-pending";
+            const previousDone = index > 0 && Boolean(stages[index - 1]?.done);
+            const connectorDone = previousDone && stage.done;
             return (
               <li key={stage.id} className={`study-setup-progress-stage ${stateClass}`}>
+                {index > 0 ? (
+                  <span
+                    className={`study-setup-progress-connector ${connectorDone ? "is-done" : ""}`}
+                    aria-hidden="true"
+                  />
+                ) : null}
                 <button
                   type="button"
                   className="study-setup-progress-button"
@@ -124,7 +155,7 @@ export function StudySetupStepPage({
                   <span className="study-setup-progress-copy">
                     <span className="study-setup-progress-label">{stage.label}</span>
                     <span className="study-setup-progress-state">
-                      {stage.done ? "Complete" : isCurrent ? "In progress" : "Not started"}
+                      {stageStatusLabel(stage.done, isCurrent)}
                     </span>
                   </span>
                 </button>
@@ -132,22 +163,19 @@ export function StudySetupStepPage({
             );
           })}
         </ol>
+        <p className="study-setup-progress-summary">{statusLine}</p>
       </nav>
 
-      <div className="study-setup-top-grid">
-        <section
-          ref={studyRef}
-          id="study-setup-study"
-          className={`study-setup-section ${studyDone ? "is-complete" : ""}`}
-        >
-          <StudyStepPage studyId={studyId} onStudyIdChange={onStudyIdChange} onCreated={onStudyCreated} />
-        </section>
-
-        <section
-          ref={configRef}
-          id="study-setup-config"
-          className={`study-setup-section ${configDone ? "is-complete" : ""}`}
-        >
+      <section className="study-setup-section" aria-live="polite">
+        {section === "study" ? (
+          <StudyStepPage
+            studyId={studyId}
+            onStudyIdChange={onStudyIdChange}
+            onCreated={onStudyCreated}
+            embedded
+          />
+        ) : null}
+        {section === "config" ? (
           <ConfigStepPage
             settings={settings}
             onChange={onSettingsChange}
@@ -156,25 +184,43 @@ export function StudySetupStepPage({
             deployments={deployments}
             deploymentsLoading={deploymentsLoading}
             defaultDeployment={defaultDeployment}
+            embedded
           />
-        </section>
-      </div>
-
-      <section
-        ref={processingRef}
-        id="study-setup-processing"
-        className={`study-setup-section study-setup-section-documents ${documentsDone ? "is-complete" : ""}`}
-      >
-        <ProcessingStepPage
-          studyId={studyId}
-          onStatusesChange={onStatusesChange}
-          onProcessingCompleteChange={onProcessingCompleteChange}
-          onRunActiveChange={onRunActiveChange}
-          onRefreshSummary={onRefreshSummary}
-          embedded
-          hideLocalActivity
-        />
+        ) : null}
+        {section === "processing" ? (
+          <ProcessingStepPage
+            studyId={studyId}
+            onStatusesChange={onStatusesChange}
+            onProcessingCompleteChange={onProcessingCompleteChange}
+            onRunActiveChange={onRunActiveChange}
+            onRefreshSummary={onRefreshSummary}
+            embedded
+            hideLocalActivity
+          />
+        ) : null}
       </section>
+
+      {next ? (
+        <div className="study-setup-continue pipeline-actions">
+          <button
+            type="button"
+            className="button button-primary"
+            onClick={() => {
+              if (next === "rules") {
+                navigateToPipelineStep("rules", { studyId: studyId.trim() || undefined });
+                return;
+              }
+              goToStage(next);
+            }}
+          >
+            {next === "config"
+              ? "Continue to Configuration"
+              : next === "processing"
+                ? "Continue to Documents"
+                : "Continue to Generate PD"}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

@@ -9,6 +9,7 @@ import { ChatSendIcon } from "./ChatSendIcon";
 
 interface RulesListChatProps {
   studyId: string;
+  activeVersion: string | null;
   chatDeployment: string;
   onApplied: (statuses: Record<string, StepStatus>) => void;
 }
@@ -23,6 +24,7 @@ function formatChatTime(ts: string): string {
 
 export function RulesListChat({
   studyId,
+  activeVersion,
   chatDeployment,
   onApplied
 }: RulesListChatProps): JSX.Element {
@@ -38,6 +40,8 @@ export function RulesListChat({
       return;
     }
     let cancelled = false;
+    setMessages([]);
+    setError("");
     void fetchRulesChat(studyId.trim())
       .then((result) => {
         if (!cancelled) {
@@ -55,7 +59,7 @@ export function RulesListChat({
     return () => {
       cancelled = true;
     };
-  }, [studyId]);
+  }, [studyId, activeVersion]);
 
   useEffect(() => {
     const el = threadRef.current;
