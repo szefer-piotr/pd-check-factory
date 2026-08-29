@@ -42,11 +42,13 @@ const baseProps = {
 describe("StudySetupStepPage", () => {
   it("renders only the active setup section", () => {
     const { rerender } = render(<StudySetupStepPage {...baseProps} section="study" />);
+    expect(screen.getByRole("heading", { name: "Study selection" })).toBeInTheDocument();
     expect(screen.getByTestId("study-stage")).toBeInTheDocument();
     expect(screen.queryByTestId("config-stage")).not.toBeInTheDocument();
     expect(screen.queryByTestId("processing-stage")).not.toBeInTheDocument();
 
     rerender(<StudySetupStepPage {...baseProps} section="config" />);
+    expect(screen.getByRole("heading", { name: "Configuration" })).toBeInTheDocument();
     expect(screen.getByTestId("config-stage")).toBeInTheDocument();
     expect(screen.queryByTestId("study-stage")).not.toBeInTheDocument();
   });

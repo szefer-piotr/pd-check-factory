@@ -1,6 +1,4 @@
 import { useCallback, useEffect, useState } from "react";
-import { ArtifactVersionPicker } from "../../components/pipeline/ArtifactVersionPicker";
-import { Stack } from "../../components/layout/Stack";
 import { Step7ReviewPanel } from "../../components/workflow/Step7ReviewPanel";
 import { deploymentForStep } from "../../hooks/useStudySettings";
 import type { StudySettings } from "../../hooks/useStudySettings";
@@ -35,6 +33,7 @@ export function DeviationsStepPage({
   chatDeployment
 }: DeviationsStepPageProps): JSX.Element {
   const jobs = usePipelineJobs();
+  const { setArtifactVersions, openInspector } = jobs;
   const backendStepId = "extract-deviations" as const;
 
   const [localError, setLocalError] = useState("");
@@ -96,6 +95,44 @@ export function DeviationsStepPage({
       cancelled = true;
     };
   }, [studyId, isComplete, reviewKey]);
+
+  const handleVersionSelect = useCallback(
+    async (version: string): Promise<void> => {
+      if (!studyId.trim() || versionLoading) {
+        return;
+      }
+      setVersionLoading(true);
+      try {
+        const result = await setActiveStepArtifact(studyId.trim(), backendStepId, version);
+        onStatusesChange(result.stepStatuses);
+        setActiveVersion(version);
+        await refreshVersions();
+        setReviewKey((value) => value + 1);
+      } finally {
+        setVersionLoading(false);
+      }
+    },
+    [onStatusesChange, refreshVersions, studyId, versionLoading]
+  );
+
+  useEffect(() => {
+    setArtifactVersions({
+      stepId: backendStepId,
+      versions,
+      activeVersion,
+      stepStatuses: backendStatuses,
+      disabled: isRunning || versionLoading,
+      onSelect: (version) => void handleVersionSelect(version)
+    });
+  }, [
+    activeVersion,
+    backendStatuses,
+    handleVersionSelect,
+    isRunning,
+    setArtifactVersions,
+    versionLoading,
+    versions
+  ]);
 
   async function executeRun(versionMode: "new" | "overwrite", overwriteVersion?: string): Promise<void> {
     if (!studyId.trim()) {
@@ -166,22 +203,6 @@ export function DeviationsStepPage({
     }
   }
 
-  async function handleVersionSelect(version: string): Promise<void> {
-    if (!studyId.trim() || versionLoading) {
-      return;
-    }
-    setVersionLoading(true);
-    try {
-      const result = await setActiveStepArtifact(studyId.trim(), backendStepId, version);
-      onStatusesChange(result.stepStatuses);
-      setActiveVersion(version);
-      await refreshVersions();
-      setReviewKey((value) => value + 1);
-    } finally {
-      setVersionLoading(false);
-    }
-  }
-
   const handleRowsChange = useCallback((nextRows: Step7DeviationRow[]) => {
     setRows(nextRows);
   }, []);
@@ -212,123 +233,112 @@ export function DeviationsStepPage({
   }
 
   return (
-    <Stack gap="md">
-      <div className="pipeline-step-page pipeline-review-page generate-pd-page">
-        <header className="pipeline-step-header">
-          <div>
-            <h1>Deviations</h1>
-            <p className="pipeline-step-description">
-              Extract deviations, refine them with chat, then export the accepted set.
-            </p>
+    <div className="pipeline-step-page pipeline-review-page generate-pd-page">
+      <header className="page-hero page-hero-row">
+        <div>
+          <h1>Deviations</h1>
+          <p>Extract deviations, refine them with chat, then export the accepted set.</p>
+        </div>
+        <span className={`chip ${isRunning ? "chip-warning" : isComplete ? "chip-success" : ""}`}>
+          {isRunning ? "Running" : isComplete ? "Complete" : "Pending"}
+        </span>
+      </header>
+
+      <div className="generate-pd-main generate-pd-main-single">
+        <div className="generate-pd-work">
+          {localError ? <p className="pipeline-error">{localError}</p> : null}
+          {dedupeMessage ? <p className="pipeline-message">{dedupeMessage}</p> : null}
+          {exportError ? <p className="pipeline-error">{exportError}</p> : null}
+          {exportMessage ? <p className="pipeline-message">{exportMessage}</p> : null}
+
+          <div className="pipeline-step-actions">
+            <button
+              type="button"
+              className="button button-primary"
+              disabled={!studyId.trim() || isRunning}
+              onClick={() => void handleRun()}
+            >
+              {isComplete ? "Re-run" : "Run"} Deviations
+              {isRunning ? <span className="spinner spinner-sm" aria-hidden /> : null}
+            </button>
+            {isComplete ? (
+              <button
+                type="button"
+                className="button button-secondary"
+                disabled={isRunning}
+                onClick={() => void handleDedupePerRule()}
+              >
+                Deduplicate (per rule)
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={() => openInspector("versions")}
+            >
+              Versions
+            </button>
           </div>
-          <span className={`pipeline-step-badge pipeline-step-badge-${isRunning ? "running" : isComplete ? "done" : "idle"}`}>
-            {isRunning ? "Running" : isComplete ? "Complete" : "Pending"}
-          </span>
-        </header>
 
-        <div className="generate-pd-main">
-          <div className="generate-pd-work">
-            {localError ? <p className="pipeline-error">{localError}</p> : null}
-            {dedupeMessage ? <p className="pipeline-message">{dedupeMessage}</p> : null}
-            {exportError ? <p className="pipeline-error">{exportError}</p> : null}
-            {exportMessage ? <p className="pipeline-message">{exportMessage}</p> : null}
+          {isComplete ? (
+            ready ? (
+              <Step7ReviewPanel
+                key={reviewKey}
+                studyId={studyId}
+                onStepStatusesChange={onStatusesChange}
+                onRowsChange={handleRowsChange}
+                chatDeployment={chatDeployment}
+                hideSourceSelector
+                minimal
+                exportAcceptedCount={acceptedCount}
+                exportTotalCount={rows.length}
+                exporting={exporting}
+                onExport={() => void handleExport()}
+              />
+            ) : (
+              <p className="step7-muted">Loading review data…</p>
+            )
+          ) : null}
+        </div>
+      </div>
 
-            <div className="pipeline-step-actions">
+      {versionChoice ? (
+        <div className="version-choice-dialog" role="dialog" aria-modal="true" aria-labelledby="version-choice-title">
+          <div className="version-choice-dialog-card">
+            <h3 id="version-choice-title">Matching deviations version found</h3>
+            <p>
+              Sources match existing version <strong>{versionChoice.matchingVersion}</strong>. Overwrite it or create a
+              new version?
+            </p>
+            <div className="version-choice-dialog-actions">
+              <button
+                type="button"
+                className="button button-secondary"
+                onClick={() => {
+                  const matching = versionChoice.matchingVersion;
+                  setVersionChoice(null);
+                  void executeRun("overwrite", matching);
+                }}
+              >
+                Overwrite {versionChoice.matchingVersion}
+              </button>
               <button
                 type="button"
                 className="button button-primary"
-                disabled={!studyId.trim() || isRunning}
-                onClick={() => void handleRun()}
+                onClick={() => {
+                  setVersionChoice(null);
+                  void executeRun("new");
+                }}
               >
-                {isComplete ? "Re-run" : "Run"} Deviations
-                {isRunning ? <span className="spinner spinner-sm" aria-hidden /> : null}
+                Create new version
+              </button>
+              <button type="button" className="button button-ghost" onClick={() => setVersionChoice(null)}>
+                Cancel
               </button>
             </div>
-
-            {isComplete ? (
-              <div className="pipeline-step-secondary-actions">
-                <button
-                  type="button"
-                  className="button button-secondary"
-                  disabled={isRunning}
-                  onClick={() => void handleDedupePerRule()}
-                >
-                  Deduplicate deviations (per rule)
-                </button>
-              </div>
-            ) : null}
-
-            {isComplete ? (
-              ready ? (
-                <Step7ReviewPanel
-                  key={reviewKey}
-                  studyId={studyId}
-                  onStepStatusesChange={onStatusesChange}
-                  onRowsChange={handleRowsChange}
-                  chatDeployment={chatDeployment}
-                  hideSourceSelector
-                  minimal
-                  exportAcceptedCount={acceptedCount}
-                  exportTotalCount={rows.length}
-                  exporting={exporting}
-                  onExport={() => void handleExport()}
-                />
-              ) : (
-                <p className="step7-muted">Loading review data…</p>
-              )
-            ) : null}
           </div>
-
-          <aside className="generate-pd-chrome" aria-label="Artifact versions">
-            <ArtifactVersionPicker
-              stepId={backendStepId}
-              versions={versions}
-              activeVersion={activeVersion}
-              stepStatuses={backendStatuses}
-              disabled={isRunning || versionLoading}
-              onSelect={(version) => void handleVersionSelect(version)}
-            />
-          </aside>
         </div>
-
-        {versionChoice ? (
-          <div className="version-choice-dialog" role="dialog" aria-modal="true" aria-labelledby="version-choice-title">
-            <div className="version-choice-dialog-card">
-              <h3 id="version-choice-title">Matching deviations version found</h3>
-              <p>
-                Sources match existing version <strong>{versionChoice.matchingVersion}</strong>. Overwrite it or create a
-                new version?
-              </p>
-              <div className="version-choice-dialog-actions">
-                <button
-                  type="button"
-                  className="button button-secondary"
-                  onClick={() => {
-                    const matching = versionChoice.matchingVersion;
-                    setVersionChoice(null);
-                    void executeRun("overwrite", matching);
-                  }}
-                >
-                  Overwrite {versionChoice.matchingVersion}
-                </button>
-                <button
-                  type="button"
-                  className="button button-primary"
-                  onClick={() => {
-                    setVersionChoice(null);
-                    void executeRun("new");
-                  }}
-                >
-                  Create new version
-                </button>
-                <button type="button" className="button button-ghost" onClick={() => setVersionChoice(null)}>
-                  Cancel
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
-      </div>
-    </Stack>
+      ) : null}
+    </div>
   );
 }

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArtifactVersionPicker } from "../../components/pipeline/ArtifactVersionPicker";
 import { RulesWorkspace } from "../../components/workflow/RulesWorkspace";
 import { deploymentForStep } from "../../hooks/useStudySettings";
 import type { StudySettings } from "../../hooks/useStudySettings";
@@ -56,6 +55,7 @@ export function RulesStepPage({
   chatDeployment
 }: RulesStepPageProps): JSX.Element {
   const jobs = usePipelineJobs();
+  const { setArtifactVersions, openInspector } = jobs;
   const backendStepId = "extract-rules" as const;
 
   const [localError, setLocalError] = useState("");
@@ -103,6 +103,45 @@ export function RulesStepPage({
     void refreshVersions();
   }, [refreshPreview, refreshVersions]);
 
+  const handleVersionSelect = useCallback(
+    async (version: string): Promise<void> => {
+      if (!studyId.trim() || versionLoading) {
+        return;
+      }
+      setVersionLoading(true);
+      try {
+        const result = await setActiveStepArtifact(studyId.trim(), backendStepId, version);
+        onStatusesChange(result.stepStatuses);
+        setActiveVersion(version);
+        await refreshPreview();
+        await refreshVersions();
+        setRulesChatKey((value) => value + 1);
+      } finally {
+        setVersionLoading(false);
+      }
+    },
+    [onStatusesChange, refreshPreview, refreshVersions, studyId, versionLoading]
+  );
+
+  useEffect(() => {
+    setArtifactVersions({
+      stepId: backendStepId,
+      versions,
+      activeVersion,
+      stepStatuses: backendStatuses,
+      disabled: isRunning || versionLoading,
+      onSelect: (version) => void handleVersionSelect(version)
+    });
+  }, [
+    activeVersion,
+    backendStatuses,
+    handleVersionSelect,
+    isRunning,
+    setArtifactVersions,
+    versionLoading,
+    versions
+  ]);
+
   async function handleRun(): Promise<void> {
     if (!studyId.trim() || isRunning) {
       return;
@@ -126,40 +165,23 @@ export function RulesStepPage({
     }
   }
 
-  async function handleVersionSelect(version: string): Promise<void> {
-    if (!studyId.trim() || versionLoading) {
-      return;
-    }
-    setVersionLoading(true);
-    try {
-      const result = await setActiveStepArtifact(studyId.trim(), backendStepId, version);
-      onStatusesChange(result.stepStatuses);
-      setActiveVersion(version);
-      await refreshPreview();
-      await refreshVersions();
-      setRulesChatKey((value) => value + 1);
-    } finally {
-      setVersionLoading(false);
-    }
-  }
-
   const rules = useMemo(() => rulesFromPreview(preview), [preview]);
 
   return (
     <div className="pipeline-step-page generate-pd-page">
-      <header className="pipeline-step-header">
+      <header className="page-hero page-hero-row">
         <div>
           <h1>Rules</h1>
-          <p className="pipeline-step-description">
-            Extract protocol rules, preview them in the list, and discuss edits with the assistant.
-          </p>
+          <p>Extract protocol rules, preview them in the list, and discuss edits with the assistant.</p>
         </div>
-        <span className={`pipeline-step-badge pipeline-step-badge-${isRunning ? "running" : isComplete ? "done" : "idle"}`}>
+        <span
+          className={`chip ${isRunning ? "chip-warning" : isComplete ? "chip-success" : ""}`}
+        >
           {isRunning ? "Running" : isComplete ? "Complete" : "Pending"}
         </span>
       </header>
 
-      <div className="generate-pd-main">
+      <div className="generate-pd-main generate-pd-main-single">
         <div className="generate-pd-work">
           {localError ? <p className="pipeline-error">{localError}</p> : null}
 
@@ -172,6 +194,13 @@ export function RulesStepPage({
             >
               {isComplete ? "Re-run" : "Run"} Rules
               {isRunning ? <span className="spinner spinner-sm" aria-hidden /> : null}
+            </button>
+            <button
+              type="button"
+              className="button button-secondary"
+              onClick={() => openInspector("versions")}
+            >
+              Versions
             </button>
           </div>
 
@@ -200,17 +229,6 @@ export function RulesStepPage({
             </>
           ) : null}
         </div>
-
-        <aside className="generate-pd-chrome" aria-label="Artifact versions">
-          <ArtifactVersionPicker
-            stepId={backendStepId}
-            versions={versions}
-            activeVersion={activeVersion}
-            stepStatuses={backendStatuses}
-            disabled={isRunning || versionLoading}
-            onSelect={(version) => void handleVersionSelect(version)}
-          />
-        </aside>
       </div>
     </div>
   );

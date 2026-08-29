@@ -65,9 +65,9 @@ function normalizeSettings(parsed: Partial<StudySettings> | null | undefined): S
   };
 }
 
-function readSettingsFromKey(key: string): StudySettings | null {
+function readSettingsFromKey(key: string, storage: Storage = sessionStorage): StudySettings | null {
   try {
-    const raw = sessionStorage.getItem(key);
+    const raw = storage.getItem(key);
     if (!raw) {
       return null;
     }
@@ -77,41 +77,51 @@ function readSettingsFromKey(key: string): StudySettings | null {
   }
 }
 
-function readGlobalLlmSettings(): GlobalLlmSettings | null {
+export function readGlobalLlmSettings(): StudySettings {
+  const fromLocal = readSettingsFromKey(GLOBAL_LLM_SETTINGS_KEY, localStorage);
+  if (fromLocal) {
+    return fromLocal;
+  }
   try {
     const raw = localStorage.getItem(GLOBAL_LLM_SETTINGS_KEY);
     if (!raw) {
-      return null;
+      return DEFAULT_SETTINGS;
     }
-    const parsed = JSON.parse(raw) as Partial<GlobalLlmSettings>;
-    return {
+    const parsed = JSON.parse(raw) as Partial<GlobalLlmSettings & StudySettings>;
+    return normalizeSettings({
+      ...DEFAULT_SETTINGS,
       extractionDeployment:
         typeof parsed.extractionDeployment === "string" ? parsed.extractionDeployment : "",
       acrfSummaryDeployment:
         typeof parsed.acrfSummaryDeployment === "string" ? parsed.acrfSummaryDeployment : "",
-      chatDeployment: typeof parsed.chatDeployment === "string" ? parsed.chatDeployment : ""
-    };
+      chatDeployment: typeof parsed.chatDeployment === "string" ? parsed.chatDeployment : "",
+      extractorChoice:
+        parsed.extractorChoice === "both" ||
+        parsed.extractorChoice === "opendataloader" ||
+        parsed.extractorChoice === "document_intelligence"
+          ? parsed.extractorChoice
+          : DEFAULT_SETTINGS.extractorChoice,
+      extractionLlmInstructions:
+        typeof parsed.extractionLlmInstructions === "string"
+          ? parsed.extractionLlmInstructions
+          : DEFAULT_SETTINGS.extractionLlmInstructions
+    });
   } catch {
-    return null;
+    return DEFAULT_SETTINGS;
   }
 }
 
-function writeGlobalLlmSettings(settings: StudySettings): void {
-  const payload: GlobalLlmSettings = {
-    extractionDeployment: settings.extractionDeployment,
-    acrfSummaryDeployment: settings.acrfSummaryDeployment,
-    chatDeployment: settings.chatDeployment
-  };
-  localStorage.setItem(GLOBAL_LLM_SETTINGS_KEY, JSON.stringify(payload));
+export function writeGlobalLlmSettings(settings: StudySettings): void {
+  localStorage.setItem(GLOBAL_LLM_SETTINGS_KEY, JSON.stringify(normalizeSettings(settings)));
 }
 
 function seedFromGlobal(settings: StudySettings): StudySettings {
   const global = readGlobalLlmSettings();
-  if (!global) {
-    return settings;
-  }
   return {
     ...settings,
+    extractorChoice: settings.extractorChoice || global.extractorChoice,
+    extractionLlmInstructions:
+      settings.extractionLlmInstructions.trim() || global.extractionLlmInstructions,
     extractionDeployment: settings.extractionDeployment.trim() || global.extractionDeployment,
     acrfSummaryDeployment: settings.acrfSummaryDeployment.trim() || global.acrfSummaryDeployment,
     chatDeployment: settings.chatDeployment.trim() || global.chatDeployment

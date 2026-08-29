@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { Panel } from "../../components/layout/Panel";
 import { LogPanel } from "../../components/pipeline/LogPanel";
 import {
   createStudy,
@@ -270,36 +271,18 @@ export function StudyStepPage({
   return (
     <div className={`pipeline-step-page ${embedded ? "pipeline-step-page-embedded" : ""}`}>
       {!embedded ? (
-        <header className="pipeline-step-header">
+        <header className="page-hero page-hero-row">
           <div>
-            <h2>Study</h2>
-            <p className="pipeline-step-description">
-              Create a new study or select an existing folder from blob storage.
-            </p>
+            <h1>Study</h1>
+            <p>Create a new study or select an existing folder from blob storage.</p>
           </div>
           {studyId.trim() ? (
-            <span className="pipeline-step-badge pipeline-step-badge-done">Selected</span>
+            <span className="chip chip-success">Selected</span>
           ) : (
-            <span className="pipeline-step-badge">Required</span>
+            <span className="chip">Required</span>
           )}
         </header>
-      ) : (
-        <div className="study-setup-section-head">
-          <div>
-            <h2>Study</h2>
-            <p className="pipeline-step-description">
-              Create a new study or select an existing folder from blob storage.
-            </p>
-          </div>
-          {studyId.trim() ? (
-            <span className="pipeline-step-badge pipeline-step-badge-done">
-              Selected · {studyId.trim()}
-            </span>
-          ) : (
-            <span className="pipeline-step-badge">Required</span>
-          )}
-        </div>
-      )}
+      ) : null}
 
       {error ? <p className="pipeline-error">{error}</p> : null}
       {message ? <p className="pipeline-message">{message}</p> : null}
@@ -321,102 +304,134 @@ export function StudyStepPage({
 
       {loadLogs.length > 0 ? <LogPanel logs={loadLogs} active={loadingStudyId !== null} /> : null}
 
-      <div className="study-stage-panel">
-        <div className="study-create-row">
-          <label className="pipeline-field study-create-field">
-            <span>New study ID</span>
-            <input
-              value={newStudyId}
-              onChange={(event) => setNewStudyId(event.target.value)}
-              placeholder="e.g. TARA-002-201"
-            />
-          </label>
-          <div className="pipeline-actions">
-            <button
-              type="button"
-              className="button button-primary"
-              onClick={() => void handleCreate()}
-              disabled={Boolean(loadingStudyId) || isCreating}
-            >
-              {isCreating ? "Creating…" : "Create study"}
-            </button>
+      {studyId.trim() ? (
+        <p className="pipeline-message study-selected-banner" role="status">
+          Selected study <strong>{studyId.trim()}</strong>
+        </p>
+      ) : null}
+
+      <div className="study-entry-paths">
+        <Panel
+          title="Start a new study"
+          subtitle="Enter a study ID to create a fresh workspace in blob storage."
+          actions={<span className="chip">New</span>}
+        >
+          <div className="study-stage-body">
+            <div className="study-create-row">
+              <label className="pipeline-field study-create-field">
+                <span>New study ID</span>
+                <input
+                  value={newStudyId}
+                  onChange={(event) => setNewStudyId(event.target.value)}
+                  placeholder="e.g. TARA-002-201"
+                />
+              </label>
+              <div className="pipeline-actions">
+                <button
+                  type="button"
+                  className="button button-primary"
+                  onClick={() => void handleCreate()}
+                  disabled={Boolean(loadingStudyId) || isCreating}
+                >
+                  {isCreating ? "Creating…" : "Create study"}
+                </button>
+              </div>
+            </div>
           </div>
-        </div>
+        </Panel>
 
-        <div className="study-list-toolbar">
-          <label className="pipeline-field study-filter-field">
-            <span className="visually-hidden">Filter studies</span>
-            <input
-              value={filter}
-              onChange={(event) => setFilter(event.target.value)}
-              placeholder="Search studies…"
-              disabled={loading}
-            />
-          </label>
-          <div className="pipeline-actions">
-            <button
-              type="button"
-              className="button button-secondary"
-              disabled={loading || loadingStudyId !== null || isWiping}
-              onClick={() => {
-                setLoading(true);
-                setError("");
-                void refreshStudyList()
-                  .catch((refreshError) => {
-                    setError(refreshError instanceof Error ? refreshError.message : "Unable to load studies.");
-                  })
-                  .finally(() => setLoading(false));
-              }}
-            >
-              Refresh
-            </button>
+        <Panel
+          title="Open an existing study"
+          subtitle="Select a study from blob storage history. Syncing downloads artifacts locally."
+          actions={
+            studyId.trim() ? (
+              <span className="chip chip-success">Selected</span>
+            ) : (
+              <span className="chip">Required</span>
+            )
+          }
+        >
+          <div className="study-stage-body">
+            <div className="study-list-toolbar">
+              <label className="pipeline-field study-filter-field">
+                <span className="visually-hidden">Filter studies</span>
+                <input
+                  value={filter}
+                  onChange={(event) => setFilter(event.target.value)}
+                  placeholder="Search studies…"
+                  disabled={loading}
+                />
+              </label>
+              <div className="pipeline-actions">
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  disabled={loading || loadingStudyId !== null || isWiping}
+                  onClick={() => {
+                    setLoading(true);
+                    setError("");
+                    void refreshStudyList()
+                      .catch((refreshError) => {
+                        setError(
+                          refreshError instanceof Error ? refreshError.message : "Unable to load studies."
+                        );
+                      })
+                      .finally(() => setLoading(false));
+                  }}
+                >
+                  Refresh
+                </button>
+              </div>
+            </div>
+
+            {loading ? <p className="pipeline-hint">Loading study folders from blob…</p> : null}
+            {!loading && filteredStudies.length === 0 ? (
+              <p className="pipeline-hint">
+                {studies.length === 0
+                  ? "No studies found in blob storage."
+                  : "No studies match your search."}
+              </p>
+            ) : null}
+
+            <ul className="pipeline-study-list">
+              {filteredStudies.map((study) => (
+                <li key={study.studyId}>
+                  <button
+                    type="button"
+                    className={study.studyId === studyId.trim() ? "selected" : ""}
+                    onClick={() => void handleSelect(study.studyId)}
+                    disabled={loadingStudyId !== null}
+                  >
+                    <strong>{study.studyId}</strong>
+                    <span>
+                      {loadingStudyId === study.studyId
+                        ? `Syncing…${loadElapsedSec > 0 ? ` (${loadElapsedSec}s)` : ""}`
+                        : study.stage}
+                    </span>
+                  </button>
+                </li>
+              ))}
+            </ul>
           </div>
-        </div>
-
-        {loading ? <p className="pipeline-hint">Loading study folders from blob…</p> : null}
-        {!loading && filteredStudies.length === 0 ? (
-          <p className="pipeline-hint">
-            {studies.length === 0 ? "No studies found in blob storage." : "No studies match your search."}
-          </p>
-        ) : null}
-
-        <ul className="pipeline-study-list">
-          {filteredStudies.map((study) => (
-            <li key={study.studyId}>
-              <button
-                type="button"
-                className={study.studyId === studyId.trim() ? "selected" : ""}
-                onClick={() => void handleSelect(study.studyId)}
-                disabled={loadingStudyId !== null}
-              >
-                <strong>{study.studyId}</strong>
-                <span>
-                  {loadingStudyId === study.studyId
-                    ? `Syncing…${loadElapsedSec > 0 ? ` (${loadElapsedSec}s)` : ""}`
-                    : study.stage}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-
-        <details className="study-danger-details">
-          <summary>Danger zone</summary>
-          <p className="pipeline-hint">
-            Wipe permanently deletes every study under blob storage and matching local output folders.
-          </p>
-          <div className="pipeline-actions">
-            <button
-              type="button"
-              className="button button-danger"
-              disabled={loading || loadingStudyId !== null || isWiping}
-              onClick={() => void handleWipeBlob()}
-            >
-              {isWiping ? "Wiping…" : "Wipe blob storage"}
-            </button>
-          </div>
-        </details>
+        </Panel>
       </div>
+
+      <details className="study-danger-details">
+        <summary>Danger zone</summary>
+        <p className="pipeline-hint">
+          Wipe permanently deletes every study under blob storage and matching local output folders.
+        </p>
+        <div className="pipeline-actions">
+          <button
+            type="button"
+            className="button button-danger"
+            disabled={loading || loadingStudyId !== null || isWiping}
+            onClick={() => void handleWipeBlob()}
+          >
+            {isWiping ? "Wiping…" : "Wipe blob storage"}
+          </button>
+        </div>
+      </details>
     </div>
   );
 }

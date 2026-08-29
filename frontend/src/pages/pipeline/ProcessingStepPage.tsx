@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Card } from "../../components/layout/Card";
+import { Panel } from "../../components/layout/Panel";
 import { Stack } from "../../components/layout/Stack";
 import { PipelineLogDrawer } from "../../components/pipeline/PipelineLogDrawer";
 import { DocumentPreviewModal, type DocumentPreviewKind } from "../../components/workflow/DocumentPreviewModal";
@@ -597,15 +597,15 @@ export function ProcessingStepPage({
         <div className="pipeline-step-main">
           <Stack gap="md">
             {!embedded ? (
-              <header className="pipeline-step-header">
+              <header className="page-hero page-hero-row">
                 <div>
                   <h1>Process documents</h1>
-                  <p className="pipeline-step-description">
+                  <p>
                     Upload protocol and aCRF. Each file is processed end-to-end automatically (extract, index, and
                     aCRF summary as needed).
                   </p>
                 </div>
-                <span className={`pipeline-step-badge pipeline-step-badge-${pageStatus}`}>
+                <span className={`chip ${pageStatus === "done" ? "chip-success" : pageStatus === "failed" ? "chip-danger" : pageStatus === "running" ? "chip-warning" : ""}`}>
                   {pageStatus === "running"
                     ? "Running"
                     : pageStatus === "failed"
@@ -615,20 +615,7 @@ export function ProcessingStepPage({
                         : "Pending"}
                 </span>
               </header>
-            ) : (
-              <div className="study-setup-section-head">
-                <h2>Documents &amp; extractions</h2>
-                <span className={`pipeline-step-badge pipeline-step-badge-${pageStatus}`}>
-                  {pageStatus === "running"
-                    ? "Running"
-                    : pageStatus === "failed"
-                      ? "Failed"
-                      : bothReady
-                        ? "Complete"
-                        : "Required"}
-                </span>
-              </div>
-            )}
+            ) : null}
 
             {!hideLocalActivity && isPreprocessActive ? (
               <div className="pipeline-run-banner" role="status">
@@ -651,111 +638,127 @@ export function ProcessingStepPage({
                 <span className="upload-check" aria-hidden="true">
                   ✓
                 </span>
-                Protocol and aCRF are prepared. Continue to Generate PD when ready.
+                Protocol and aCRF are prepared. Continue to Rules when ready.
               </div>
             ) : null}
 
-            <Card>
+            <Panel
+              title={embedded ? "Documents & extractions" : undefined}
+              subtitle={embedded ? "Upload protocol and aCRF PDFs, then run preprocessing." : undefined}
+              actions={
+                embedded ? (
+                  <span className={`chip ${pageStatus === "done" ? "chip-success" : pageStatus === "failed" ? "chip-danger" : pageStatus === "running" ? "chip-warning" : ""}`}>
+                    {pageStatus === "running"
+                      ? "Running"
+                      : pageStatus === "failed"
+                        ? "Failed"
+                        : bothReady
+                          ? "Complete"
+                          : "Required"}
+                  </span>
+                ) : undefined
+              }
+            >
               <div className="upload-cards-grid">
-                  <UploadSlotCard
-                    title="Protocol"
-                    hint="PDF"
-                    uploaded={protocolUploaded}
-                    fileName={uploadStatus?.protocol.fileName || "protocol.pdf"}
-                    size={uploadStatus?.protocol.size ?? 0}
-                    blobPath={uploadStatus?.protocol.blob || ""}
-                    uploading={uploadingSlot === "protocol"}
-                    disabled={busy || !studyId.trim()}
-                    preprocessStatus={protocolPreprocess}
-                    checklist={protocolChecklist}
-                    previewButtons={[
-                      {
-                        label: "Preview extracted text",
-                        disabled: stepStatuses["extract-inputs"] !== "done" && !protocolPreprocessed,
-                        onClick: () => void openMarkdownPreview("protocol")
-                      },
-                      {
-                        label: "Preview index",
-                        disabled: !protocolPreprocessed && stepStatuses["index-protocol"] !== "done",
-                        onClick: () =>
-                          void openStepPreview(
-                            "protocol-index",
-                            "index-protocol",
-                            "Protocol — paragraph index",
-                            "markdown"
-                          )
-                      }
-                    ]}
-                    canReprocess={protocolUploaded}
-                    reprocessDisabled={busy}
-                    onUploadFile={(file) => void handleUpload("protocol", file)}
-                    onReprocess={() => enqueuePreprocess("protocol")}
-                  />
-                  <UploadSlotCard
-                    title="aCRF"
-                    hint="PDF/XLS"
-                    uploaded={acrfUploaded}
-                    fileName={uploadStatus?.acrf.fileName || "acrf.pdf"}
-                    size={uploadStatus?.acrf.size ?? 0}
-                    blobPath={uploadStatus?.acrf.blob || ""}
-                    uploading={uploadingSlot === "acrf"}
-                    disabled={busy || !studyId.trim()}
-                    preprocessStatus={acrfPreprocess}
-                    checklist={acrfChecklist}
-                    previewButtons={[
-                      ...(isXlsAcrf
-                        ? []
-                        : [
-                            {
-                              label: "Preview extracted text",
-                              disabled: stepStatuses["extract-inputs"] !== "done" && !acrfPreprocessed,
-                              onClick: () => void openMarkdownPreview("acrf")
-                            }
-                          ]),
-                      {
-                        label: "Preview summary",
-                        disabled: !acrfPreprocessed && stepStatuses["acrf-summary-text"] !== "done",
-                        onClick: () =>
-                          void openStepPreview(
-                            "acrf-summary",
-                            "acrf-summary-text",
-                            "aCRF — merged summary",
-                            "acrf-summary"
-                          )
-                      }
-                    ]}
-                    canReprocess={acrfUploaded}
-                    reprocessDisabled={busy}
-                    onUploadFile={(file) => void handleUpload("acrf", file)}
-                    onReprocess={() => enqueuePreprocess("acrf")}
-                  />
+                <UploadSlotCard
+                  title="Protocol"
+                  hint="PDF"
+                  uploaded={protocolUploaded}
+                  fileName={uploadStatus?.protocol.fileName || "protocol.pdf"}
+                  size={uploadStatus?.protocol.size ?? 0}
+                  blobPath={uploadStatus?.protocol.blob || ""}
+                  uploading={uploadingSlot === "protocol"}
+                  disabled={busy || !studyId.trim()}
+                  preprocessStatus={protocolPreprocess}
+                  checklist={protocolChecklist}
+                  previewButtons={[
+                    {
+                      label: "Preview extracted text",
+                      disabled: stepStatuses["extract-inputs"] !== "done" && !protocolPreprocessed,
+                      onClick: () => void openMarkdownPreview("protocol")
+                    },
+                    {
+                      label: "Preview index",
+                      disabled: !protocolPreprocessed && stepStatuses["index-protocol"] !== "done",
+                      onClick: () =>
+                        void openStepPreview(
+                          "protocol-index",
+                          "index-protocol",
+                          "Protocol — paragraph index",
+                          "markdown"
+                        )
+                    }
+                  ]}
+                  canReprocess={protocolUploaded}
+                  reprocessDisabled={busy}
+                  onUploadFile={(file) => void handleUpload("protocol", file)}
+                  onReprocess={() => enqueuePreprocess("protocol")}
+                />
+                <UploadSlotCard
+                  title="aCRF"
+                  hint="PDF/XLS"
+                  uploaded={acrfUploaded}
+                  fileName={uploadStatus?.acrf.fileName || "acrf.pdf"}
+                  size={uploadStatus?.acrf.size ?? 0}
+                  blobPath={uploadStatus?.acrf.blob || ""}
+                  uploading={uploadingSlot === "acrf"}
+                  disabled={busy || !studyId.trim()}
+                  preprocessStatus={acrfPreprocess}
+                  checklist={acrfChecklist}
+                  previewButtons={[
+                    ...(isXlsAcrf
+                      ? []
+                      : [
+                          {
+                            label: "Preview extracted text",
+                            disabled: stepStatuses["extract-inputs"] !== "done" && !acrfPreprocessed,
+                            onClick: () => void openMarkdownPreview("acrf")
+                          }
+                        ]),
+                    {
+                      label: "Preview summary",
+                      disabled: !acrfPreprocessed && stepStatuses["acrf-summary-text"] !== "done",
+                      onClick: () =>
+                        void openStepPreview(
+                          "acrf-summary",
+                          "acrf-summary-text",
+                          "aCRF — merged summary",
+                          "acrf-summary"
+                        )
+                    }
+                  ]}
+                  canReprocess={acrfUploaded}
+                  reprocessDisabled={busy}
+                  onUploadFile={(file) => void handleUpload("acrf", file)}
+                  onReprocess={() => enqueuePreprocess("acrf")}
+                />
               </div>
 
-                {!hideLocalActivity && runState.llmProgress ? <LlmProgressBar progress={runState.llmProgress} /> : null}
+              {!hideLocalActivity && runState.llmProgress ? <LlmProgressBar progress={runState.llmProgress} /> : null}
 
-                <div className="pipeline-actions" style={{ marginTop: "var(--space-md)" }}>
-                  <button
-                    type="button"
-                    className="button button-secondary"
-                    disabled={busy || !studyId.trim()}
-                    onClick={() => {
-                      setStatusLoading(true);
-                      setError("");
-                      void refreshStatus()
-                        .catch((refreshError) => {
-                          setError(
-                            refreshError instanceof Error
-                              ? refreshError.message
-                              : "Unable to load upload status."
-                          );
-                        })
-                        .finally(() => setStatusLoading(false));
-                    }}
-                  >
-                    Refresh status
-                  </button>
-                </div>
-            </Card>
+              <div className="pipeline-actions" style={{ marginTop: "var(--space-md)" }}>
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  disabled={busy || !studyId.trim()}
+                  onClick={() => {
+                    setStatusLoading(true);
+                    setError("");
+                    void refreshStatus()
+                      .catch((refreshError) => {
+                        setError(
+                          refreshError instanceof Error
+                            ? refreshError.message
+                            : "Unable to load upload status."
+                        );
+                      })
+                      .finally(() => setStatusLoading(false));
+                  }}
+                >
+                  Refresh status
+                </button>
+              </div>
+            </Panel>
           </Stack>
         </div>
 

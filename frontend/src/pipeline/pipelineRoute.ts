@@ -39,8 +39,19 @@ function resolveGeneratePdLegacy(parts: string[]): PipelineStepId {
   return "rules";
 }
 
-export function parsePipelineHash(hash: string): PipelineRouteState {
+/** Strip optional `#/pipeline` prefix so legacy and nested routes share one parser. */
+export function stripPipelinePrefix(hash: string): string {
   const trimmed = hash.replace(/^#\/?/, "").trim();
+  if (trimmed === "pipeline" || trimmed.startsWith("pipeline/") || trimmed.startsWith("pipeline?")) {
+    const rest = trimmed.slice("pipeline".length).replace(/^\//, "");
+    return rest ? `#/${rest}` : "#/study-setup";
+  }
+  return hash.startsWith("#") ? hash : `#/${trimmed}`;
+}
+
+export function parsePipelineHash(hash: string): PipelineRouteState {
+  const normalized = stripPipelinePrefix(hash);
+  const trimmed = normalized.replace(/^#\/?/, "").trim();
   const parts = parsePath(trimmed);
   const query = parseQuery(trimmed);
   const studyId = (query.get("study") ?? "").trim();
@@ -87,7 +98,7 @@ export function pipelineHashForRoute(state: {
   studyId?: string;
 }): string {
   const step = pipelineStepById(state.stepId) ?? PIPELINE_STEPS[0];
-  let path = `/${step.route}`;
+  let path = `/pipeline/${step.route}`;
 
   if (state.stepId === "study-setup" && state.section && state.section !== "study") {
     path += `/${state.section}`;
@@ -117,14 +128,37 @@ export function navigateToPipelineStep(
   }
 }
 
-/** Rewrite legacy hashes to canonical new routes (preserves study query). */
+/**
+ * Rewrite bare pipeline / legacy hashes to `#/pipeline/...`.
+ * Returns null when the hash is already canonical or not a pipeline route.
+ */
 export function canonicalizePipelineHash(hash: string): string | null {
   const trimmed = hash.replace(/^#\/?/, "").trim();
-  const parts = parsePath(trimmed);
-  const route = parts[0] ?? "";
-  if (route === "generate-pd" || LEGACY_ROUTE_REDIRECTS[route]) {
-    const parsed = parsePipelineHash(hash);
-    return pipelineHashForRoute(parsed);
+  if (!trimmed || trimmed === "guide" || trimmed === "history" || trimmed === "settings") {
+    return null;
   }
-  return null;
+  if (trimmed === "home") {
+    return "#/";
+  }
+
+  const underPipeline =
+    trimmed === "pipeline" || trimmed.startsWith("pipeline/") || trimmed.startsWith("pipeline?");
+  if (underPipeline) {
+    const parsed = parsePipelineHash(hash);
+    const canonical = pipelineHashForRoute(parsed);
+    return hash === canonical ? null : canonical;
+  }
+
+  const route = parsePath(trimmed)[0] ?? "";
+  const isPipelineRoute =
+    Boolean(LEGACY_ROUTE_REDIRECTS[route]) ||
+    Boolean(pipelineStepByRoute(route)) ||
+    route === "generate-pd";
+
+  if (!isPipelineRoute) {
+    return null;
+  }
+
+  const parsed = parsePipelineHash(hash);
+  return pipelineHashForRoute(parsed);
 }

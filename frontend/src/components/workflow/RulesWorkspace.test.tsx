@@ -2,6 +2,16 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { RulesWorkspace } from "./RulesWorkspace";
 
+const openInspector = vi.fn();
+const setProtocolFocus = vi.fn();
+
+vi.mock("../../jobs/PipelineJobContext", () => ({
+  usePipelineJobs: () => ({
+    openInspector,
+    setProtocolFocus
+  })
+}));
+
 vi.mock("./RulesList", () => ({
   RulesList: ({
     onOpenParagraphRef
@@ -18,14 +28,8 @@ vi.mock("./RulesListChat", () => ({
   RulesListChat: () => <div>Rules chat pane</div>
 }));
 
-vi.mock("../viewers/ParagraphViewer", () => ({
-  ParagraphViewer: ({ focusRef }: { focusRef?: string }) => (
-    <div>Protocol pane focus={focusRef ?? ""}</div>
-  )
-}));
-
 describe("RulesWorkspace", () => {
-  it("switches to protocol pane when a paragraph ref is opened", () => {
+  it("keeps chat in the reading pane and opens inspector for protocol refs", () => {
     render(
       <RulesWorkspace
         studyId="STUDY-1"
@@ -45,8 +49,10 @@ describe("RulesWorkspace", () => {
     );
 
     expect(screen.getByText("Rules chat pane")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Protocol" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Open p34" }));
-    expect(screen.getByText("Protocol pane focus=p34")).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "Protocol" })).toHaveAttribute("aria-selected", "true");
+    expect(setProtocolFocus).toHaveBeenCalledWith({ focusRef: "p34", highlightRefs: ["p34"] });
+    expect(openInspector).toHaveBeenCalledWith("protocol");
+    expect(screen.getByText("Rules chat pane")).toBeInTheDocument();
   });
 });

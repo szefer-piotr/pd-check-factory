@@ -14,7 +14,7 @@ export function RhoLogo({ className, title = "Rho" }: RhoLogoProps): JSX.Element
       aria-label={title}
     >
       <title>{title}</title>
-      <circle cx="28" cy="28" r="24" fill="#74BC44" />
+      <circle cx="28" cy="28" r="24" fill="#69BA49" />
       <path
         fill="none"
         stroke="#ffffff"
@@ -29,7 +29,7 @@ export function RhoLogo({ className, title = "Rho" }: RhoLogoProps): JSX.Element
         fontFamily="Segoe UI, Helvetica Neue, Arial, sans-serif"
         fontSize="28"
         fontWeight="600"
-        fill="#1E5088"
+        fill="#005B82"
         letterSpacing="-0.02em"
       >
         Rho
@@ -40,7 +40,7 @@ export function RhoLogo({ className, title = "Rho" }: RhoLogoProps): JSX.Element
         fontFamily="Segoe UI, Helvetica Neue, Arial, sans-serif"
         fontSize="10"
         fontWeight="600"
-        fill="#1E5088"
+        fill="#005B82"
       >
         ®
       </text>
@@ -59,7 +59,7 @@ export function RhoMark({ className }: { className?: string }): JSX.Element {
       aria-hidden="true"
       focusable="false"
     >
-      <circle cx="32" cy="32" r="32" fill="#74BC44" />
+      <circle cx="32" cy="32" r="32" fill="#69BA49" />
       <path
         fill="none"
         stroke="#ffffff"

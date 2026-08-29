@@ -5,6 +5,7 @@ import {
   parsePipelineStepId,
   pipelineHashForStep
 } from "./pipelineRoute";
+import { canonicalizeAppHash, parseAppHash } from "./appRoute";
 import { PIPELINE_STEPS } from "./pipelineSteps";
 
 describe("pipelineRoute", () => {
@@ -36,13 +37,32 @@ describe("pipelineRoute", () => {
     expect(parsePipelineStepId("#/cost-analysis")).toBe("cost-analysis");
   });
 
-  it("builds hashes for new IA", () => {
-    expect(pipelineHashForStep("study-setup")).toBe("#/study-setup");
+  it("parses nested #/pipeline hashes", () => {
+    expect(parsePipelineHash("#/pipeline/rules?study=S1")).toEqual({
+      stepId: "rules",
+      studyId: "S1"
+    });
+    expect(parsePipelineHash("#/pipeline/study-setup/config")).toEqual({
+      stepId: "study-setup",
+      section: "config",
+      studyId: ""
+    });
+    expect(parsePipelineHash("#/pipeline")).toEqual({
+      stepId: "study-setup",
+      section: "study",
+      studyId: ""
+    });
+  });
+
+  it("builds hashes under #/pipeline", () => {
+    expect(pipelineHashForStep("study-setup")).toBe("#/pipeline/study-setup");
     expect(pipelineHashForStep("study-setup", { section: "processing", studyId: "S1" })).toBe(
-      "#/study-setup/processing?study=S1"
+      "#/pipeline/study-setup/processing?study=S1"
     );
-    expect(pipelineHashForStep("rules")).toBe("#/rules");
-    expect(pipelineHashForStep("deviations", { studyId: "S1" })).toBe("#/deviations?study=S1");
+    expect(pipelineHashForStep("rules")).toBe("#/pipeline/rules");
+    expect(pipelineHashForStep("deviations", { studyId: "S1" })).toBe(
+      "#/pipeline/deviations?study=S1"
+    );
     expect(PIPELINE_STEPS.map((step) => step.id)).toEqual([
       "study-setup",
       "rules",
@@ -51,11 +71,36 @@ describe("pipelineRoute", () => {
     ]);
   });
 
-  it("canonicalizes legacy hashes", () => {
-    expect(canonicalizePipelineHash("#/export")).toBe("#/deviations");
-    expect(canonicalizePipelineHash("#/extract-rules")).toBe("#/rules");
-    expect(canonicalizePipelineHash("#/generate-pd/deviations")).toBe("#/deviations");
-    expect(canonicalizePipelineHash("#/review")).toBe("#/deviations");
-    expect(canonicalizePipelineHash("#/study-setup")).toBeNull();
+  it("canonicalizes legacy and bare pipeline hashes under #/pipeline", () => {
+    expect(canonicalizePipelineHash("#/export")).toBe("#/pipeline/deviations");
+    expect(canonicalizePipelineHash("#/extract-rules")).toBe("#/pipeline/rules");
+    expect(canonicalizePipelineHash("#/generate-pd/deviations")).toBe("#/pipeline/deviations");
+    expect(canonicalizePipelineHash("#/review")).toBe("#/pipeline/deviations");
+    expect(canonicalizePipelineHash("#/rules")).toBe("#/pipeline/rules");
+    expect(canonicalizePipelineHash("#/study-setup")).toBe("#/pipeline/study-setup");
+    expect(canonicalizePipelineHash("#/pipeline/rules")).toBeNull();
+  });
+});
+
+describe("appRoute", () => {
+  it("defaults empty and unknown hashes to home", () => {
+    expect(parseAppHash("").destination).toBe("home");
+    expect(parseAppHash("#/").destination).toBe("home");
+    expect(parseAppHash("#/home").destination).toBe("home");
+    expect(parseAppHash("#/not-a-page").destination).toBe("home");
+  });
+
+  it("recognizes app destinations and pipeline routes", () => {
+    expect(parseAppHash("#/guide").destination).toBe("guide");
+    expect(parseAppHash("#/history").destination).toBe("history");
+    expect(parseAppHash("#/settings").destination).toBe("settings");
+    expect(parseAppHash("#/pipeline").destination).toBe("pipeline");
+    expect(parseAppHash("#/rules").destination).toBe("pipeline");
+    expect(parseAppHash("#/pipeline/deviations").pipeline?.stepId).toBe("deviations");
+  });
+
+  it("canonicalizes home alias", () => {
+    expect(canonicalizeAppHash("#/home")).toBe("#/");
+    expect(canonicalizeAppHash("#/guide")).toBeNull();
   });
 });

@@ -21,6 +21,8 @@ import {
   type Step7RulePayload,
   type StepStatus
 } from "../../services/stepApi";
+import { usePipelineJobs } from "../../jobs/PipelineJobContext";
+import { WorkspaceInspector } from "../pipeline/WorkspaceInspector";
 import { Step7DeviationDetails } from "./Step7DeviationDetails";
 import { Step7DeviationDrawer } from "./Step7DeviationDrawer";
 import { Step7DeviationFilters } from "./Step7DeviationFilters";
@@ -119,6 +121,7 @@ export function Step7ReviewPanel({
   const [sourcesLoading, setSourcesLoading] = useState(false);
   const [hasLoadedOnce, setHasLoadedOnce] = useState(false);
   const [filters, setFilters] = useState<DeviationReviewFilters>(EMPTY_DEVIATION_REVIEW_FILTERS);
+  const { setAcrfFocusHint, openInspector, activityOpen } = usePipelineJobs();
 
   const onStepStatusesChangeRef = useRef(onStepStatusesChange);
   onStepStatusesChangeRef.current = onStepStatusesChange;
@@ -142,6 +145,22 @@ export function Step7ReviewPanel({
       setSelectedId(null);
     }
   }, [filteredRows, selectedId]);
+
+  useEffect(() => {
+    if (!selectedRow) {
+      setAcrfFocusHint("");
+      return;
+    }
+    setAcrfFocusHint(
+      [
+        selectedRow.data_support_note,
+        ...(selectedRow.required_datasets ?? []),
+        selectedRow.deviation_text
+      ]
+        .filter(Boolean)
+        .join(" ")
+    );
+  }, [selectedRow, setAcrfFocusHint]);
 
   useEffect(() => {
     onRowsChangeRef.current?.(rows);
@@ -662,7 +681,7 @@ export function Step7ReviewPanel({
         onChange={setFilters}
       />
 
-      <div className="step7-layout step7-layout-kit">
+      <div className={`step7-layout step7-layout-kit ${activityOpen ? "inspector-open" : ""}`}>
         <div className="step7-list-pane">
           <Step7RuleGroups
             groups={groups}
@@ -692,26 +711,36 @@ export function Step7ReviewPanel({
           />
         </div>
         <div className="step7-reading-pane">
-          {selectedRow ? (
-            <Step7DeviationDrawer
-              studyId={studyId}
-              reviewSource={reviewSource}
-              row={selectedRow}
-              alsoPseudo={alsoPseudo}
-              chatDeployment={chatDeployment}
-              chatRefreshKey={chatRefreshKey}
-              onRowUpdated={handleRowUpdated}
-              onStepStatusesChange={onStepStatusesChange}
-            />
-          ) : (
-            <div className="step7-reading-empty" aria-live="polite">
-              <p className="step7-reading-empty-title">Select a deviation</p>
-              <p className="step7-muted">
-                Choose a deviation from the list to review details and chat with the assistant.
-              </p>
-            </div>
-          )}
+          <div className="rules-reading-body rules-reading-body-chat-only">
+            {selectedRow ? (
+              <Step7DeviationDrawer
+                studyId={studyId}
+                reviewSource={reviewSource}
+                row={selectedRow}
+                alsoPseudo={alsoPseudo}
+                chatDeployment={chatDeployment}
+                chatRefreshKey={chatRefreshKey}
+                onRowUpdated={handleRowUpdated}
+                onStepStatusesChange={onStepStatusesChange}
+              />
+            ) : (
+              <div className="step7-reading-empty" aria-live="polite">
+                <p className="step7-reading-empty-title">Select a deviation</p>
+                <p className="step7-muted">
+                  Choose a deviation from the list to review details and chat with the assistant.
+                </p>
+                <button
+                  type="button"
+                  className="button button-secondary"
+                  onClick={() => openInspector("acrf")}
+                >
+                  Open aCRF preview
+                </button>
+              </div>
+            )}
+          </div>
         </div>
+        <WorkspaceInspector />
       </div>
     </section>
   );

@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Page } from "./components/layout/Page";
 import { ActivityPanel } from "./components/pipeline/ActivityPanel";
 import { ToastStack } from "./components/pipeline/ToastStack";
 import { CostAnalysisStepPage } from "./pages/pipeline/CostAnalysisStepPage";
 import { DeviationsStepPage } from "./pages/pipeline/DeviationsStepPage";
 import { RulesStepPage } from "./pages/pipeline/RulesStepPage";
 import { StudySetupStepPage } from "./pages/pipeline/StudySetupStepPage";
-import { PipelineJobProvider, usePipelineJobs } from "./jobs/PipelineJobContext";
+import { usePipelineJobs, PipelineJobProvider } from "./jobs/PipelineJobContext";
 import {
   PIPELINE_STEPS,
   pipelineStepIndex,
@@ -31,7 +30,6 @@ import {
   type OpenAiDeploymentOption,
   type StepStatus
 } from "./services/stepApi";
-import { RhoLogo, RhoMark } from "./components/brand/RhoLogo";
 
 function stepComplete(
   stepId: PipelineStepId,
@@ -55,7 +53,7 @@ function stepComplete(
   }
 }
 
-function PipelineAppInner(): JSX.Element {
+export function PipelineWorkspace(): JSX.Element {
   const jobs = usePipelineJobs();
   const [route, setRoute] = useState(() => parsePipelineHash(window.location.hash));
   const [backendStatuses, setBackendStatuses] = useState<Record<string, StepStatus>>({});
@@ -65,7 +63,6 @@ function PipelineAppInner(): JSX.Element {
   const [deploymentsLoading, setDeploymentsLoading] = useState(true);
   const [resetError, setResetError] = useState("");
   const [resetMessage, setResetMessage] = useState("");
-  const [isResetting, setIsResetting] = useState(false);
 
   const studyId = jobs.studyId;
   const setStudyId = jobs.setStudyId;
@@ -261,22 +258,83 @@ function PipelineAppInner(): JSX.Element {
     [completionCtx]
   );
 
-  function handleNavigate(
-    stepId: PipelineStepId,
-    options: { section?: StudySetupSection } = {}
-  ): void {
-    if (!canNavigateTo(stepId)) {
-      return;
-    }
-    navigateToPipelineStep(stepId, { ...options, studyId });
-    if (studyId.trim()) {
-      void patchStudyManifest(studyId.trim(), {
-        workflowChoice: "extract",
-        pipelineUiStep: stepId
-      });
-    }
-  }
+  const handleNavigate = useCallback(
+    (stepId: PipelineStepId, options: { section?: StudySetupSection } = {}): void => {
+      if (!canNavigateTo(stepId)) {
+        return;
+      }
+      navigateToPipelineStep(stepId, { ...options, studyId });
+      if (studyId.trim()) {
+        void patchStudyManifest(studyId.trim(), {
+          workflowChoice: "extract",
+          pipelineUiStep: stepId
+        });
+      }
+    },
+    [canNavigateTo, studyId]
+  );
 
+  const { setNav, registerResetHandler, setArtifactVersions, openInspector } = jobs;
+
+  useEffect(() => {
+    setNav({
+      stepId: route.stepId,
+      section: route.section ?? "study",
+      studySelected: Boolean(studyId.trim()),
+      configSaved: hasAppliedSettings,
+      processingComplete,
+      rulesDone: backendStatuses["extract-rules"] === "done",
+      deviationsDone: backendStatuses["extract-deviations"] === "done",
+      canNavigateTo,
+      navigate: handleNavigate
+    });
+  }, [
+    backendStatuses,
+    canNavigateTo,
+    handleNavigate,
+    hasAppliedSettings,
+    processingComplete,
+    route.section,
+    route.stepId,
+    setNav,
+    studyId
+  ]);
+
+  useEffect(() => {
+    const runReset = async (): Promise<void> => {
+      if (!studyId.trim()) {
+        return;
+      }
+      setResetError("");
+      setResetMessage("");
+      try {
+        const result = await resetStudy(studyId.trim());
+        setBackendStatuses(result.stepStatuses);
+        setProcessingComplete(false);
+        setResetMessage(result.message);
+        navigateToPipelineStep("study-setup", { section: "study", studyId });
+      } catch (resetErr) {
+        setResetError(resetErr instanceof Error ? resetErr.message : "Reset failed.");
+        throw resetErr;
+      }
+    };
+    registerResetHandler(runReset);
+    return () => registerResetHandler(null);
+  }, [registerResetHandler, studyId]);
+
+  useEffect(() => {
+    if (route.stepId !== "rules" && route.stepId !== "deviations") {
+      setArtifactVersions(null);
+    }
+  }, [route.stepId, setArtifactVersions]);
+
+  useEffect(() => {
+    if (route.stepId === "rules") {
+      openInspector("protocol");
+    } else if (route.stepId === "deviations") {
+      openInspector("acrf");
+    }
+  }, [openInspector, route.stepId]);
   async function handleSaveConfig(): Promise<void> {
     const normalized = applyDefaultDeployments(draftSettings, defaultDeployment);
     applySettings(normalized);
@@ -299,33 +357,6 @@ function PipelineAppInner(): JSX.Element {
       }
     });
     await patchStudyManifest(studyId.trim(), { workflowChoice: "extract", pipelineUiStep: "study-setup" });
-  }
-
-  async function handleResetStudy(): Promise<void> {
-    if (!studyId.trim()) {
-      return;
-    }
-    if (
-      !window.confirm(
-        `Reset study ${studyId}? This deletes all blob and local artifacts for this study. Chat history and deviations will be lost.`
-      )
-    ) {
-      return;
-    }
-    setIsResetting(true);
-    setResetError("");
-    setResetMessage("");
-    try {
-      const result = await resetStudy(studyId.trim());
-      setBackendStatuses(result.stepStatuses);
-      setProcessingComplete(false);
-      setResetMessage(result.message);
-      navigateToPipelineStep("study-setup", { section: "study", studyId });
-    } catch (resetErr) {
-      setResetError(resetErr instanceof Error ? resetErr.message : "Reset failed.");
-    } finally {
-      setIsResetting(false);
-    }
   }
 
   function renderStep(): JSX.Element {
@@ -403,87 +434,63 @@ function PipelineAppInner(): JSX.Element {
   }
 
   return (
-    <Page>
-      <div className="pipeline-shell">
-        <header className="pipeline-topbar">
-          <div>
-            <strong>Pipeline</strong>
-            {studyId ? <span className="pipeline-topbar-study">{studyId}</span> : null}
-          </div>
-          <div className="pipeline-topbar-actions">
-            <button
-              type="button"
-              className={`button button-secondary ${jobs.isRunActive ? "pipeline-activity-trigger-live" : ""}`}
-              onClick={() => jobs.setActivityOpen(true)}
-            >
-              {jobs.isRunActive ? (
-                <>
-                  <span className="spinner spinner-sm" aria-hidden />
-                  Activity
-                </>
-              ) : (
-                "Activity"
-              )}
-            </button>
-            <button
-              type="button"
-              className="button button-secondary"
-              disabled={!studyId.trim() || isResetting}
-              onClick={() => void handleResetStudy()}
-            >
-              {isResetting ? "Resetting…" : "Reset study"}
-            </button>
-            <button
-              type="button"
-              className="button button-secondary"
-              disabled={!studyId.trim()}
-              onClick={() => void refreshStatuses()}
-            >
-              Refresh status
-            </button>
-          </div>
-        </header>
-
-        {resetError ? <p className="pipeline-error pipeline-global-message">{resetError}</p> : null}
-        {resetMessage ? <p className="pipeline-message pipeline-global-message">{resetMessage}</p> : null}
-
-        <div className="pipeline-body">
-          <nav className="pipeline-sidebar" aria-label="Pipeline steps">
-            <div className="pipeline-brand">
-              <RhoLogo className="pipeline-brand-logo" />
-              <RhoMark className="pipeline-brand-mark" />
-              <span className="pipeline-brand-product">PD Check</span>
-            </div>
-            <ol>
-              {PIPELINE_STEPS.map((step) => {
-                const done = stepComplete(step.id, completionCtx);
-                const active = step.id === route.stepId;
-                const enabled = canNavigateTo(step.id);
-                return (
-                  <li key={step.id}>
-                    <button
-                      type="button"
-                      className={`pipeline-sidebar-item ${active ? "active" : ""} ${done ? "done" : ""}`}
-                      disabled={!enabled}
-                      onClick={() => handleNavigate(step.id)}
-                    >
-                      <span className="pipeline-sidebar-title">{step.shortTitle}</span>
-                      <span className="pipeline-sidebar-state">
-                        {done ? "Done" : active ? "Current" : "Pending"}
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ol>
-          </nav>
-
-          <main className="pipeline-main">{renderStep()}</main>
+    <div className="pipeline-workspace">
+      <header className="pipeline-topbar">
+        <div className="pipeline-topbar-left">
+          <strong>Pipeline</strong>
+          {studyId ? <span className="chip pipeline-topbar-study">{studyId}</span> : (
+            <span className="pipeline-topbar-hint">No study selected</span>
+          )}
         </div>
+        <div className="pipeline-topbar-actions">
+          <button
+            type="button"
+            className="button button-secondary"
+            onClick={() => jobs.openInspector("protocol")}
+          >
+            Inspector
+          </button>
+          <button
+            type="button"
+            className={`button button-secondary ${jobs.isRunActive ? "pipeline-activity-trigger-live" : ""}`}
+            onClick={() => jobs.openInspector("activity")}
+          >
+            {jobs.isRunActive ? (
+              <>
+                <span className="spinner spinner-sm" aria-hidden />
+                Activity
+              </>
+            ) : (
+              "Activity"
+            )}
+          </button>
+          <button
+            type="button"
+            className="button button-secondary"
+            disabled={!studyId.trim()}
+            onClick={() => void refreshStatuses()}
+          >
+            Refresh status
+          </button>
+        </div>
+      </header>
 
+      {resetError ? <p className="pipeline-error pipeline-global-message">{resetError}</p> : null}
+      {resetMessage ? <p className="pipeline-message pipeline-global-message">{resetMessage}</p> : null}
+
+      <main className="pipeline-main">{renderStep()}</main>
+
+      {route.stepId !== "rules" && route.stepId !== "deviations" ? (
         <ActivityPanel
+          variant="overlay"
           open={jobs.activityOpen}
           onClose={() => jobs.setActivityOpen(false)}
+          tab={jobs.inspectorTab}
+          onTabChange={jobs.setInspectorTab}
+          studyId={studyId}
+          protocolFocus={jobs.protocolFocus}
+          acrfFocusHint={jobs.acrfFocusHint}
+          artifactVersions={jobs.artifactVersions}
           isRunActive={jobs.isRunActive}
           activeJobLabel={jobs.activeJobLabel}
           queueLength={jobs.queueLength}
@@ -491,16 +498,17 @@ function PipelineAppInner(): JSX.Element {
           llmProgress={jobs.llmProgress}
           runStateStatus={jobs.runStateStatus}
         />
-        <ToastStack toasts={jobs.toasts} onDismiss={jobs.dismissToast} />
-      </div>
-    </Page>
+      ) : null}
+      <ToastStack toasts={jobs.toasts} onDismiss={jobs.dismissToast} />
+    </div>
   );
 }
 
+/** Kept for existing imports/tests; App.tsx mounts AppShell + destination routing. */
 export function PipelineApp(): JSX.Element {
   return (
     <PipelineJobProvider>
-      <PipelineAppInner />
+      <PipelineWorkspace />
     </PipelineJobProvider>
   );
 }

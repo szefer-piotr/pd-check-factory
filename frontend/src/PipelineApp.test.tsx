@@ -51,6 +51,14 @@ vi.mock("./hooks/useStudySettings", () => ({
     chatDeployment: ""
   },
   applyDefaultDeployments: (settings: unknown) => settings,
+  readGlobalLlmSettings: () => ({
+    extractorChoice: "document_intelligence",
+    extractionLlmInstructions: "",
+    extractionDeployment: "",
+    acrfSummaryDeployment: "",
+    chatDeployment: ""
+  }),
+  writeGlobalLlmSettings: vi.fn(),
   useStudySettings: () => ({
     draftSettings: {
       extractorChoice: "document_intelligence",
@@ -67,22 +75,48 @@ vi.mock("./hooks/useStudySettings", () => ({
   })
 }));
 
+import App from "./App";
 import { PipelineApp } from "./PipelineApp";
 
-describe("PipelineApp", () => {
-  it("renders pipeline shell and study setup", () => {
-    window.location.hash = "#/study-setup";
-    render(<PipelineApp />);
-    expect(screen.getByText("Pipeline")).toBeInTheDocument();
-    expect(screen.getByRole("img", { name: "Rho" })).toBeInTheDocument();
-    expect(screen.getByText("PD Check")).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Study setup" })).toBeInTheDocument();
-    expect(screen.getByRole("navigation", { name: "Study setup stages" })).toBeInTheDocument();
+describe("App shell", () => {
+  it("defaults to Home with app sidebar destinations", () => {
+    window.location.hash = "#/";
+    render(<App />);
+    expect(screen.getByRole("navigation", { name: "App" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Home" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Pipeline" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Guide" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "History" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Settings" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Start a study/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Reset study/i })).toBeInTheDocument();
+    expect(screen.getByText(/clinical confidence/i)).toBeInTheDocument();
+  });
+
+  it("opens pipeline study setup from #/pipeline/study-setup", () => {
+    window.location.hash = "#/pipeline/study-setup";
+    render(<App />);
+    expect(screen.getByRole("button", { name: "Pipeline" })).toHaveClass("active");
+    expect(screen.getByRole("heading", { name: "Study selection" })).toBeInTheDocument();
     expect(screen.getByRole("navigation", { name: "Pipeline steps" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Activity/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Rules/i })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Deviations/i })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Study" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Study selection/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Configuration/i })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Document extraction/i })).toBeInTheDocument();
+  });
+});
+
+describe("PipelineApp", () => {
+  it("renders pipeline workspace and study setup", () => {
+    window.location.hash = "#/pipeline/study-setup";
+    render(<PipelineApp />);
+    expect(screen.getByText("Pipeline")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Study selection" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Activity/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Start a new study" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Open an existing study" })).toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Model configuration" })).not.toBeInTheDocument();
   });
 });

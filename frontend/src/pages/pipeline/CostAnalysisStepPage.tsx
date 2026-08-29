@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { Card } from "../../components/layout/Card";
-import { Stack } from "../../components/layout/Stack";
-import { MetricCard } from "../../components/ui/MetricCard";
+import { Panel } from "../../components/layout/Panel";
 import {
   fetchCostUsage,
   type CostStepBucket,
@@ -68,109 +66,123 @@ export function CostAnalysisStepPage({ studyId }: CostAnalysisStepPageProps): JS
   const di = data?.totals?.document_intelligence;
 
   return (
-    <Stack gap="md">
-      <div className="pipeline-step-page">
-        <header className="pipeline-step-header">
-          <div>
-            <h1>Cost analysis</h1>
-            <p className="pipeline-step-description">
-              Estimated Azure OpenAI and Document Intelligence spend accumulated for this study.
-              Rates are configurable estimates, not Azure invoice amounts.
-            </p>
-          </div>
-          <button
-            type="button"
-            className="button button-secondary"
-            disabled={!studyId.trim() || loading}
-            onClick={() => void load()}
+    <div className="pipeline-step-page cost-analysis-page">
+      <header className="page-hero page-hero-row">
+        <div>
+          <h1>Cost analysis</h1>
+          <p>
+            Estimated Azure OpenAI and Document Intelligence spend accumulated for this study. Rates are configurable
+            estimates, not Azure invoice amounts.
+          </p>
+        </div>
+        <button
+          type="button"
+          className="button button-secondary"
+          disabled={!studyId.trim() || loading}
+          onClick={() => void load()}
+        >
+          {loading ? "Refreshing…" : "Refresh"}
+        </button>
+      </header>
+
+      {error ? <p className="pipeline-error">{error}</p> : null}
+
+      {!studyId.trim() ? <p className="pipeline-hint">Select a study first.</p> : null}
+
+      {studyId.trim() && loading && !data ? <p className="muted">Loading cost usage…</p> : null}
+
+      {data && !data.available ? (
+        <Panel title="No usage yet">
+          <p className="pipeline-hint">
+            No cost usage recorded yet for this study. Run PDF extraction or LLM pipeline steps to populate{" "}
+            <code>pipeline/pipeline_cost_usage.json</code>.
+          </p>
+        </Panel>
+      ) : null}
+
+      {data?.available ? (
+        <div className="cost-page-stack">
+          <Panel
+            title="Totals"
+            subtitle={`Pricing: ${data.pricingSource ?? "defaults"} · Updated ${data.updatedAt ?? "—"} · ${formatInt(data.eventCount)} events`}
           >
-            {loading ? "Refreshing…" : "Refresh"}
-          </button>
-        </header>
-
-        {error ? <p className="pipeline-error">{error}</p> : null}
-
-        {!studyId.trim() ? <p className="pipeline-hint">Select a study first.</p> : null}
-
-        {studyId.trim() && loading && !data ? <p>Loading cost usage…</p> : null}
-
-        {data && !data.available ? (
-          <Card>
-            <p className="pipeline-hint">
-              No cost usage recorded yet for this study. Run PDF extraction or LLM pipeline steps to
-              populate <code>pipeline/pipeline_cost_usage.json</code>.
-            </p>
-          </Card>
-        ) : null}
-
-        {data?.available ? (
-          <Stack gap="md">
             <div className="cost-metrics-grid">
-              <MetricCard label="Total estimated cost" value={formatUsd(data.totals.cost_usd)} />
-              <MetricCard label="LLM cost" value={formatUsd(llm?.cost_usd)} />
-              <MetricCard label="Document Intelligence cost" value={formatUsd(di?.cost_usd)} />
-              <MetricCard label="LLM calls" value={formatInt(llm?.calls)} />
-              <MetricCard label="Prompt tokens" value={formatInt(llm?.prompt_tokens)} />
-              <MetricCard label="Completion tokens" value={formatInt(llm?.completion_tokens)} />
-              <MetricCard label="DI pages" value={formatInt(di?.pages)} />
-              <MetricCard label="DI calls" value={formatInt(di?.calls)} />
+              <div className="cost-metric">
+                <span className="metric-label">Total estimated</span>
+                <strong className="metric-value">{formatUsd(data.totals.cost_usd)}</strong>
+              </div>
+              <div className="cost-metric">
+                <span className="metric-label">LLM cost</span>
+                <strong className="metric-value">{formatUsd(llm?.cost_usd)}</strong>
+              </div>
+              <div className="cost-metric">
+                <span className="metric-label">Document Intelligence</span>
+                <strong className="metric-value">{formatUsd(di?.cost_usd)}</strong>
+              </div>
+              <div className="cost-metric">
+                <span className="metric-label">LLM calls</span>
+                <strong className="metric-value">{formatInt(llm?.calls)}</strong>
+              </div>
+              <div className="cost-metric">
+                <span className="metric-label">Prompt tokens</span>
+                <strong className="metric-value">{formatInt(llm?.prompt_tokens)}</strong>
+              </div>
+              <div className="cost-metric">
+                <span className="metric-label">Completion tokens</span>
+                <strong className="metric-value">{formatInt(llm?.completion_tokens)}</strong>
+              </div>
+              <div className="cost-metric">
+                <span className="metric-label">DI pages</span>
+                <strong className="metric-value">{formatInt(di?.pages)}</strong>
+              </div>
+              <div className="cost-metric">
+                <span className="metric-label">DI calls</span>
+                <strong className="metric-value">{formatInt(di?.calls)}</strong>
+              </div>
             </div>
+            <p className="pipeline-hint cost-artifact-path">
+              Artifact: <code>{data.artifactPath}</code>
+            </p>
+          </Panel>
 
-            <Card>
-              <Stack gap="sm">
-                <p>
-                  Pricing source: <strong>{data.pricingSource ?? "defaults"}</strong>
-                </p>
-                <p>
-                  Last updated: <strong>{data.updatedAt ?? "—"}</strong>
-                </p>
-                <p>
-                  Recorded events: <strong>{formatInt(data.eventCount)}</strong>
-                </p>
-                <p className="pipeline-hint">
-                  Artifact: <code>{data.artifactPath}</code>
-                </p>
-              </Stack>
-            </Card>
-
-            <Card>
-              <h2 className="cost-breakdown-title">By step</h2>
-              {rows.length === 0 ? (
-                <p className="pipeline-hint">No per-step breakdown yet.</p>
-              ) : (
-                <div className="cost-table-wrap">
-                  <table className="cost-table">
-                    <thead>
-                      <tr>
-                        <th>Step</th>
-                        <th>LLM calls</th>
-                        <th>Tokens</th>
-                        <th>LLM $</th>
-                        <th>DI pages</th>
-                        <th>DI $</th>
-                        <th>Step $</th>
+          <Panel title="By step" noPadding>
+            {rows.length === 0 ? (
+              <p className="pipeline-hint" style={{ padding: "1.25rem" }}>
+                No per-step breakdown yet.
+              </p>
+            ) : (
+              <div className="cost-table-wrap">
+                <table className="cost-table">
+                  <thead>
+                    <tr>
+                      <th>Step</th>
+                      <th>LLM calls</th>
+                      <th>Tokens</th>
+                      <th>LLM $</th>
+                      <th>DI pages</th>
+                      <th>DI $</th>
+                      <th>Step $</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rows.map(({ step, bucket }) => (
+                      <tr key={step}>
+                        <td>{step}</td>
+                        <td>{formatInt(bucket.llm?.calls)}</td>
+                        <td>{formatInt(bucket.llm?.total_tokens)}</td>
+                        <td>{formatUsd(bucket.llm?.cost_usd)}</td>
+                        <td>{formatInt(bucket.document_intelligence?.pages)}</td>
+                        <td>{formatUsd(bucket.document_intelligence?.cost_usd)}</td>
+                        <td>{formatUsd(bucket.cost_usd)}</td>
                       </tr>
-                    </thead>
-                    <tbody>
-                      {rows.map(({ step, bucket }) => (
-                        <tr key={step}>
-                          <td>{step}</td>
-                          <td>{formatInt(bucket.llm?.calls)}</td>
-                          <td>{formatInt(bucket.llm?.total_tokens)}</td>
-                          <td>{formatUsd(bucket.llm?.cost_usd)}</td>
-                          <td>{formatInt(bucket.document_intelligence?.pages)}</td>
-                          <td>{formatUsd(bucket.document_intelligence?.cost_usd)}</td>
-                          <td>{formatUsd(bucket.cost_usd)}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </Card>
-          </Stack>
-        ) : null}
-      </div>
-    </Stack>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </Panel>
+        </div>
+      ) : null}
+    </div>
   );
 }

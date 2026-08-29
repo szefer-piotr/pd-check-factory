@@ -23,16 +23,16 @@ export function navigateToStep(step: string, _options?: Record<string, string>):
 
 export function buildHash(step: string, _options?: Record<string, string>): string {
   if (step.includes("upload") || step.includes("index-protocol") || step.includes("extract-pdf") || step.includes("processing")) {
-    return "#/study-setup/processing";
+    return "#/pipeline/study-setup/processing";
   }
   if (step.includes("acrf")) {
-    return "#/study-setup/processing";
+    return "#/pipeline/study-setup/processing";
   }
   if (step.includes("extract-rules") || step === "rules") {
-    return "#/rules";
+    return "#/pipeline/rules";
   }
   if (step.includes("extract-deviations") || step === "deviations") {
-    return "#/deviations";
+    return "#/pipeline/deviations";
   }
-  return "#/deviations";
+  return "#/pipeline/deviations";
 }

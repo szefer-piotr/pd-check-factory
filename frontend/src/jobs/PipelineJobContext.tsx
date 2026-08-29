@@ -9,6 +9,14 @@ import {
 } from "react";
 import { usePipelineRunState } from "../hooks/usePipelineRunState";
 import {
+  defaultNavSnapshot,
+  EMPTY_PROTOCOL_FOCUS,
+  type ArtifactVersionsSnapshot,
+  type InspectorTab,
+  type PipelineNavSnapshot,
+  type ProtocolFocus
+} from "../pipeline/pipelineNav";
+import {
   preprocessAcrf,
   preprocessProtocol,
   runStep,
@@ -51,6 +59,23 @@ interface PipelineJobContextValue {
   runStateStatus: string;
   activityOpen: boolean;
   setActivityOpen: (open: boolean) => void;
+  inspectorTab: InspectorTab;
+  setInspectorTab: (tab: InspectorTab) => void;
+  openInspector: (tab?: InspectorTab) => void;
+  protocolFocus: ProtocolFocus;
+  setProtocolFocus: (focus: ProtocolFocus) => void;
+  acrfFocusHint: string;
+  setAcrfFocusHint: (hint: string) => void;
+  artifactVersions: ArtifactVersionsSnapshot | null;
+  setArtifactVersions: (snapshot: ArtifactVersionsSnapshot | null) => void;
+  nav: PipelineNavSnapshot;
+  setNav: (snapshot: PipelineNavSnapshot) => void;
+  resetConfirmOpen: boolean;
+  isResetting: boolean;
+  requestResetStudy: () => void;
+  cancelResetStudy: () => void;
+  confirmResetStudy: () => Promise<void>;
+  registerResetHandler: (handler: (() => Promise<void>) | null) => void;
   toasts: ToastItem[];
   dismissToast: (id: string) => void;
   enqueueJob: (spec: PipelineJobSpec) => void;
@@ -77,6 +102,14 @@ function toastId(): string {
 export function PipelineJobProvider({ children }: { children: ReactNode }): JSX.Element {
   const [studyId, setStudyId] = useState("");
   const [activityOpen, setActivityOpen] = useState(false);
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("activity");
+  const [protocolFocus, setProtocolFocus] = useState<ProtocolFocus>(EMPTY_PROTOCOL_FOCUS);
+  const [acrfFocusHint, setAcrfFocusHint] = useState("");
+  const [artifactVersions, setArtifactVersions] = useState<ArtifactVersionsSnapshot | null>(null);
+  const [nav, setNav] = useState<PipelineNavSnapshot>(defaultNavSnapshot);
+  const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
+  const [isResetting, setIsResetting] = useState(false);
+  const resetHandlerRef = useRef<(() => Promise<void>) | null>(null);
   const [toasts, setToasts] = useState<ToastItem[]>([]);
   const [isRunActive, setIsRunActive] = useState(false);
   const [activeJobLabel, setActiveJobLabel] = useState("");
@@ -101,6 +134,43 @@ export function PipelineJobProvider({ children }: { children: ReactNode }): JSX.
     setToasts((prev) => prev.filter((item) => item.id !== id));
   }, []);
 
+  const openInspector = useCallback((tab: InspectorTab = "activity"): void => {
+    setInspectorTab(tab);
+    setActivityOpen(true);
+  }, []);
+
+  const registerResetHandler = useCallback((handler: (() => Promise<void>) | null): void => {
+    resetHandlerRef.current = handler;
+  }, []);
+
+  const requestResetStudy = useCallback((): void => {
+    if (!studyId.trim()) {
+      return;
+    }
+    setResetConfirmOpen(true);
+  }, [studyId]);
+
+  const cancelResetStudy = useCallback((): void => {
+    if (isResetting) {
+      return;
+    }
+    setResetConfirmOpen(false);
+  }, [isResetting]);
+
+  const confirmResetStudy = useCallback(async (): Promise<void> => {
+    if (!resetHandlerRef.current) {
+      setResetConfirmOpen(false);
+      return;
+    }
+    setIsResetting(true);
+    try {
+      await resetHandlerRef.current();
+      setResetConfirmOpen(false);
+    } finally {
+      setIsResetting(false);
+    }
+  }, []);
+
   const drainQueue = useCallback(async (): Promise<void> => {
     if (drainingRef.current) {
       return;
@@ -112,7 +182,7 @@ export function PipelineJobProvider({ children }: { children: ReactNode }): JSX.
         const next = queueRef.current.shift()!;
         setQueueLength(queueRef.current.length);
         setActiveJobLabel(next.label);
-        setActivityOpen(true);
+        openInspector("activity");
         try {
           await next.run();
           pushToast("success", `${next.label} finished`);
@@ -128,18 +198,18 @@ export function PipelineJobProvider({ children }: { children: ReactNode }): JSX.
       setQueueLength(queueRef.current.length);
       drainingRef.current = false;
     }
-  }, [pushToast]);
+  }, [openInspector, pushToast]);
 
   const enqueueJob = useCallback(
     (spec: PipelineJobSpec): void => {
       queueRef.current.push(spec);
       setQueueLength(queueRef.current.length);
-      setActivityOpen(true);
+      openInspector("activity");
       void drainQueue().catch(() => {
         /* toast already emitted */
       });
     },
-    [drainQueue]
+    [drainQueue, openInspector]
   );
 
   const runPreprocessProtocol = useCallback(
@@ -234,6 +304,23 @@ export function PipelineJobProvider({ children }: { children: ReactNode }): JSX.
       runStateStatus: runState.status,
       activityOpen,
       setActivityOpen,
+      inspectorTab,
+      setInspectorTab,
+      openInspector,
+      protocolFocus,
+      setProtocolFocus,
+      acrfFocusHint,
+      setAcrfFocusHint,
+      artifactVersions,
+      setArtifactVersions,
+      nav,
+      setNav,
+      resetConfirmOpen,
+      isResetting,
+      requestResetStudy,
+      cancelResetStudy,
+      confirmResetStudy,
+      registerResetHandler,
       toasts,
       dismissToast,
       enqueueJob,
@@ -244,10 +331,22 @@ export function PipelineJobProvider({ children }: { children: ReactNode }): JSX.
     [
       activeJobLabel,
       activityOpen,
+      acrfFocusHint,
+      artifactVersions,
+      cancelResetStudy,
+      confirmResetStudy,
       dismissToast,
       enqueueJob,
+      inspectorTab,
+      isResetting,
       isRunActive,
+      nav,
+      openInspector,
+      protocolFocus,
       queueLength,
+      registerResetHandler,
+      requestResetStudy,
+      resetConfirmOpen,
       runBackendStep,
       runPreprocessAcrf,
       runPreprocessProtocol,
