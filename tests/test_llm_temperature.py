@@ -25,6 +25,13 @@ def test_chat_completion_kwargs_omits_temperature_for_reasoning_models(
     )
     assert llm._chat_completion_kwargs("o4-mini") == {}
     assert llm._chat_completion_kwargs("gpt-4o") == {"temperature": 0.0}
+    assert llm._chat_completion_kwargs("gpt-4o", max_output_tokens=1024) == {
+        "temperature": 0.0,
+        "max_tokens": 1024,
+    }
+    assert llm._chat_completion_kwargs("o4-mini", max_output_tokens=1024) == {
+        "max_completion_tokens": 1024,
+    }
 
 
 def test_model_name_for_deployment_uses_lookup(monkeypatch: pytest.MonkeyPatch) -> None:

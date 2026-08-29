@@ -57,11 +57,91 @@ def _supports_temperature(model_name: str) -> bool:
     return azure_openai_config.supports_temperature(model_name)
 
 
-def _chat_completion_kwargs(deployment: str) -> Dict[str, float]:
+# gpt-4o max completion size. Input prompts are never truncated; this is only
+# a generation ceiling (and the retry target if a tighter TPM cap would cut output).
+MODEL_MAX_OUTPUT_TOKENS = 16_384
+_DEFAULT_MAX_OUTPUT_TOKENS = 4_096
+
+# Initial Azure TPM reservation by call label (longest prefix wins).
+# These are output budgets only. If finish_reason is "length", the same prompt
+# is retried at MODEL_MAX_OUTPUT_TOKENS so a truncated reply is never returned.
+_MAX_OUTPUT_PREFIXES: tuple[tuple[str, int], ...] = tuple(
+    sorted(
+        (
+            ("v2-normalize-", 1_024),
+            ("v2-classify-", 1_024),
+            ("v2-programmability-", 1_024),
+            ("step1-prog-", 1_024),
+            ("step2-rule-dedup", 1_024),
+            ("step2-deviation-dedup", 1_024),
+            ("document-chat.route", 1_024),
+            ("document-chat.verify", 1_024),
+            ("review-chat.field-edit", 1_024),
+            ("rules-chat.field-edit", 1_024),
+            ("review-chat.interpret", 2_048),
+            ("rules-chat.interpret", 2_048),
+            ("v2-dev-", 4_096),
+            ("step1-deviations-", 4_096),
+            ("v2-consolidate-", 4_096),
+            ("v2-pseudo-", 4_096),
+            ("step1-pseudo-", 4_096),
+            ("generate-pseudo-logic", 4_096),
+            ("protocol-enrich-", 4_096),
+            ("import-ground-", 4_096),
+            ("document-chat.answer", 4_096),
+            ("document-chat.deviation", 4_096),
+            ("review-chat.answer", 4_096),
+            ("rules-chat.answer", 4_096),
+            ("import-merge-", 8_192),
+            ("v2-revise-", 8_192),
+            ("step2-revalidate", 8_192),
+            ("v2-acrf-", 8_192),
+            ("acrf-summary-", 8_192),
+            ("v2-rules", MODEL_MAX_OUTPUT_TOKENS),
+            ("step1-rules", MODEL_MAX_OUTPUT_TOKENS),
+        ),
+        key=lambda item: len(item[0]),
+        reverse=True,
+    )
+)
+
+
+def initial_max_output_tokens(label: str) -> int:
+    """Return the TPM-oriented output budget for a call label (never clips the prompt)."""
+    text = (label or "").strip()
+    for prefix, budget in _MAX_OUTPUT_PREFIXES:
+        if text == prefix or text.startswith(prefix):
+            return min(budget, MODEL_MAX_OUTPUT_TOKENS)
+    return min(_DEFAULT_MAX_OUTPUT_TOKENS, MODEL_MAX_OUTPUT_TOKENS)
+
+
+def _finish_reason(resp: Any) -> str:
+    try:
+        reason = resp.choices[0].finish_reason
+    except (AttributeError, IndexError, TypeError):
+        return ""
+    return str(reason or "").strip().lower()
+
+
+def _output_was_truncated(resp: Any) -> bool:
+    return _finish_reason(resp) == "length"
+
+
+def _chat_completion_kwargs(
+    deployment: str,
+    max_output_tokens: int | None = None,
+) -> Dict[str, Any]:
     model_name = _model_name_for_deployment(deployment)
+    kwargs: Dict[str, Any] = {}
     if _supports_temperature(model_name):
-        return {"temperature": 0.0}
-    return {}
+        kwargs["temperature"] = 0.0
+    if max_output_tokens is not None:
+        budget = max(1, min(int(max_output_tokens), MODEL_MAX_OUTPUT_TOKENS))
+        if _supports_temperature(model_name):
+            kwargs["max_tokens"] = budget
+        else:
+            kwargs["max_completion_tokens"] = budget
+    return kwargs
 
 
 class _StrictModel(BaseModel):
@@ -215,12 +295,16 @@ def _log_chat_usage(
     *,
     attempt: int | None = None,
     max_attempts: int | None = None,
+    max_output_tokens: int | None = None,
     log_prefix: str = "llm-text",
 ) -> None:
     prompt_tokens, completion_tokens, total_tokens, model_name = _usage_from_response(resp)
     attempt_part = ""
     if attempt is not None and max_attempts is not None:
         attempt_part = f" attempt={attempt}/{max_attempts}"
+    max_part = ""
+    if max_output_tokens is not None:
+        max_part = f" max_tokens={max_output_tokens}"
     process = llm_call_log.resolve_process(label)
     conversation_id = llm_call_log.resolve_conversation_id(
         llm_call_log.resolve_destination()[0], process
@@ -229,7 +313,7 @@ def _log_chat_usage(
         f"[{log_prefix}] "
         f"process={process!r} conversation_id={conversation_id!r} "
         f"label={label!r} deployment={deployment!r} model={model_name!r}"
-        f"{attempt_part} "
+        f"{attempt_part}{max_part} "
         f"prompt_tokens={prompt_tokens} completion_tokens={completion_tokens} "
         f"total_tokens={total_tokens}"
     )
@@ -260,6 +344,7 @@ def _record_chat_exchange(
     response_content: str | None = None,
     response_parsed: Any = None,
     error: str | None = None,
+    extra: Optional[Dict[str, Any]] = None,
 ) -> None:
     prompt_tokens = completion_tokens = total_tokens = model_name = None
     if resp is not None:
@@ -279,6 +364,7 @@ def _record_chat_exchange(
         max_attempts=max_attempts,
         duration_ms=(time.perf_counter() - started_at) * 1000.0,
         error=error,
+        extra=extra,
     )
 
 
@@ -289,8 +375,14 @@ def chat_text_repairs(
     validate_reply: Callable[[str], Optional[str]],
     max_repairs: int = 2,
     label: str = "text",
+    max_output_tokens: int | None = None,
 ) -> str:
-    """Plain-text chat completion with optional format repair turns."""
+    """Plain-text chat completion with optional format repair turns.
+
+    Prompts are never truncated. ``max_output_tokens`` is an Azure TPM
+    reservation; if the model hits it, the same prompt is retried at
+    ``MODEL_MAX_OUTPUT_TOKENS`` so a cut-off reply is not returned.
+    """
     client = _azure_client()
     deployment = deployment_name()
     repair_tmpl = load_prompt("repair_text_user")
@@ -300,6 +392,9 @@ def chat_text_repairs(
     ]
     last = ""
     max_attempts = max_repairs + 1
+    max_output = initial_max_output_tokens(label)
+    if max_output_tokens is not None:
+        max_output = max(1, min(int(max_output_tokens), MODEL_MAX_OUTPUT_TOKENS))
     for attempt in range(max_attempts):
         attempt_n = attempt + 1
         _log_prompt_sizes(
@@ -308,33 +403,57 @@ def chat_text_repairs(
             attempt=attempt_n,
             max_attempts=max_attempts,
         )
-        started = time.perf_counter()
-        try:
-            resp = client.chat.completions.create(
-                model=deployment,
-                messages=messages,
-                **_chat_completion_kwargs(deployment),
-            )
-        except Exception as exc:  # noqa: BLE001
-            _record_chat_exchange(
-                api="chat.completions",
-                label=label,
-                deployment=deployment,
-                messages=messages,
+        while True:
+            started = time.perf_counter()
+            try:
+                resp = client.chat.completions.create(
+                    model=deployment,
+                    messages=messages,
+                    **_chat_completion_kwargs(deployment, max_output_tokens=max_output),
+                )
+            except Exception as exc:  # noqa: BLE001
+                _record_chat_exchange(
+                    api="chat.completions",
+                    label=label,
+                    deployment=deployment,
+                    messages=messages,
+                    attempt=attempt_n,
+                    max_attempts=max_attempts,
+                    started_at=started,
+                    error=str(exc),
+                    extra={"max_tokens": max_output},
+                )
+                raise
+            _log_chat_usage(
+                resp,
+                deployment,
+                label,
                 attempt=attempt_n,
                 max_attempts=max_attempts,
-                started_at=started,
-                error=str(exc),
+                max_output_tokens=max_output,
             )
-            raise
-        _log_chat_usage(
-            resp,
-            deployment,
-            label,
-            attempt=attempt_n,
-            max_attempts=max_attempts,
-        )
-        last = (resp.choices[0].message.content or "").strip()
+            last = (resp.choices[0].message.content or "").strip()
+            if _output_was_truncated(resp) and max_output < MODEL_MAX_OUTPUT_TOKENS:
+                _record_chat_exchange(
+                    api="chat.completions",
+                    label=label,
+                    deployment=deployment,
+                    messages=messages,
+                    attempt=attempt_n,
+                    max_attempts=max_attempts,
+                    started_at=started,
+                    resp=resp,
+                    response_content=last,
+                    error="truncated_max_tokens",
+                    extra={"max_tokens": max_output, "finish_reason": "length"},
+                )
+                _emit_llm_log(
+                    f"[llm-max-tokens] truncated output; retrying without clipping prompt "
+                    f"label={label!r} max_tokens={max_output}->{MODEL_MAX_OUTPUT_TOKENS}"
+                )
+                max_output = MODEL_MAX_OUTPUT_TOKENS
+                continue
+            break
         err = validate_reply(last)
         _record_chat_exchange(
             api="chat.completions",
@@ -347,6 +466,10 @@ def chat_text_repairs(
             resp=resp,
             response_content=last,
             error=None if err is None else f"validation: {err}",
+            extra={
+                "max_tokens": max_output,
+                "finish_reason": _finish_reason(resp),
+            },
         )
         if err is None:
             return last
@@ -367,7 +490,13 @@ def chat_json(
     validator: Callable[[Dict[str, Any]], List[str]],
     max_repairs: int = 2,
     label: str = "json",
+    max_output_tokens: int | None = None,
 ) -> Dict[str, Any]:
+    """Structured chat completion. Prompts are never truncated.
+
+    ``max_output_tokens`` reserves Azure TPM; a ``finish_reason=length``
+    reply is retried at ``MODEL_MAX_OUTPUT_TOKENS`` instead of being returned.
+    """
     client = _azure_client()
     deployment = deployment_name()
     repair_parse_tmpl = load_prompt("repair_parse_user")
@@ -380,6 +509,9 @@ def chat_json(
     ]
 
     max_attempts = max_repairs + 1
+    max_output = initial_max_output_tokens(call_label)
+    if max_output_tokens is not None:
+        max_output = max(1, min(int(max_output_tokens), MODEL_MAX_OUTPUT_TOKENS))
     for attempt in range(max_attempts):
         attempt_n = attempt + 1
         _log_prompt_sizes(
@@ -388,34 +520,59 @@ def chat_json(
             attempt=attempt_n,
             max_attempts=max_attempts,
         )
-        started = time.perf_counter()
-        try:
-            resp = client.beta.chat.completions.parse(
-                model=deployment,
-                messages=messages,
-                response_format=response_model,
-                **_chat_completion_kwargs(deployment),
-            )
-        except Exception as exc:  # noqa: BLE001
-            _record_chat_exchange(
-                api="chat.completions.parse",
-                label=call_label,
-                deployment=deployment,
-                messages=messages,
+        while True:
+            started = time.perf_counter()
+            try:
+                resp = client.beta.chat.completions.parse(
+                    model=deployment,
+                    messages=messages,
+                    response_format=response_model,
+                    **_chat_completion_kwargs(deployment, max_output_tokens=max_output),
+                )
+            except Exception as exc:  # noqa: BLE001
+                _record_chat_exchange(
+                    api="chat.completions.parse",
+                    label=call_label,
+                    deployment=deployment,
+                    messages=messages,
+                    attempt=attempt_n,
+                    max_attempts=max_attempts,
+                    started_at=started,
+                    error=str(exc),
+                    extra={"max_tokens": max_output},
+                )
+                raise
+            _log_chat_usage(
+                resp,
+                deployment,
+                call_label,
                 attempt=attempt_n,
                 max_attempts=max_attempts,
-                started_at=started,
-                error=str(exc),
+                max_output_tokens=max_output,
+                log_prefix="llm-usage",
             )
-            raise
-        _log_chat_usage(
-            resp,
-            deployment,
-            call_label,
-            attempt=attempt_n,
-            max_attempts=max_attempts,
-            log_prefix="llm-usage",
-        )
+            if _output_was_truncated(resp) and max_output < MODEL_MAX_OUTPUT_TOKENS:
+                message = resp.choices[0].message
+                _record_chat_exchange(
+                    api="chat.completions.parse",
+                    label=call_label,
+                    deployment=deployment,
+                    messages=messages,
+                    attempt=attempt_n,
+                    max_attempts=max_attempts,
+                    started_at=started,
+                    resp=resp,
+                    response_content=message.content or "",
+                    error="truncated_max_tokens",
+                    extra={"max_tokens": max_output, "finish_reason": "length"},
+                )
+                _emit_llm_log(
+                    f"[llm-max-tokens] truncated output; retrying without clipping prompt "
+                    f"label={call_label!r} max_tokens={max_output}->{MODEL_MAX_OUTPUT_TOKENS}"
+                )
+                max_output = MODEL_MAX_OUTPUT_TOKENS
+                continue
+            break
         message = resp.choices[0].message
         choice = message.content or ""
         parsed = message.parsed
@@ -432,6 +589,10 @@ def chat_json(
                 resp=resp,
                 response_content=choice or refusal,
                 error=f"parse_refusal: {refusal}",
+                extra={
+                    "max_tokens": max_output,
+                    "finish_reason": _finish_reason(resp),
+                },
             )
             if attempt >= max_repairs:
                 raise ValueError(refusal)
@@ -458,6 +619,10 @@ def chat_json(
             response_content=choice,
             response_parsed=data,
             error=None if not v_errs else "schema: " + "; ".join(v_errs[:15]),
+            extra={
+                "max_tokens": max_output,
+                "finish_reason": _finish_reason(resp),
+            },
         )
         if not v_errs:
             return data
