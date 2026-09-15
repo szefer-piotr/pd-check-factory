@@ -27,6 +27,7 @@ from pdcheck_factory.protocol_markdown import (
     write_manifest,
     write_numbered_fragment,
 )
+
 app = typer.Typer(no_args_is_help=True, help="PD Check Factory — Azure MVP monolith.")
 
 protocol_app = typer.Typer(help="Segment protocol Markdown and run Step 1 extraction per section.")
